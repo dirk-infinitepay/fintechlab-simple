@@ -42,14 +42,15 @@ make start    # restart from the images already built
 - **Rebuild the whole lab, not one vendor.** Recreating only banking-circle
   leaves b4b's bridge pointing at its old address and payouts time out. Use
   `make up` / `make start`.
-- **The console alone is safe to rebuild** (nothing calls it):
-  `podman-compose build console && podman rm -f fintechlab-simple_console_1 && podman-compose up -d --no-deps console`
-  — **but only while `compose.yml` is unchanged since the lab came up.**
-  podman-compose 1.0.6 starts the console with `--requires` on everything it
-  `depends_on`; after a compose.yml edit that single `up` recreated bank,
-  receiver, verify, banking-circle, worldline, b4b and settlement too, left
-  them `Created` rather than running, and lost Banking Circle's in-memory
-  state. After any compose.yml change, `make up`.
+- **There is no console-only rebuild.** podman-compose 1.0.6 ignores
+  `--no-deps`: `podman-compose up -d --no-deps console` runs the console with
+  `--requires` on everything it `depends_on`, and recreates or restarts bank,
+  receiver, verify, banking-circle, worldline, b4b and settlement with it —
+  even with `compose.yml` unchanged since the lab came up. Banking Circle's
+  in-memory state (the platform's subscription included) goes with it; after
+  a compose.yml edit the dependants were also left `Created` rather than
+  running. So treat a console rebuild as a lab restart: `make up`, then
+  restart the runner (next point).
 - **After the lab restarts, restart the runner.** A fresh banking-circle has
   no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
   needs the restart to get a new subscription (its id changes every time —
