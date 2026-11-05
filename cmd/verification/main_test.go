@@ -88,7 +88,7 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("kyc6: %d %v", code, out)
 	}
-	results := nested(out, "response", "results")
+	results, _ := out["results"].(map[string]any)
 	if n, _ := results["matchCount"].(float64); n != 0 {
 		t.Errorf("kyc6 matchCount = %v, want 0", results["matchCount"])
 	}
@@ -149,7 +149,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 	}
 	_, out = call(t, a, a.apiKey(a.kyc6Screen), http.MethodPost, "/kyc6/individuals",
 		`{"name":"Sanctioned Person"}`, keyHdr())
-	results := nested(out, "response", "results")
+	results, _ := out["results"].(map[string]any)
 	if n, _ := results["matchCount"].(float64); n != 1 {
 		t.Errorf("a screening hit should produce a match: %v", results)
 	}

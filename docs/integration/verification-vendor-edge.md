@@ -52,7 +52,7 @@ curl -s -XPOST localhost:8089/sim/outcome \
 | check | outcomes | moves |
 | --- | --- | --- |
 | `bank-account` | `pass` · `mismatch` · `invalid` | Creditsafe `supplierResponse.result` / `nameMatchResult`, iban.com `result.valid` / `name_match` |
-| `screening` | `clear` · `hit` | KYC6 `response.results.matchCount` and the matches array |
+| `screening` | `clear` · `hit` | KYC6 `results.matchCount` and the matches array |
 | `identity` | `pass` · `refer` · `fail` | LexisNexis `assessment.result`, and IVI's review status |
 | `company` | `active` · `dissolved` | Creditsafe company status |
 
