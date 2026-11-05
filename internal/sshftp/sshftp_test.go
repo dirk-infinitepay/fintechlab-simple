@@ -202,7 +202,7 @@ func TestJailResolveNeverLeavesRoot(t *testing.T) {
 		if err != nil {
 			continue
 		}
-		rel, err := filepath.Rel(root, full)
+		rel, err := filepath.Rel(j.root, full)
 		if err != nil || rel == ".." || stringsHasDotDot(rel) {
 			t.Fatalf("resolve(%q) escaped to %q", p, full)
 		}
