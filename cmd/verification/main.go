@@ -36,6 +36,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
@@ -112,6 +113,8 @@ type app struct {
 	// that forgets its token should find out here rather than in
 	// production.
 	tokens sync.Map
+
+	portfolioIDs atomic.Int64
 }
 
 func main() {
@@ -130,8 +133,13 @@ func main() {
 	// --- Creditsafe: company data and UK bank verification ----------
 	mux.HandleFunc("POST /creditsafe/authenticate", a.creditsafeAuthenticate)
 	mux.HandleFunc("POST /creditsafe/localSolutions/GB/bankVerification/search", a.bearer(a.creditsafeBankVerification))
+	mux.HandleFunc("GET /creditsafe/companies", a.bearer(a.creditsafeCompanySearch))
 	mux.HandleFunc("GET /creditsafe/companies/{id}", a.bearer(a.creditsafeCompany))
 	mux.HandleFunc("GET /creditsafe/monitoring/portfolios", a.bearer(a.creditsafePortfolios))
+	mux.HandleFunc("POST /creditsafe/monitoring/portfolios", a.bearer(a.creditsafeCreatePortfolio))
+	mux.HandleFunc("POST /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafeAddPortfolioCompany))
+	mux.HandleFunc("GET /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafePortfolioCompanies))
+	mux.HandleFunc("PUT /creditsafe/monitoring/portfolios/{portfolioId}/eventRules/{countryCode}", a.bearer(a.creditsafeEventRules))
 	mux.HandleFunc("GET /creditsafe/monitoring/notificationEvents", a.bearer(a.creditsafeEvents))
 
 	// --- iban.com: the base URL is the endpoint ---------------------
@@ -260,6 +268,19 @@ func (a *app) creditsafeBankVerification(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+func (a *app) creditsafeCompanySearch(w http.ResponseWriter, r *http.Request) {
+	country := r.URL.Query().Get("countries")
+	regNo := r.URL.Query().Get("regNo")
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"totalSize": 1,
+		"companies": []map[string]any{{
+			"id":      country + "-0-" + regNo,
+			"country": country,
+			"regNo":   regNo,
+		}},
+	})
+}
+
 func (a *app) creditsafeCompany(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	status := "Active"
@@ -281,6 +302,29 @@ func (a *app) creditsafePortfolios(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"portfolios": []map[string]any{{"id": "sim-portfolio-1", "name": "Simulated portfolio"}},
 	})
+}
+
+func (a *app) creditsafeCreatePortfolio(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	isDefault, _ := body["isDefault"].(bool)
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"portfolioId": a.portfolioIDs.Add(1),
+		"name":        str(body["name"]),
+		"isDefault":   isDefault,
+	})
+}
+
+func (a *app) creditsafeAddPortfolioCompany(w http.ResponseWriter, r *http.Request) {
+	httputilx.WriteJSON(w, 201, map[string]any{"message": "Company added to portfolio"})
+}
+
+func (a *app) creditsafePortfolioCompanies(w http.ResponseWriter, r *http.Request) {
+	httputilx.WriteJSON(w, 200, map[string]any{"data": []any{}, "totalCount": 0})
+}
+
+func (a *app) creditsafeEventRules(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // creditsafeEvents answers the monitoring poll with nothing to report,
