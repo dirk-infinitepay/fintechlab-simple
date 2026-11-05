@@ -144,8 +144,8 @@ func main() {
 
 	// --- LexisNexis: OAuth, then identity and verification ----------
 	mux.HandleFunc("POST /lexisnexis/oauth/token", a.lexisToken)
-	mux.HandleFunc("POST /lexisnexis/idu/api/attribute-query", a.bearer(a.lexisIDU))
-	mux.HandleFunc("POST /lexisnexis/ivi/v1/reports", a.bearer(a.lexisIVI))
+	mux.HandleFunc("POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
+	mux.HandleFunc("POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
 
 	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome to change one", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
@@ -312,12 +312,12 @@ func (a *app) ibanVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid, nameMatch := true, "MATCH"
+	valid, nameMatch := true, "yes"
 	switch a.out.get(checkBankAccount) {
 	case "mismatch":
-		nameMatch = "NOMATCH"
+		nameMatch = "no"
 	case "invalid":
-		valid, nameMatch = false, "NOMATCH"
+		valid, nameMatch = false, "no"
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"query": map[string]any{"IBAN": body.IBAN, "name": body.Name, "success": true},
@@ -417,6 +417,10 @@ func (a *app) lexisIDU(w http.ResponseWriter, r *http.Request) {
 func (a *app) lexisIVI(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	if str(body["org_id"]) == "" || str(body["api_key"]) == "" || str(body["policy"]) == "" {
+		httputilx.Error(w, 401, "org_id, api_key and policy required")
+		return
+	}
 
 	status, score := "PASS", 850
 	switch a.out.get(checkIdentity) {

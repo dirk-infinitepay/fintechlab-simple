@@ -63,7 +63,7 @@ never fires.
 ## Two things worth knowing
 
 **`mismatch` is not `invalid`.** A mismatch is a real account in the wrong
-name — `valid: true` with `name_match: NOMATCH` — and a client that treats
+name — `valid: true` with `name_match: no` — and a client that treats
 the two the same will pass here and be wrong about a whole class of payment
 in production.
 
