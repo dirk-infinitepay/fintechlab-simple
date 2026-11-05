@@ -140,6 +140,9 @@ func main() {
 	// --- KYC6: sanctions, PEP and adverse media ---------------------
 	mux.HandleFunc("POST /kyc6/individuals", a.apiKey(a.kyc6Screen))
 	mux.HandleFunc("POST /kyc6/businesses", a.apiKey(a.kyc6Screen))
+	mux.HandleFunc("GET /kyc6/individuals/{resourceId}", a.apiKey(a.kyc6Profile))
+	mux.HandleFunc("GET /kyc6/businesses/{resourceId}", a.apiKey(a.kyc6Profile))
+	mux.HandleFunc("PUT /kyc6/worklists/{worklistId}", a.apiKey(a.kyc6CreateWorklist))
 	mux.HandleFunc("GET /kyc6/lifecycle/ongoing-monitoring/{alertId}", a.apiKey(a.kyc6Monitoring))
 
 	// --- LexisNexis: OAuth, then identity and verification ----------
@@ -344,7 +347,7 @@ func (a *app) kyc6Screen(w http.ResponseWriter, r *http.Request) {
 	matches := []map[string]any{}
 	if a.out.get(checkScreening) == "hit" {
 		matches = append(matches, map[string]any{
-			"id":         "sim-match-1",
+			"resourceId": "sim-match-1",
 			"name":       str(body["name"]),
 			"score":      0.92,
 			"datasets":   []string{"SANCTIONS"},
@@ -352,12 +355,26 @@ func (a *app) kyc6Screen(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{
-		"response": map[string]any{
-			"results": map[string]any{
-				"matchCount": len(matches),
-				"matches":    matches,
-			},
+		"results": map[string]any{
+			"matchCount": len(matches),
+			"matches":    matches,
 		},
+	})
+}
+
+func (a *app) kyc6Profile(w http.ResponseWriter, r *http.Request) {
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"resourceId": r.PathValue("resourceId"),
+		"datasets":   []string{"SANCTIONS"},
+	})
+}
+
+func (a *app) kyc6CreateWorklist(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"worklistId": r.PathValue("worklistId"),
+		"name":       str(body["name"]),
 	})
 }
 
