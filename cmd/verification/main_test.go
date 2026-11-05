@@ -78,8 +78,8 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 		t.Fatalf("iban verify: %d %v", code, out)
 	}
 	res, _ := out["result"].(map[string]any)
-	if res["valid"] != true || res["name_match"] != "MATCH" {
-		t.Errorf("iban result = %v, want valid + MATCH", res)
+	if res["valid"] != true || res["name_match"] != "yes" {
+		t.Errorf("iban result = %v, want valid + yes", res)
 	}
 
 	// KYC6: clear means zero matches, because that is what clear is.
@@ -98,7 +98,7 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 	ln := token(t, a, a.lexisToken, "/lexisnexis/oauth/token",
 		`{"client_id":"sim","client_secret":"sim"}`)
 	code, out = call(t, a, a.bearer(a.lexisIDU), http.MethodPost,
-		"/lexisnexis/idu/api/attribute-query", `{"reference":"ref-1"}`, bearerHdr(ln))
+		"/lexisnexis/idu/v1/reports", `{"reference":"ref-1"}`, bearerHdr(ln))
 	if code != http.StatusOK {
 		t.Fatalf("lexisnexis idu: %d %v", code, out)
 	}
@@ -130,7 +130,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 	_, out := call(t, a, a.ibanVerify, http.MethodPost, "/iban/verify",
 		`{"IBAN":"GB00X","name":"Someone Else"}`, keyHdr())
 	res, _ := out["result"].(map[string]any)
-	if res["valid"] != true || res["name_match"] != "NOMATCH" {
+	if res["valid"] != true || res["name_match"] != "no" {
 		t.Errorf("a mismatch is a valid account with the wrong name: %v", res)
 	}
 
