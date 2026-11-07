@@ -33,6 +33,19 @@ lab and the platform's runner up, the lab clock, running a settlement
 and the reconciliation sweep, the Banking Circle test hooks, and what looks
 broken but is not. Read it before driving the lab from a session.
 
+## APIs
+
+[docs/api/README.md](docs/api/README.md) maps every API in the lab: each
+service's vendor surface, its `/internal/*` plumbing and `/sim/*` lab
+control, and the console's own `/api`, with who calls which. A cold start is
+`GET :8090/api` (every console route and what it reaches), then
+`GET :8090/api/overview` (every service and where it lives).
+
+A route and its documentation change together. The console's routes are
+registered from the table in `cmd/console/routes.go`; each service's routes
+are documented in `docs/api/services/<id>.md`. `go test ./cmd/console
+./internal/console` fails when a route and its document disagree.
+
 ## What this exists to do
 
 Run the settle path end to end against mocked third parties, so the real

@@ -53,7 +53,7 @@ const VIEWS = {
   },
   docs: {
     title: 'Docs',
-    sub: 'How the three parts fit — your platform with its test harness, the runner library, and this lab — and how to stand them up.',
+    sub: 'How the three parts fit — your platform with its test harness, the runner library, and this lab — how to stand them up, and every API a caller can use.',
   },
   config: {
     title: 'Configuration',
@@ -215,6 +215,15 @@ async function load() {
         state.standins = await api('GET', '/api/stand-ins');
       } catch (err) {
         state.standins = { error: err.message };
+      }
+    }
+    // The index is the console's route table: it changes only with a new
+    // build, which the stale-page note already reports, so it is read once.
+    if (state.view === 'docs' && docsPage() === 'api' && (!state.data.apiIndex || state.data.apiIndex.error)) {
+      try {
+        state.data.apiIndex = await api('GET', '/api');
+      } catch (err) {
+        state.data.apiIndex = { error: err.message };
       }
     }
     if (state.view === 'banks') state.data.banks = await api('GET', '/api/banks');
@@ -1879,7 +1888,25 @@ const GUIDE_LAYOUTS = [
   },
 ];
 
+/* Two pages in one view (design-system.md, API reference): the guide and
+   the API reference, picked by the hash — #docs, #docs/api,
+   #docs/api:banking-circle with that service's card open. */
+function docsPage() {
+  return parseHash().item.split(':')[0] === 'api' ? 'api' : 'guide';
+}
+
 function renderDocs() {
+  const page = docsPage();
+  const link = (id, href, label) =>
+    `<a class="doc-page${page === id ? ' is-active' : ''}" href="${href}"${page === id ? ' aria-current="page"' : ''}>${label}</a>`;
+  return `<nav class="doc-pages" aria-label="Docs pages">
+      ${link('guide', '#docs', 'Guide')}
+      ${link('api', '#docs/api', 'API reference')}
+    </nav>
+    ${page === 'api' ? renderApiRef() : renderGuide()}`;
+}
+
+function renderGuide() {
   const ov = state.data.overview;
   const plugin = ov && platformPlugin();
   const up = ov ? services().filter((s) => isUp(s)).length : null;
@@ -1926,6 +1953,7 @@ function renderDocs() {
         <tbody>
           <tr><td class="mono">fintechlab-simple/docs/getting-started.md</td><td>the loop above, by hand, with what each screen should show</td></tr>
           <tr><td class="mono">fintechlab-simple/docs/plugins.md</td><td>the contract a platform implements: the card, the clock, files, stand-ins</td></tr>
+          <tr><td class="mono">fintechlab-simple/docs/api/README.md</td><td>every API in the lab, who calls which, and the full reference — <a href="#docs/api">API reference</a></td></tr>
           <tr><td class="mono">fintechlab-simple/agent.runbooks.md</td><td>every step as one curl, and what looks broken but is not</td></tr>
           <tr><td class="mono">fintechlab-simple/docs/console.md</td><td>this console, view by view</td></tr>
           <tr><td class="mono">fintechlab-runner/README.md</td><td>the library’s modules and a minimal platform</td></tr>
@@ -1963,27 +1991,38 @@ function guideStep(s, i) {
 }
 
 /* Hand-drawn, like the sequence diagram: tokens for every colour, so it
-   is right in both themes, and no library. */
-function guideDiagram() {
-  const box = (x, y, w, h, klass, title, sub) => `<g class="gd-box ${klass}">
+   is right in both themes, and no library. The guide and the API reference
+   draw with the same three parts. */
+function gdBox(x, y, w, h, klass, title, sub) {
+  return `<g class="gd-box ${klass}">
       <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
       <text class="gd-title" x="${x + 14}" y="${y + 22}">${esc(title)}</text>
       ${sub ? `<text class="gd-sub" x="${x + 14}" y="${y + 38}">${esc(sub)}</text>` : ''}
     </g>`;
-  const chip = (x, y, w, label, klass = '') => `<g class="gd-chip ${klass}">
+}
+
+function gdChip(x, y, w, label, klass = '') {
+  return `<g class="gd-chip ${klass}">
       <rect x="${x}" y="${y}" width="${w}" height="24" rx="6"></rect>
       <text x="${x + w / 2}" y="${y + 16}">${esc(label)}</text>
     </g>`;
-  const arrow = (x1, y, x2, label, sub, klass = '') => {
-    const dir = x2 > x1 ? 1 : -1;
-    const tip = x2 - 9 * dir;
-    return `<g class="gd-arrow ${klass}">
+}
+
+function gdArrow(x1, y, x2, label, sub, klass = '') {
+  const dir = x2 > x1 ? 1 : -1;
+  const tip = x2 - 9 * dir;
+  return `<g class="gd-arrow ${klass}">
       <line x1="${x1}" y1="${y}" x2="${tip}" y2="${y}"></line>
       <polygon points="${x2},${y} ${tip},${y - 5} ${tip},${y + 5}"></polygon>
       <text class="gd-label" x="${(x1 + x2) / 2}" y="${y - 7}">${esc(label)}</text>
       ${sub ? `<text class="gd-code" x="${(x1 + x2) / 2}" y="${y + 15}">${esc(sub)}</text>` : ''}
     </g>`;
-  };
+}
+
+function guideDiagram() {
+  const box = gdBox;
+  const chip = gdChip;
+  const arrow = gdArrow;
   return `<svg class="gd" viewBox="0 0 1000 470" role="img"
       aria-label="The platform with its test harness and the runner library on the left, the lab on the right, and the calls between them">
     ${box(10, 10, 390, 450, 'is-sut', 'The app in test', 'your platform, run locally')}
@@ -2025,6 +2064,210 @@ function guideDiagram() {
     ${arrow(620, 222, 380, 'buttons, files, logs', 'on its base_url, :3109')}
     ${arrow(380, 276, 620, 'follows the clock, holds it in a run', 'GET /clock')}
     ${arrow(600, 436, 400, 'fintechlab.env', 'addresses · credentials · keys', 'is-setup')}
+  </svg>`;
+}
+
+/* --- docs: the API reference ----------------------------------------------
+
+   Every route a caller can use (design-system.md, API reference). The
+   console's own routes come from GET /api, which lists the table the
+   console registers them from, so this page cannot document a route that
+   does not answer. The services come from the overview, like every card. */
+
+const API_INTENTS = [
+  ['Drive the lab from a script or an agent: merchants, the clock, a run, what happened',
+    'The console', 'GET /api first, then /api/*'],
+  ['Test your integration with one vendor',
+    'That vendor’s own surface', 'exactly the calls your platform makes to the real one'],
+  ['Make a vendor misbehave, or read what it saw',
+    'That service’s /sim/*', 'lab-only hooks; the console wraps the common ones'],
+  ['Put your platform’s card in the console',
+    'The console', 'POST /api/plugins — docs/plugins.md'],
+  ['Keep your platform’s business dates on the lab’s',
+    'The clock', 'GET /clock every second — docs/plugins.md, The clock'],
+  ['Prove every hop is connected',
+    'make harness', 'calls the services directly; it does not need the console'],
+];
+
+const API_KIND_TITLES = [
+  ['vendor', 'Vendors'],
+  ['verification', 'Verification'],
+  ['platform', 'Platform, clock and stand-ins'],
+];
+
+function renderApiRef() {
+  const idx = state.data.apiIndex;
+  return `<div class="guide api-ref">
+    <section class="guide-hero">
+      <h2>Three kinds of API, and who calls which</h2>
+      <p class="guide-lede">Every service answers on its own address, with up to three surfaces: the
+        <b>vendor surface</b> your platform calls exactly as it would call the real vendor,
+        <b>/internal/*</b> plumbing where one simulation stands in for something that has no API,
+        and <b>/sim/*</b>, the lab-only hooks that drive and observe it. The console is a client of
+        all of them. Its own <span class="mono">/api/*</span> is the backend of this page, and a
+        lab-level API for scripts and agents: one address for merchants, the clock, runs and what
+        happened.</p>
+      <div class="guide-diagram">${apiDiagram()}</div>
+      <p class="hint">Purple arrows go to or from the console; grey ones are calls to a service's own API.
+        Purple marks the system under test, as on the Dashboard.</p>
+    </section>
+
+    <section data-anchor="which">
+      <div class="section-title">Which to call</div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>To</th><th>Call</th><th>How</th></tr></thead>
+        <tbody>${API_INTENTS.map(([to, call, how]) => `<tr>
+          <td>${esc(to)}</td><td>${esc(call)}</td><td class="mono">${esc(how)}</td></tr>`).join('')}</tbody>
+      </table></div>
+      <div class="note">Planned, not built: one lab API at <span class="mono">/v1</span> in a container
+        of its own, with a control port per service and traps that make a vendor answer a future
+        request the way a test needs. The design is in <span class="mono">docs/lab-api/</span>.
+        Until it exists, the console's <span class="mono">/api</span> is the lab-level API.</div>
+    </section>
+
+    <section data-anchor="console-api">
+      <div class="section-title">The console's API <small>${esc(location.origin)}/api — no auth, JSON in and out</small></div>
+      ${apiConsoleRoutes(idx)}
+    </section>
+
+    <section data-anchor="service-apis">
+      <div class="section-title">Each service's API <small>where a script on this machine reaches it, and the routes worth knowing</small></div>
+      <p class="hint">The full reference for each, with bodies and answers, is in the repo:
+        <span class="mono">docs/api/services/&lt;id&gt;.md</span>, indexed by <span class="mono">docs/api/README.md</span>.</p>
+      ${apiServiceCards()}
+    </section>
+  </div>`;
+}
+
+function apiConsoleRoutes(idx) {
+  if (!idx) return `<div class="empty">Reading the console's index…</div>`;
+  if (idx.error) return `<div class="note bad">GET /api did not answer: ${esc(idx.error)}</div>`;
+  const groups = (idx.groups || []).map((g) => {
+    const rows = (idx.routes || []).filter((r) => r.group === g.id);
+    if (!rows.length) return '';
+    return `<div class="api-group">
+        <h3>${esc(g.title)} <span class="pill">${rows.length}</span></h3>
+        <p class="hint">${esc(g.note)}</p>
+        <div class="table-scroll"><table class="api-routes is-console">
+          <colgroup><col class="c-method"><col class="c-path"><col class="c-what"><col></colgroup>
+          <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Reaches</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td><span class="pill">${esc(r.method)}</span></td>
+            <td class="mono">${esc(r.path)}</td>
+            <td>${esc(r.summary)}</td>
+            <td class="api-reaches">${esc(r.reaches)}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>`;
+  }).join('');
+  return `<p class="hint">${(idx.routes || []).length} routes, listed by the console itself
+      (<a href="/api" target="_blank" rel="noreferrer" class="mono">GET /api</a>).
+      Bodies, answers and errors for each: <span class="mono">${esc(idx.docs || 'docs/api/console-api.md')}</span>.</p>
+    ${groups}`;
+}
+
+function apiServiceCards() {
+  const all = services();
+  if (!all.length) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
+  return API_KIND_TITLES.map(([kind, title]) => {
+    const group = all.filter((s) => s.kind === kind);
+    if (!group.length) return '';
+    return `<div class="api-group"><h3>${esc(title)}</h3>${group.map(apiServiceCard).join('')}</div>`;
+  }).join('');
+}
+
+function apiServiceCard(s) {
+  const id = `api:${s.id}`;
+  const open = isOpen(id);
+  const st = s.status || {};
+  const where = s.browse_url || s.base_url || '';
+  const body = !open ? '' : `<div class="card-body">
+      <div class="note">${esc(s.summary)}</div>
+      <dl class="kv">
+        ${where ? `<dt>From this machine</dt><dd>${esc(where)}</dd>` : ''}
+        ${s.base_url && s.base_url !== where ? `<dt>From the console</dt><dd>${esc(s.base_url)}</dd>` : ''}
+        <dt>Ports</dt><dd>${esc((s.ports || []).join('  '))}</dd>
+        ${s.transport ? `<dt>Transport</dt><dd>${esc(s.transport)}</dd>` : ''}
+        ${s.auth ? `<dt>Auth</dt><dd>${esc(s.auth)}</dd>` : ''}
+        ${s.health_path ? `<dt>Health</dt><dd>GET ${esc(s.health_path)}</dd>` : ''}
+        ${s.activity_path ? `<dt>Activity</dt><dd>GET ${esc(s.activity_path)}</dd>` : ''}
+        <dt>Full reference</dt><dd>${s.plugin
+          ? '<span style="font-family:var(--sans)">its own — a platform documents itself</span>'
+          : esc(`docs/api/services/${s.id}.md`)}</dd>
+      </dl>
+      ${(s.endpoints || []).length ? `<div class="table-scroll"><table class="api-routes">
+        <thead><tr><th class="actions">Method</th><th>Path</th><th>What it does</th></tr></thead>
+        <tbody>${s.endpoints.map((e) => `<tr>
+          <td class="actions"><span class="pill-row">${String(e.method).split('|').map((m) => `<span class="pill">${esc(m)}</span>`).join('')}</span></td>
+          <td class="mono">${esc(e.path)}</td>
+          <td>${esc(e.note || '')}</td></tr>`).join('')}</tbody></table></div>`
+        : `<p class="hint">It declares no endpoints.</p>`}
+      <p class="hint">Its card, with its logs and buttons: <a href="${esc(serviceHref(s.id))}">${esc(s.name)} →</a></p>
+    </div>`;
+  return `<div class="card ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}">
+      <span class="chev">▸</span>
+      <i class="dot ${esc(st.state || 'unknown')}"></i>
+      <div class="card-title">
+        <span class="name">${esc(s.name)} <span class="pill ${esc(s.kind)}">${esc(s.kind)}</span>${s.plugin ? ' <span class="pill">plugin</span>' : ''}</span>
+        <span class="desc mono">${esc(where)}${s.auth ? ` · ${esc(s.auth)}` : ''}</span>
+      </div>
+      <div class="card-meta"><span>${(s.endpoints || []).length} routes listed</span></div>
+    </div>
+    ${body}
+  </div>`;
+}
+
+/* Who calls which API: callers on both sides of the lab, because two of
+   them (scripts, the platform) call the console and the services both. */
+function apiDiagram() {
+  const vert = (x, y1, y2) => {
+    const tip = y2 - 9;
+    return `<g class="gd-arrow is-traffic">
+      <line x1="${x}" y1="${y1}" x2="${x}" y2="${tip}"></line>
+      <polygon points="${x},${y2} ${x - 5},${tip} ${x + 5},${tip}"></polygon>
+    </g>`;
+  };
+  return `<svg class="gd" viewBox="0 0 1000 470" role="img"
+      aria-label="Callers on both sides — the console page, scripts and agents, the harness, the platform — and the console and services they call">
+    ${gdBox(20, 20, 210, 60, 'is-lab', 'Console page', 'your browser')}
+    ${gdBox(20, 110, 210, 230, 'is-lab', 'Scripts and agents', 'curl, a test suite, an LLM')}
+    <text class="gd-note" x="36" y="180">read GET /api first:</text>
+    <text class="gd-note" x="36" y="198">it lists every console route</text>
+    <text class="gd-note" x="36" y="216">and what each one reaches</text>
+
+    ${gdBox(380, 20, 240, 150, 'is-core', 'Console :8090', 'the page and its backend')}
+    ${gdChip(396, 76, 208, 'GET /api — the index')}
+    ${gdChip(396, 108, 208, '/api/* — lab-level calls')}
+    ${gdChip(396, 140, 208, 'own state: merchants, plugins', 'standin')}
+
+    ${gdBox(380, 200, 240, 260, 'is-lab', 'Services', 'one process each, own address')}
+    ${gdChip(396, 256, 208, 'vendor surface')}
+    ${gdChip(396, 288, 208, '/internal/* — plumbing')}
+    ${gdChip(396, 320, 208, '/sim/* — lab control', 'lib')}
+    ${gdChip(396, 352, 208, '/sim/activity — what it saw', 'lib')}
+    ${gdChip(396, 400, 208, 'clock :8096 — GET /clock')}
+
+    ${gdBox(770, 20, 210, 290, 'is-sut', 'Your platform', 'a registered plugin')}
+    ${gdBox(770, 340, 210, 100, 'is-lab', 'Harness', 'make harness')}
+    <text class="gd-note" x="786" y="400">black-box scenarios;</text>
+    <text class="gd-note" x="786" y="418">never through the console</text>
+
+    ${gdArrow(230, 50, 380, 'every button', 'one /api call')}
+    ${gdArrow(230, 140, 380, 'lab-level', 'GET /api · /api/*')}
+    ${gdArrow(230, 300, 380, 'vendor-level', '/sim/* · vendor APIs', 'is-traffic')}
+    ${vert(500, 170, 200)}
+    <text class="gd-code gd-start" x="510" y="189">calls their own APIs</text>
+
+    <text class="gd-note" x="786" y="170">its production code calls</text>
+    <text class="gd-note" x="786" y="188">the vendor surfaces only;</text>
+    <text class="gd-note" x="786" y="206">its test harness may also</text>
+    <text class="gd-note" x="786" y="224">use /sim/*, like any script</text>
+
+    ${gdArrow(770, 60, 620, 'registers its card', 'POST /api/plugins')}
+    ${gdArrow(620, 125, 770, 'its buttons, files, logs', 'on its base_url')}
+    ${gdArrow(770, 240, 620, 'vendor traffic, the clock', 'SFTP+PGP · JWT · mTLS', 'is-traffic')}
+    ${gdArrow(620, 285, 770, 'webhooks · callbacks', '', 'is-traffic')}
+    ${gdArrow(770, 390, 620, 'scenarios', 'vendor APIs · /sim/*', 'is-traffic')}
   </svg>`;
 }
 
@@ -3159,6 +3402,14 @@ function route() {
     setHop(item || null, false);
     // Landing on a hop's link: bring its arrow into view too.
     if (item) state.focus = { hop: item };
+  } else if (view === 'docs' && (item === 'api' || item.startsWith('api:'))) {
+    // #docs/api is a page, not a place on one: it opens at its top, where
+    // the page switch is. #docs/api:banking-circle opens that service's
+    // card and brings it into view.
+    if (item !== 'api') {
+      state.open.add(`docs:${item}`);
+      state.focus = item;
+    }
   } else if (item) {
     // "b4b:payments" opens the card and the panel inside it.
     const parts = item.split(':');

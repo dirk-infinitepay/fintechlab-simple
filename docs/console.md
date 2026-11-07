@@ -6,7 +6,8 @@ A control panel for the lab — the thing that turns a set of containers and
 a page of `curl` invocations into something you can hand to someone who
 has not read the repo. Views: **Dashboard** (the home page — the lab at a
 glance, then one run as a sequence diagram), **Vendors**, **Platform**,
-**Verification**, **Banks**, **Merchants**, **Docs** (how the platform, its
+**Verification**, **Banks**, **Merchants**, **Docs** (the guide and the
+[API reference](#docs); how the platform, its
 test harness, the runner library and this lab fit, and how to set them up),
 **Configuration**.
 
@@ -602,10 +603,11 @@ curl -s -XPOST localhost:8090/api/merchants/batches/bat_0007/trading -d '{"count
 curl -s -XDELETE localhost:8090/api/merchants/batches/bat_0007
 ```
 
-The registry is on disk and B4B's beneficiary store is in memory, so after
-`b4b` restarts an outlet shown here as registered is one B4B has
-forgotten. Re-registering is safe: a repeated `external_ref` corrects the
-record rather than creating a second payee.
+The registry is on disk, and so is B4B's beneficiary store
+(`B4B_STATE_PATH`), so both survive a restart; delete one without the other
+and an outlet shown here as registered is one B4B has never heard of.
+Re-registering is safe: a lookup by `external_ref` answers with the latest
+registration of that reference.
 
 The `external_ref` is the **MID**, and that matters. B4B mints its own
 beneficiary id, so a platform that keys payouts on its own reference has
@@ -659,6 +661,34 @@ send you debugging the wrong thing for an hour:
   compose file. Labelled as *what compose.yml ships*, never as a reading of
   the running container. The console's own environment is the one block
   shown live, and it says so.
+
+## Docs
+
+Two pages, switched at the top of the view.
+
+**Guide** (`#docs`): how the three parts fit (your platform with its test
+harness, the runner library, and this lab) as a diagram, a card per part,
+and the set-up steps in order, each with its command and what you should
+see afterwards.
+
+**API reference** (`#docs/api`): every API a caller can use.
+
+- A diagram of who calls which API: the console page, scripts and agents,
+  the harness, and your platform, against the console and the services.
+- *Which to call*: intent to API ("make a vendor misbehave" goes to that
+  service's `/sim/*`).
+- **The console's own routes**, read from the console itself (`GET /api`),
+  grouped, each with what it does and which service it reaches. The table
+  that registers the routes is the table this page draws, so it cannot
+  list a route that does not answer.
+- **Each service's API** as a card: where a script on this machine reaches
+  it, ports, auth, the endpoints worth knowing, and the path of its full
+  reference in the repo. `#docs/api:banking-circle` links straight to one.
+
+The long form is in the repo: [api/README.md](api/README.md) (the
+overview), [api/console-api.md](api/console-api.md) (every console route
+with bodies and answers) and `api/services/<id>.md` (each service). Tests
+hold all three to the code.
 
 ## Configuring the console itself
 

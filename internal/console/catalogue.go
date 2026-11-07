@@ -189,9 +189,9 @@ func DefaultCatalogue() *Catalogue {
 			Endpoints: []Endpoint{
 				// The Connect API, as the real bank serves it (mTLS, Bearer).
 				{"GET", "/api/v1/authorizations/authorize", "Basic -> Bearer"},
-				{"GET", "/api/v1/accounts/{id}/balances", "safeguarding balance, financialDate on the business day"},
+				{"GET", "/api/v1/accounts/{id}/balances", "safeguarding balance; financialDate is the lab clock's date"},
 				{"GET|POST", "/api/v1/notificationselfservice/subscription", "list / create webhook subscriptions"},
-				{"GET|PUT|DELETE", "/api/v1/notificationselfservice/subscription/{id}", "one subscription (PUT needs If-Match)"},
+				{"GET|PUT|DELETE", "/api/v1/notificationselfservice/subscription/{id}", "one subscription (PUT and DELETE need If-Match)"},
 				{"PUT", "/api/v1/notificationselfservice/subscription/{id}/activate|deactivate", "switch a subscription on or off"},
 				{"POST", "/api/v1/notificationselfservice/subscriptionEvent", "add an event type to a subscription"},
 				{"PUT", "/api/v1/notificationselfservice/subscriptionEvent/{id}/targets", "scope an event to accounts"},
@@ -209,7 +209,9 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/sim/payments/{id}/return", "the beneficiary's bank sends a processed payout back"},
 				{"POST", "/sim/payments/{id}/reverse", "the scheme reverses a processed payout"},
 				{"GET", "/sim/activity", "payments received and notifications sent"},
-				{"GET", "/payments, /accounts, /reconciliation", "introspection: the bank's own records"},
+				{"GET", "/payments", "introspection: every payment the bank holds"},
+				{"GET", "/accounts", "introspection: every account and its balance"},
+				{"GET", "/reconciliation?date=YYYY-MM-DD[&account_id=]", "introspection: the payments of one day, optionally one account"},
 				// Lab bridge, plain HTTP on :8095, no auth.
 				{"POST", ":8095 /internal/payments", "B4B's hand-off: book a payout"},
 				{"POST", ":8095 /internal/incoming-payments", "money in: a Worldline lump sum lands"},
@@ -231,6 +233,7 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/internal/simulate-payment", "emit a card-payment webhook"},
 				{"GET", "/internal/sent", "what it delivered"},
 				{"GET", "/internal/sent/{id}", "one delivery"},
+				{"GET|POST", "/sim/connected", "lab switch: whether it delivers webhooks at all"},
 			},
 		},
 		{
@@ -277,7 +280,7 @@ func DefaultCatalogue() *Catalogue {
 			Ports:      []string{"8089/http"},
 			Transport:  "HTTP",
 			Auth:       "per vendor: bearer (Creditsafe, LexisNexis) or api key (iban.com, KYC6)",
-			SwapFor:    "Point CREDITSAFE_URL, IBAN_API_URL, KYC6_URL and LEXISNEXIS_URL at the real vendors.",
+			SwapFor:    "Point CREDITSAFE_API_URL, IBAN_COM_BASE_URL, KYC6_API_BASE_URL and the LEXISNEXIS_* URLs at the real vendors.",
 			Endpoints: []Endpoint{
 				{"POST", "/creditsafe/authenticate", "Creditsafe: username/password -> token"},
 				{"POST", "/creditsafe/localSolutions/GB/bankVerification/search", "UK bank account + name match"},
@@ -289,8 +292,8 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/kyc6/businesses", "KYC6: business screening"},
 				{"GET", "/kyc6/lifecycle/ongoing-monitoring/{alertId}", "KYC6: ongoing-monitoring alert"},
 				{"POST", "/lexisnexis/oauth/token", "LexisNexis: OAuth"},
-				{"POST", "/lexisnexis/idu/api/attribute-query", "identity assessment"},
-				{"POST", "/lexisnexis/ivi/v1/reports", "LexisNexis: identity verification report"},
+				{"POST", "/lexisnexis/idu/v1/reports", "LexisNexis IDU: identity report (bearer)"},
+				{"POST", "/lexisnexis/ivi/api/attribute-query", "LexisNexis IVI: identity verification attribute query"},
 				{"GET", "/sim/outcome", "what each check currently answers"},
 				{"POST", "/sim/outcome", "lab-only: flip one check to a failure"},
 			},
@@ -340,6 +343,7 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/internal/b4b-webhook", "B4B's payment-status callback"},
 				{"GET", "/sftp/out[/{merchant_id}[/{filename}]]", "report files written for SFTP"},
 				{"GET", "/sftp/staging", "files staged for delivery"},
+				{"GET|POST", "/sim/connected", "lab switch: whether it pulls files"},
 			},
 		},
 		{
@@ -357,7 +361,9 @@ func DefaultCatalogue() *Catalogue {
 			Auth:       "HMAC on /webhooks; none on /raw-events",
 			SwapFor:    "Point the vendors' webhook URLs at your own listener.",
 			Endpoints: []Endpoint{
+				{"POST", "/webhooks", "HMAC-signed webhooks: verified, then stored"},
 				{"GET", "/events", "verified webhooks"},
+				{"POST", "/raw-events", "capture any body unverified (Banking Circle, ACI)"},
 				{"GET", "/raw-events", "raw captures (base64 bodies)"},
 			},
 		},
@@ -393,7 +399,7 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor: "-- generic shape, not a vendor.",
 			Endpoints: []Endpoint{
 				{"POST", "/enqueue", "what payment-api calls"},
-				{"GET", "/subscriptions", ""}, {"GET", "/deliveries", ""},
+				{"GET|POST", "/subscriptions", "read / replace the subscription (POST clears a failed one)"}, {"GET", "/deliveries", ""},
 				{"GET", "/sim/activity", "deliveries and their attempts"},
 			},
 		},

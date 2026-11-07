@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/console"
-	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -131,73 +130,24 @@ func main() {
 }
 
 func (a *app) routes() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "console"})
-	})
-
-	mux.HandleFunc("GET /api/flow", a.flow)
-	mux.HandleFunc("GET /api/flow/hops/{id}", a.flowHop)
-	mux.HandleFunc("GET /api/stand-ins", a.listStandIns)
-	mux.HandleFunc("POST /api/stand-ins/{id}", a.setStandIn)
-	mux.HandleFunc("GET /api/overview", a.overview)
-	mux.HandleFunc("POST /api/services/{id}/probe", a.probeService)
-	mux.HandleFunc("GET /api/services/{id}/activity", a.serviceActivity)
-	mux.HandleFunc("GET /api/banking-circle/subscriptions", a.bcSubscriptions)
-	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/test", a.bcSubscriptionTest)
-	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/pause", a.bcSubscriptionPause)
-	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/resume", a.bcSubscriptionPause)
-	mux.HandleFunc("GET /api/banking-circle/payouts", a.bcPayouts)
-	mux.HandleFunc("POST /api/banking-circle/payouts/{id}/return", a.bcPayoutAction)
-	mux.HandleFunc("POST /api/banking-circle/payouts/{id}/reverse", a.bcPayoutAction)
-
-	mux.HandleFunc("GET /api/banks", a.listBanks)
-	mux.HandleFunc("POST /api/banks/{id}/accounts", a.openAccount)
-
-	mux.HandleFunc("GET /api/merchants", a.listMerchants)
-	mux.HandleFunc("POST /api/merchants", a.createMerchant)
-	mux.HandleFunc("DELETE /api/merchants/{id}", a.deleteMerchant)
-	mux.HandleFunc("POST /api/merchants/batches", a.createBatch)
-	mux.HandleFunc("DELETE /api/merchants/batches/{id}", a.deleteBatch)
-	mux.HandleFunc("POST /api/merchants/batches/{id}/provision", a.provisionBatch)
-	mux.HandleFunc("POST /api/merchants/batches/{id}/trading", a.tradeBatch)
-	mux.HandleFunc("POST /api/merchants/{id}/outlets", a.addOutlet)
-	mux.HandleFunc("POST /api/merchants/{id}/status", a.setMerchantStatus)
-	mux.HandleFunc("POST /api/merchants/{id}/provision", a.provisionMerchant)
-	mux.HandleFunc("POST /api/merchants/{id}/trading", a.seedTrading)
-	mux.HandleFunc("POST /api/outlets/{mid}/sanctions", a.setSanctions)
-	mux.HandleFunc("POST /api/partners", a.createPartner)
-
-	mux.HandleFunc("GET /api/connect", a.connect)
-	mux.HandleFunc("GET /api/connect/env", a.connectEnv)
-	mux.HandleFunc("GET /api/connect/env/{service}", a.connectEnv)
-	mux.HandleFunc("GET /api/connect/files/{service}/{name}", a.connectFile)
-
-	mux.HandleFunc("GET /api/clock", a.labClock)
-	mux.HandleFunc("POST /api/clock", a.setLabClock)
-
-	mux.HandleFunc("GET /api/config", a.getConfig)
-	mux.HandleFunc("PUT /api/config/worldline-channel", a.putWorldlineChannel)
-
-	mux.HandleFunc("POST /api/actions/worldline-cycle", a.runWorldlineCycle)
-	mux.HandleFunc("POST /api/actions/settlement-pull", a.settlementPull)
-	mux.HandleFunc("POST /api/actions/fund-sga", a.fundSGA)
-
-	mux.HandleFunc("GET /api/plugins", a.listPlugins)
-	mux.HandleFunc("POST /api/plugins", a.registerPlugin)
-	mux.HandleFunc("DELETE /api/plugins/{id}", a.unregisterPlugin)
-	mux.HandleFunc("POST /api/plugins/{id}/actions/{action}", a.pluginAction)
-	mux.HandleFunc("GET /api/plugins/{id}/files", a.pluginFiles)
-	mux.HandleFunc("POST /api/plugins/{id}/run", a.pluginRun)
-	mux.HandleFunc("POST /api/plugins/{id}/files", a.pluginUpload)
-	mux.HandleFunc("DELETE /api/plugins/{id}/files", a.pluginDeleteFile)
-	mux.HandleFunc("GET /api/plugins/{id}/files/preview", a.pluginPreview)
-	mux.HandleFunc("POST /api/plugins/{id}/files/reveal", a.pluginReveal)
-
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
 		log.Fatalf("console: embedded assets: %v", err)
 	}
+	build := webBuild(sub)
+
+	// The API is the table in routes.go, so what GET /api lists is exactly
+	// what is served.
+	mux := http.NewServeMux()
+	table := a.apiRoutes()
+	for _, rt := range table {
+		h := rt.handler
+		if h == nil {
+			h = apiIndex(table, build)
+		}
+		mux.HandleFunc(rt.Method+" "+rt.Path, h)
+	}
+
 	// Embedded files carry no modification time, so a browser has nothing to
 	// revalidate against and can keep last build's app.js after a rebuild.
 	// no-cache makes it ask every time; the assets are a few hundred KB, local.
@@ -210,7 +160,6 @@ func (a *app) routes() http.Handler {
 	// keeps running the page it loaded — buttons that post what an older
 	// console posted — so every answer names the page this console serves,
 	// and the page says so when it is no longer that one.
-	build := webBuild(sub)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Console-Build", build)
 		mux.ServeHTTP(w, r)

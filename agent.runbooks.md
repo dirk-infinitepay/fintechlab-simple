@@ -27,8 +27,11 @@ checkout.
 | **runner** control API (host) | 3109 | `/status`, `/sim/files`, `/sim/run`, `/sim/sweep`, `/sim/clock` (read-only), `/sim/fund-sga` |
 | buddy `apps/banking-circle` (host) | 3114 | webhook receiver; internal API under `/api/v1/internal/...` |
 
-The console's service cards list every route each service serves (Vendors →
-open a card), from `internal/console/catalogue.go`.
+The console's service cards list the routes worth knowing for each service
+(Vendors → open a card), from `internal/console/catalogue.go`. Every route,
+with bodies and answers, is in [docs/api/](docs/api/README.md); the console
+lists its own with `curl -s localhost:8090/api`, and draws all of it on
+Docs → API reference (`#docs/api`).
 
 ## Lifecycle
 

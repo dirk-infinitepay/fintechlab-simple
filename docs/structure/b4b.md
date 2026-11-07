@@ -105,9 +105,9 @@ and its own `callback_url` → `requireAuth` verifies the token →
 `gateBeneficiary` checks the beneficiary's sanctions status is `pass` and
 the payment's creditor fields match its record (422 + nothing forwarded
 otherwise) → `Engine.Submit` fires `B4BAccepted` synchronously and the
-handler returns 201 immediately → a goroutine walks the remaining phases
+handler returns 202 immediately → a goroutine walks the remaining phases
 on the configured delay → every transition calls `onTransition`, which
-retries `deliverWebhook` against `callback_url` → at `B4BTMApproved`
+retries `deliverCallback` against `callback_url` → at `B4BTMApproved`
 specifically, `approveAndBridge` also POSTs to banking-circle's bridge,
 carrying `external_ref` → banking-circle books the outgoing payment
 against the merchant's auto-vivified creditor account, debiting its

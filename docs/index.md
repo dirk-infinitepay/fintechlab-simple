@@ -36,6 +36,10 @@ hop is really connected — see
 Your real platform is not in this repo at all: it registers its own card in
 the console and follows the lab's clock — see [plugins.md](plugins.md).
 
+Every API the lab answers on — each vendor's surface, the lab-only hooks,
+the console's own `/api` — who calls which, and each route in full:
+[api/README.md](api/README.md).
+
 Do **not** use it to reconstruct a vendor's private API or to store real bank data.
 
 The console's look and feel is a design record of its own:

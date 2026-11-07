@@ -591,6 +591,48 @@ and how to stand them up. It is the one view where prose leads.
   guide's step two is not news to someone whose platform is already here.
 - Reading width: `max-width` on the page, `78ch` on its lede.
 
+### API reference — the Docs view's second page
+
+Every route a caller can use, the console's own and each service's, with
+what it is for and where it goes. It is the page a script writer or an
+agent reads before calling anything.
+
+- **Two pages in one view, switched by a row of links** at the top of the
+  Docs view (`.doc-pages`): *Guide* and *API reference*. They are links,
+  since they navigate, and they look like nav items: the current one has
+  the ghost-purple fill, because selection is decoration. The page goes in
+  the hash (contract 9): `#docs` is the guide, `#docs/api` the reference,
+  `#docs/api:banking-circle` the reference with that service's card open.
+- **A diagram first**, drawn with the guide's own boxes, chips and arrows:
+  who calls which API. The callers (the console page, scripts and agents,
+  the harness, the platform) are on the left, the console in the middle and
+  the services on the right, each with its three surfaces. The system under
+  test is in the identity colour.
+- **Which to call comes before any route.** A table maps intent to surface
+  ("make a vendor misbehave" goes to that service's `/sim/*`), so a reader
+  picks the right API before reading paths.
+- **The console's routes come from the console** (`GET /api`), in the
+  console's own groups, and never from a list kept in the page. The table
+  that registers the routes is the one the page draws, so the page cannot
+  document a route that does not exist. Columns: method, path, what it does
+  and what it reaches. The method is a neutral `.pill`, because a method is
+  a classification and not a status: a `DELETE` is not red.
+- **Each service is a card** (the Card component, open state keyed
+  `docs:api:<id>`). The head has the health dot, the name, the kind pill,
+  and as its desc the address a script on the operator's machine reaches it
+  at (`browse_url`). The body has a `.kv` of ports, transport and auth, the
+  service's endpoints from the catalogue, and the path of its full
+  reference in the repo (`docs/api/services/<id>.md`). A registered plugin
+  is a card too, with the endpoints it declared and no reference path: its
+  documentation is its own.
+- **Read once, then follow the poll.** The index is fetched once per page
+  load; the service cards re-render with the overview poll like everywhere
+  else, so a health dot here is as true as on the Vendors view.
+- **Planned is not documented.** An API that is designed but not built (the
+  `/v1` lab API in `docs/lab-api/`) gets one `.note` pointing at its
+  design, never rows in the reference. A reference that lists routes which
+  do not answer yet is a reference nobody can trust.
+
 ### Sequence diagram
 
 The home view of an app that drives a system: participants as boxes across
