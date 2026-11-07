@@ -209,6 +209,13 @@ func registeredRoutes(t *testing.T, dirs []string) map[string]bool {
 					out[r] = true
 				}
 			}
+			if bytes.Contains(b, []byte("trap.NewStore(")) {
+				// A trap store's routes, served on the control port.
+				for _, r := range []string{"GET /sim/traps/hooks", "GET /sim/traps", "POST /sim/traps",
+					"GET /sim/traps/{id}", "DELETE /sim/traps/{id}", "DELETE /sim/traps"} {
+					out[r] = true
+				}
+			}
 			if bytes.Contains(b, []byte("simctl.NewControl(")) {
 				// The control port's own health check.
 				out["GET /health"] = true

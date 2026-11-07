@@ -271,4 +271,4 @@ has nothing a platform set up once.
 - **by hand**: [agent.runbooks.md](../../../agent.runbooks.md#the-clock)
   moves it with `curl`.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

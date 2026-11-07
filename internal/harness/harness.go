@@ -24,10 +24,12 @@ import (
 // overrides every URL to the in-network compose service name — see
 // `make harness-docker`.
 type Env struct {
-	PaymentAPIURL string
-	BankURL       string
-	NotifierURL   string
-	ReceiverURL   string
+	// BankingCircleControlURL is Banking Circle's control port.
+	BankingCircleControlURL string
+	PaymentAPIURL           string
+	BankURL                 string
+	NotifierURL             string
+	ReceiverURL             string
 	// ReceiverDeliveryURL is the base the Banking Circle twin POSTs
 	// webhooks to. Distinct from ReceiverURL when the harness runs on the
 	// host (127.0.0.1) but the twin runs in compose (receiver:8443).
@@ -89,8 +91,11 @@ func EnvFromOS() (*Env, error) {
 		WorldlineURL:        env("WORLDLINE_URL", "http://127.0.0.1:8084"),
 		// The standalone Banking Circle mock: mTLS :8085 for the Connect
 		// surface, plain :8095 for the internal/lab seams.
-		BankingCircleURL:           env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
-		BankingCircleInternalURL:   env("BANKING_CIRCLE_INTERNAL_URL", "http://127.0.0.1:8095"),
+		BankingCircleURL:         env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
+		BankingCircleInternalURL: env("BANKING_CIRCLE_INTERNAL_URL", "http://127.0.0.1:8095"),
+		// Banking Circle's control port: /sim/*, traps and reset, plain
+		// HTTP with no vendor login (internal/simctl).
+		BankingCircleControlURL:    env("BANKING_CIRCLE_CONTROL_URL", "http://127.0.0.1:9085"),
 		ACIURL:                     env("ACI_URL", "http://127.0.0.1:8087"),
 		B4BURL:                     env("B4B_URL", "http://127.0.0.1:8086"),
 		B4BJWTPrivateKeyPath:       env("B4B_JWT_PRIVATE_KEY_PATH", filepath.Join(keys, "b4b-keys/private.pem")),

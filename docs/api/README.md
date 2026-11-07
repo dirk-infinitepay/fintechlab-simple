@@ -122,8 +122,8 @@ service the platform team would provide, simulated because a test does not
 need the real one or it does not exist yet) or `lab` (the clock;
 [catalogue.md](../catalogue.md#which-half-is-which)). `build` is there when
 the binary recorded its VCS revision; `clock` when the service follows the
-lab clock. `hooks` lists the trap hooks it offers
-(none yet).
+lab clock. `hooks` lists the trap hooks it offers, and `traps` how many are
+armed and how many steps are pending (see [Traps](#traps)).
 
 **`GET /sim/logs?since=&limit=&q=`** — the process's own log lines, what
 `podman logs` shows, kept in a ring of the last `SIM_LOG_RING` lines
@@ -170,7 +170,69 @@ strictly: a misspelt field is `400`, never a reset with another scope.
 ```
 
 `409` with the reason when the service cannot reset safely now (the clock
-while a run holds it); `{"force": true}` resets anyway. `400` for a scope
+while a run holds it); `{"force": true}` resets anyway.
+
+## Traps
+
+A trap is an instruction armed in advance in one simulation: it decides
+something about a future event at one of its **hooks** — which outcome it
+takes, and when (designed in [lab-api/traps.md](../lab-api/traps.md)). A
+trap only ever puts the vendor in a state the real vendor can be in, and it
+is invisible on the vendor surface: what a trap caused carries
+`detail.trap` in the simulation's own activity, nowhere a platform looks.
+
+A simulation with hooks serves, on its control port (and through the lab
+API as `/v1/services/{id}/sim/traps…`):
+
+| Route | |
+| --- | --- |
+| `GET /sim/traps/hooks` | the catalogue: each hook, its subject, its match fields, its effect, its graph |
+| `GET /sim/traps?state=` | the traps, newest first |
+| `POST /sim/traps` | arm one: `201` with it, `400` with the reason |
+| `GET /sim/traps/{id}` | one trap: what it caught, the steps applied and still pending |
+| `DELETE /sim/traps/{id}` | disarm it and cancel its pending steps |
+| `DELETE /sim/traps` | disarm every one |
+
+```json
+{"label": "merchant 7: processed, then reversed",
+ "hook": "payment.outgoing",
+ "match": {"creditor.iban": "GB00SIM0000000000777"},
+ "times": 1,
+ "effect": {"path": [{"to": "OutgoingPaymentProcessed"},
+                     {"to": "Reversed", "after": "10s", "reason": "scheme"}]}}
+```
+
+- **Match**: every field given must match; `{}` matches every event. A
+  value is a string (exact), `{"in": […]}`, `{"prefix": "…"}`, or for
+  decimals `{"gte": "…", "lte": "…"}`. IBANs are compared upper case
+  without spaces; decimals as numbers (`"10"` is `"10.00"`). An unknown
+  field is a `400` naming the hook's fields.
+- **Precedence**: an event is offered to the armed traps on its hook in
+  the order they were armed; the first that matches takes it, and only
+  that one. "The next two payouts are rejected" is two traps armed one
+  after the other.
+- **Times**: how many events a trap takes; `1` when left out, `null` for
+  every one until disarmed. `expires_at` stops it taking anything after.
+- **Path**: the states a caught event is taken to, each checked against
+  the hook's graph when armed (`400` naming an edge that is not there). A
+  step waits `after` (real time; the first step defaults to the vendor's
+  normal delay) or `after_lab` (lab-clock time: move the clock and it
+  applies). `[]` leaves the subject where it starts. Each step goes
+  through the vendor's own engine — same books, notifications, reports and
+  status answer as a transition no trap touched — and when the books
+  cannot follow one, the vendor's own rule applies instead and the rest of
+  the path is dropped (`trap.diverted`).
+- **Lifecycle**: `armed` → `spent` (times reached), `expired`, or
+  `disarmed`. A trap stays listed with what it caught until a reset.
+  Disarming cancels its pending steps; a reset disarms and forgets every
+  trap — except the **standing** ones a simulation arms from its own
+  configuration, which it arms again.
+- **Activity**: a `traps` log on the simulation (`trap.armed`,
+  `trap.caught`, `trap.step`, `trap.diverted`, `trap.disarmed`), and a log
+  line per catch and step.
+
+Hooks so far: Banking Circle's `payment.outgoing` and B4B's
+`payment.create` — each in its service's reference. `400` for a scope
 the service does not honour. The lab API resets the whole lab in one call,
 in order, with `POST /v1/lab/reset`, and reads every service's log lines
 merged with `GET /v1/logs` ([lab-api.md](lab-api.md)).

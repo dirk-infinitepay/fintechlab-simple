@@ -195,16 +195,28 @@ func (e *Engine) Snapshot(s *State) {
 // happened yet, so a client never sees a state it has already been told
 // about twice in a row because of a restart.
 //
+// A payment a trap had caught is not resumed: its walk was the trap's
+// path, and traps -- with the steps they had scheduled -- live in memory and
+// went with the process (docs/lab-api/traps.md §6). Walking it the default
+// way instead would be a path nobody asked for. The unfinished ones are
+// returned, as copies, for the caller to decide (cmd/b4b offers them to the
+// standing traps it arms at start); anything it does not take on stays
+// where it stopped.
+//
 // Only what the file holds resumes: a reset writes the file without the
 // payments it dropped, so a restart never brings one back.
-func (e *Engine) Restore(s State) {
+func (e *Engine) Restore(s State) (held []Payment) {
 	resumable := make([]*Payment, 0, len(s.Payments))
 	started := e.gate.Begin(func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
 		for _, p := range s.Payments {
 			e.payments[p.ID] = p
-			if remainingStates(p.State) != nil {
+			switch {
+			case finished(p.State):
+			case p.Trap != "":
+				held = append(held, *p)
+			default:
 				resumable = append(resumable, p)
 			}
 		}
@@ -213,6 +225,7 @@ func (e *Engine) Restore(s State) {
 	for _, p := range resumable {
 		go e.process(p, started)
 	}
+	return held
 }
 
 func shortHex() string {

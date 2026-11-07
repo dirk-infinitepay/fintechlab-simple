@@ -45,6 +45,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
 type app struct {
@@ -58,8 +59,10 @@ type app struct {
 	backs         []time.Duration
 	maxTry        int
 	bcURL         string
-	forceFails    map[string]bool
-	statePath     string
+	// traps is the payment.create hook's store (traps.go), with a standing
+	// trap per B4B_FORCE_FAILURE_BENEFICIARY_IDS entry.
+	traps     *trap.Store
+	statePath string
 	// persistMu makes each write of the state file one snapshot-and-save,
 	// so writes land in the order their snapshots were taken: a stale one
 	// can never overwrite a reset's.
@@ -128,7 +131,6 @@ func main() {
 		backs:          backs,
 		maxTry:         envInt("MAX_ATTEMPTS", 4),
 		bcURL:          bcURL,
-		forceFails:     parseForceFailSet(forceFailSpec),
 		statePath:      statePath,
 		callbackURL:    callbackURL,
 		enforceCompany: envBool("B4B_ENFORCE_BENEFICIARY_COMPANY", false),
@@ -138,6 +140,11 @@ func main() {
 			"Each lifecycle callback this vendor posted back, and whether the client took it."),
 	}
 	a.engine = b4b.NewEngine(delay, a.onTransition)
+	// The traps before the state: a payment a standing trap was walking
+	// when b4b stopped is caught by it again (resumeHeld).
+	if a.traps, err = newTraps(delay, parseForceFailIDs(forceFailSpec)); err != nil {
+		log.Fatalf("b4b traps: %v", err)
+	}
 
 	// Restore before anything can serve: a company that existed a second
 	// before the restart has to exist a second after it, and a payment
@@ -148,7 +155,7 @@ func main() {
 	}
 	a.dir.Restore(state)
 	a.beneficiaries.Restore(state)
-	a.engine.Restore(state)
+	a.resumeHeld(a.engine.Restore(state))
 	log.Printf("b4b: state %s restored: %d companies, %d people, %d beneficiaries, %d payments",
 		statePathLabel(statePath), len(state.Companies), len(state.People), len(state.Beneficiaries), len(state.Payments))
 
@@ -180,15 +187,16 @@ func (a *app) control(addr string) (*simctl.Control, error) {
 		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 			return a.reset(req.Scope)
 		},
+		Traps: a.traps,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, err
 	}
 	mux := ctl.Mux
 
-	// A read-only window onto a lab run: only what the platform itself sent
-	// and what this service said back.
-	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog))
+	// A read-only window onto a lab run: what the platform itself sent,
+	// what this service said back, and what the lab's traps did to it.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog, a.traps.Log()))
 
 	// Registering a payee exactly as POST /oversight/v1/beneficiaries does --
 	// the same handler, so the same body, refusals, answer, callback and
@@ -241,7 +249,7 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", summarizePayment, a.createPayment)))
+	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", a.summarizeCreate, a.createPayment)))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
@@ -321,7 +329,9 @@ func (a *app) save() error {
 // first start. Either way the state file is written before it answers, so
 // a restart cannot bring back -- or resume -- a payment it dropped. The
 // signing keys and B4B_FORCE_FAILURE_BENEFICIARY_IDS are configuration and
-// stay.
+// stay. The traps are not cleared here: simctl resets the store before
+// calling this, which disarms every trap, cancels the hops still waiting
+// and arms the standing ones again (internal/trap).
 func (a *app) reset(scope string) (simctl.ResetResult, error) {
 	var res simctl.ResetResult
 	var err error
@@ -405,6 +415,13 @@ func (a *app) callbackTarget(override string) string {
 // event it leaves, goes through the gate: after a reset the rest of the
 // delivery is dropped, not raced.
 func (a *app) deliverCallback(started uint64, what, dest string, body any) {
+	a.deliverMarked(started, what, dest, body, nil)
+}
+
+// deliverMarked is deliverCallback with mark added to the detail of every
+// activity event it records: the trap that made the transition a payment
+// callback reports (trapMark). Nothing of it goes on the wire.
+func (a *app) deliverMarked(started uint64, what, dest string, body any, mark map[string]string) {
 	gate := a.engine.Gate()
 	if dest == "" {
 		gate.Do(started, func() {
@@ -412,7 +429,7 @@ func (a *app) deliverCallback(started uint64, what, dest string, body any) {
 			a.cbLog.Record(activity.Event{
 				Op: "callback", Summary: what + " — nowhere to send it",
 				Status: activity.StatusWarn,
-				Detail: map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"},
+				Detail: marked(map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"}, mark),
 			})
 		})
 		return
@@ -437,7 +454,7 @@ func (a *app) deliverCallback(started uint64, what, dest string, body any) {
 				a.cbLog.Record(activity.Event{
 					Op: "callback", Peer: dest, Summary: what + " delivered",
 					Status: activity.StatusOK,
-					Detail: map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)},
+					Detail: marked(map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)}, mark),
 				})
 			}
 		}) {
@@ -464,9 +481,20 @@ func (a *app) deliverCallback(started uint64, what, dest string, body any) {
 		}
 		a.cbLog.Record(activity.Event{
 			Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
-			Status: activity.StatusBad, Detail: detail,
+			Status: activity.StatusBad, Detail: marked(detail, mark),
 		})
 	})
+}
+
+// marked is detail with mark's keys added; the "no destination" event's own
+// reason wins over a failure's.
+func marked(detail, mark map[string]string) map[string]string {
+	for k, v := range mark {
+		if _, taken := detail[k]; !taken {
+			detail[k] = v
+		}
+	}
+	return detail
 }
 
 // postWebhook does the plain JSON POST. The allowlist is enforced here as
@@ -491,17 +519,6 @@ func (a *app) postWebhook(dest string, body []byte) (int, error) {
 		return resp.StatusCode, fmt.Errorf("b4b: webhook destination returned %s", resp.Status)
 	}
 	return resp.StatusCode, nil
-}
-
-func parseForceFailSet(spec string) map[string]bool {
-	set := map[string]bool{}
-	for _, raw := range strings.Split(spec, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw != "" {
-			set[raw] = true
-		}
-	}
-	return set
 }
 
 func statePathLabel(p string) string {

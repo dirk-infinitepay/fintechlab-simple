@@ -85,7 +85,20 @@ func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app
 	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
 	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+	a.traps = newTraps(5 * time.Millisecond)
 	return a
+}
+
+// queueOutcomes queues outcomes for the next payouts, as
+// POST /internal/payments/outcomes does.
+func queueOutcomes(t *testing.T, a *app, outcomes ...string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"outcomes": outcomes})
+	w := httptest.NewRecorder()
+	a.forceOutcomes(w, httptest.NewRequest("POST", "/internal/payments/outcomes", bytes.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("queue %v = %d %s", outcomes, w.Code, w.Body)
+	}
 }
 
 // subscribeAll registers a subscription for every event type this lab's
@@ -1074,9 +1087,7 @@ func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 	// Held booked for good: the safeguarding account is empty, so left to
 	// itself the payout ends MissingFunding after the 5 ms delay and drops
 	// off the report before the reads below are done.
-	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomePending}); err != nil {
-		t.Fatal(err)
-	}
+	queueOutcomes(t, a, "Pending")
 	createBody := `{"paymentId":"bcp_report1","accountId":"` + merchantAccount + `","amount":"1.00","currency":"EUR"}`
 	resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
 	if err != nil {
@@ -1463,9 +1474,7 @@ func TestWebhookAmountsFollowTheVendorShape(t *testing.T) {
 	p = raw(bankingcircle.NotificationReversed)
 	money("Reversed debtorInformation.debitAmount", under(p, "debtorInformation", "debitAmount"), 10)
 
-	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomeRejected}); err != nil {
-		t.Fatal(err)
-	}
+	queueOutcomes(t, a, "Rejected")
 	post("/internal/payments", `{"paymentId":"bcp_amt2","accountId":"`+merchantAccount+`","amount":"5.00","currency":"EUR"}`)
 	raw(bankingcircle.NotificationOutgoingPaymentBooked)
 	p = raw(bankingcircle.NotificationOutgoingPaymentRejected)

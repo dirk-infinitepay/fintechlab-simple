@@ -15,6 +15,7 @@ package b4b
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,19 +36,59 @@ const (
 	StateFailed            PaymentState = "B4BFailed"
 )
 
-// stateOrder is the walk a payment makes before its terminal state. It is
-// declared once, rather than inline in process(), because Restore needs to
-// know where in it a payment had got to.
-var stateOrder = []PaymentState{StateAccepted, StateSanctionsPending, StateSanctionsApproved, StateTMPending}
+// lifecycle is which states may follow which. The default walk is its
+// spine, B4BAccepted to B4BTMApproved; B4BFailed can cut in from any
+// review. It is declared once because everything that needs to know where
+// a payment can go reads it: the default walk, a trap's hops (Hop), Restore
+// deciding what is unfinished, and the payment.create trap hook's graph.
+var lifecycle = map[PaymentState][]PaymentState{
+	StateAccepted:          {StateSanctionsPending},
+	StateSanctionsPending:  {StateSanctionsApproved, StateFailed},
+	StateSanctionsApproved: {StateTMPending, StateFailed},
+	StateTMPending:         {StateTMApproved, StateFailed},
+}
 
-// remainingStates returns the states still to walk after `from`, or nil if
-// `from` is terminal or unknown. A zero-length (but non-nil) result means
-// "only the terminal hop is left" -- the distinction Restore uses to decide
-// whether a payment is resumable.
-func remainingStates(from PaymentState) []PaymentState {
-	for i, s := range stateOrder {
-		if s == from {
-			return stateOrder[i+1:]
+// Lifecycle is a copy of which states may follow which: the graph of the
+// payment.create trap hook (docs/lab-api/traps.md §9.2).
+func Lifecycle() map[PaymentState][]PaymentState {
+	out := make(map[PaymentState][]PaymentState, len(lifecycle))
+	for from, next := range lifecycle {
+		out[from] = append([]PaymentState(nil), next...)
+	}
+	return out
+}
+
+// finished reports whether nothing can follow s: B4BTMApproved, B4BFailed,
+// or a state this engine does not know.
+func finished(s PaymentState) bool { return len(lifecycle[s]) == 0 }
+
+// Hops is the walk from one state to another: the states in between, then
+// the one named, by the shortest way. It is empty when from is to, and nil
+// when to cannot follow from at all. B4BAccepted to B4BFailed is
+// B4BSanctionsPending, B4BFailed: a payment fails out of a review, never
+// straight out of acceptance.
+func Hops(from, to PaymentState) []PaymentState {
+	if from == to {
+		return []PaymentState{}
+	}
+	prev := map[PaymentState]PaymentState{}
+	queue := []PaymentState{from}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, n := range lifecycle[cur] {
+			if _, seen := prev[n]; seen || n == from {
+				continue
+			}
+			prev[n] = cur
+			if n == to {
+				var out []PaymentState
+				for s := to; s != from; s = prev[s] {
+					out = append([]PaymentState{s}, out...)
+				}
+				return out
+			}
+			queue = append(queue, n)
 		}
 	}
 	return nil
@@ -96,11 +137,15 @@ type Payment struct {
 	DebtorReference        string       `json:"debtor_reference,omitempty"`
 	State                  PaymentState `json:"state"`
 
-	// ForceFail is decided once, at creation time, from
-	// B4B_FORCE_FAILURE_BENEFICIARY_IDS -- the lab's manual failure-injection
-	// control. When true, the payment diverts to StateFailed at the point
-	// StateTMApproved would otherwise be reached, deterministically.
-	ForceFail bool `json:"force_fail,omitempty"`
+	// Trap is the trap that caught this payment when it was accepted
+	// (docs/lab-api/traps.md §9.2), if one did. Such a payment never takes
+	// the default walk: the trap's path takes it, one Hop at a time.
+	// FailureReason is the reason that path's B4BFailed step gave. Both are
+	// lab-side: the state file and the activity carry them, the wire never
+	// does -- a callback or a status read looks exactly as it would
+	// without a trap.
+	Trap          string `json:"trap,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -108,6 +153,10 @@ type Payment struct {
 
 // ErrPaymentNotFound is returned by Get for an unknown payment ID.
 var ErrPaymentNotFound = errors.New("b4b: payment not found")
+
+// ErrDropped is a hop refused because a reset happened since the payment's
+// work began: the payment no longer exists.
+var ErrDropped = errors.New("b4b: the payment was dropped by a reset")
 
 // Engine owns the B4B payout lifecycle state machine. It is HTTP-free and
 // fully unit-testable: onTransition (nil in tests) is how the caller wires
@@ -140,12 +189,11 @@ func NewEngine(delay time.Duration, onTransition func(p *Payment, started uint64
 // run under. A reset holds it.
 func (e *Engine) Gate() *Gate { return &e.gate }
 
-// Submit records p as B4BAccepted (firing immediately) and, after `delay`
-// per hop, progresses it in a goroutine through
-// B4BSanctionsPending -> B4BSanctionsApproved -> B4BTMPending -> B4BTMApproved
-// (or B4BFailed, if p.ForceFail) -- the caller is never blocked waiting on
-// lifecycle progression.
-func (e *Engine) Submit(p *Payment) {
+// Accept records p as B4BAccepted, fires that transition, and returns the
+// epoch the payment's work runs under. It does not walk p on: Submit does,
+// the default way, and a payment a trap caught is taken along the trap's
+// path with Hop instead.
+func (e *Engine) Accept(p *Payment) uint64 {
 	ts := labclock.Now().Format(time.RFC3339)
 	var cp Payment
 	started := e.gate.Begin(func() {
@@ -156,46 +204,49 @@ func (e *Engine) Submit(p *Payment) {
 		e.payments[p.ID] = p
 		cp = *p
 		e.mu.Unlock()
-		e.walking.Add(1)
 	})
 	e.notify(cp, started)
+	return started
+}
+
+// Submit accepts p (firing immediately) and, after `delay` per hop, walks it
+// in a goroutine through
+// B4BSanctionsPending -> B4BSanctionsApproved -> B4BTMPending -> B4BTMApproved
+// -- the default walk; the caller is never blocked waiting on lifecycle
+// progression.
+func (e *Engine) Submit(p *Payment) {
+	e.walking.Add(1)
+	started := e.Accept(p)
 	go e.process(p, started)
 }
 
-// process walks p through whatever states it has not reached yet. It reads
-// the starting point from p rather than assuming B4BAccepted, so a payment
-// restored from the state file resumes instead of replaying. Each step is
-// taken only if no reset happened since the payment's work started; after
-// one, the payment no longer exists and the walk stops where it is.
+// process walks p the default way, to B4BTMApproved, from whatever state it
+// has reached. It reads the starting point from p rather than assuming
+// B4BAccepted, so a payment restored from the state file resumes instead of
+// replaying. Each step is taken only if no reset happened since the
+// payment's work started; after one, the payment no longer exists and the
+// walk stops where it is.
 func (e *Engine) process(p *Payment, started uint64) {
 	defer e.walking.Add(-1)
 	e.mu.Lock()
-	rest := remainingStates(p.State)
+	hops := Hops(p.State, StateTMApproved)
 	e.mu.Unlock()
 
-	for _, st := range rest {
+	for _, st := range hops {
 		e.sleep()
-		if !e.advance(p, started, func() PaymentState { return st }) {
+		if !e.advance(p, started, st) {
 			return
 		}
 	}
-
-	e.sleep()
-	e.advance(p, started, func() PaymentState {
-		if p.ForceFail {
-			return StateFailed
-		}
-		return StateTMApproved
-	})
 }
 
-// advance moves p to the state next names and fires onTransition, unless a
-// reset moved the epoch since started, in which case nothing happens.
-func (e *Engine) advance(p *Payment, started uint64, next func() PaymentState) bool {
+// advance moves p to `to` and fires onTransition, unless a reset moved the
+// epoch since started, in which case nothing happens.
+func (e *Engine) advance(p *Payment, started uint64, to PaymentState) bool {
 	var cp Payment
 	ok := e.gate.Do(started, func() {
 		e.mu.Lock()
-		p.State = next()
+		p.State = to
 		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
 		cp = *p
 		e.mu.Unlock()
@@ -206,6 +257,48 @@ func (e *Engine) advance(p *Payment, started uint64, next func() PaymentState) b
 	e.notify(cp, started)
 	return true
 }
+
+// Hop moves payment id one hop, to `to`, on behalf of trap: the hop a
+// trap's path asks for (cmd/b4b paces them). `to` must directly follow the
+// state the payment is in. Like every hop of the default walk it goes
+// through the gate under started, so a reset since refuses it with
+// ErrDropped, and it fires onTransition -- the same callback, the same
+// bridge call at B4BTMApproved. reason is kept on a payment it fails.
+func (e *Engine) Hop(id string, started uint64, to PaymentState, trap, reason string) error {
+	var cp Payment
+	var err error
+	ran := e.gate.Do(started, func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		p, ok := e.payments[id]
+		if !ok {
+			err = ErrPaymentNotFound
+			return
+		}
+		if h := Hops(p.State, to); len(h) != 1 {
+			err = fmt.Errorf("b4b: payment %s is %s; %s does not follow it", id, p.State, to)
+			return
+		}
+		p.State = to
+		p.Trap = trap
+		if to == StateFailed {
+			p.FailureReason = reason
+		}
+		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
+		cp = *p
+	})
+	if !ran {
+		return ErrDropped
+	}
+	if err != nil {
+		return err
+	}
+	e.notify(cp, started)
+	return nil
+}
+
+// Delay is the wait before each hop: B4B_PROCESSING_DELAY.
+func (e *Engine) Delay() time.Duration { return e.delay }
 
 func (e *Engine) sleep() {
 	if e.delay > 0 {
@@ -224,7 +317,7 @@ func (e *Engine) Clear() (payments, inFlight int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, p := range e.payments {
-		if remainingStates(p.State) != nil {
+		if !finished(p.State) {
 			inFlight++
 		}
 	}

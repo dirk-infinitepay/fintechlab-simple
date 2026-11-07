@@ -2085,6 +2085,8 @@ const API_INTENTS = [
     'The lab API', 'GET /v1 first, then /v1/*'],
   ['Make a vendor misbehave, or read what it saw',
     'The lab API’s passthrough', '/v1/services/{id}/sim/* — on the service’s control port'],
+  ['Decide how a future payout ends, and when',
+    'A trap, in the vendor that applies it', 'POST /v1/services/{id}/sim/traps — GET /v1/traps/hooks first'],
   ['Test your integration with one vendor',
     'That vendor’s own surface', 'exactly the calls your platform makes to the real one'],
   ['Put your platform’s card in the console',
@@ -2127,9 +2129,11 @@ function renderApiRef() {
         <tbody>${API_INTENTS.map(([to, call, how]) => `<tr>
           <td>${esc(to)}</td><td>${esc(call)}</td><td class="mono">${esc(how)}</td></tr>`).join('')}</tbody>
       </table></div>
-      <div class="note">Still to come in the lab API (docs/lab-api/plan.md): traps that make a vendor
-        answer a future request the way a test needs. Until then, a service's own
-        <span class="mono">/sim/*</span> through the passthrough is how to steer it.</div>
+      <div class="note">A <b>trap</b> decides something about a future event in one simulation — this
+        payout is rejected, that one processed and reversed ten seconds later. Arm one where it applies,
+        through the passthrough (<span class="mono">POST /v1/services/{id}/sim/traps</span>), after reading
+        what can be trapped (<span class="mono">GET /v1/traps/hooks</span>); read and disarm them across the lab
+        at <span class="mono">/v1/traps</span>.</div>
     </section>
 
     <section data-anchor="lab-api">

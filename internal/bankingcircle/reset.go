@@ -42,12 +42,12 @@ func NewBank(e *Engine, d *Dispatcher) *Bank {
 // kind.
 //
 // Both scopes clear what a run makes: every payment (outgoing, incoming,
-// returns), every balance back to its seed (zero), the forced outcomes
-// still queued, every notification not yet delivered (batching, parked
-// behind a pause, retained after a deactivation, or mid-retry), the pauses
-// themselves, and the emails. The work in flight for any of them is
-// dropped, never completed. Payment reference numbers keep counting, so a
-// platform that kept its books never sees one reused.
+// returns), every balance back to its seed (zero), every notification not
+// yet delivered (batching, parked behind a pause, retained after a
+// deactivation, or mid-retry), the pauses themselves, and the emails. The
+// work in flight for any of them is dropped, never completed. Payment
+// reference numbers keep counting, so a platform that kept its books never
+// sees one reused.
 //
 // all also puts back what a platform set up: the subscriptions as they were
 // seeded at start-up, and the ledger with only its seeded accounts; and
@@ -84,7 +84,7 @@ func (b *Bank) Reset(all bool, also func(cleared map[string]int)) map[string]int
 	run.next()
 
 	cleared := map[string]int{}
-	cleared["payments"], cleared["outcomes"] = b.engine.resetLocked(all)
+	cleared["payments"] = b.engine.resetLocked(all)
 	var accounts int
 	cleared["balances"], accounts = b.ledger.resetLocked(all)
 	cleared["notifications"], cleared["pauses"] = b.disp.resetLocked()
@@ -99,15 +99,16 @@ func (b *Bank) Reset(all bool, also func(cleared map[string]int)) map[string]int
 	return cleared
 }
 
-// resetLocked forgets every payment and forced outcome. Caller holds e.mu.
-func (e *Engine) resetLocked(all bool) (payments, outcomes int) {
-	payments, outcomes = len(e.payments), len(e.forced)
+// resetLocked forgets every payment. Caller holds e.mu. A trap's steps
+// still to come are the trap store's to cancel (simctl resets it first), and
+// a step already under way lands before this or not at all (Booking.Step).
+func (e *Engine) resetLocked(all bool) (payments int) {
+	payments = len(e.payments)
 	e.payments = map[string]*Payment{}
-	e.forced = nil
 	if all {
 		e.refSeq = 0
 	}
-	return payments, outcomes
+	return payments
 }
 
 // resetLocked puts every balance back to its seed -- zero, unless a test

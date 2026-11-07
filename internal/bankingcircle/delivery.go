@@ -208,6 +208,10 @@ type Notification struct {
 	Timestamp           string `json:"timestamp"`
 	Payment             any    `json:"payment,omitempty"`
 	Payload             any    `json:"payload,omitempty"`
+	// Trap is the lab's trap whose step made the state this notifies
+	// (Payment.Trap), for the notifications activity log. It is never
+	// marshalled, so it never reaches a subscriber.
+	Trap string `json:"-"`
 }
 
 // UsesPayloadProperty reports whether an event type nests its detail under

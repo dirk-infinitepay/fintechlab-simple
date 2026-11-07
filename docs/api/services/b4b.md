@@ -12,9 +12,10 @@ payment gates and the `B4BAccepted`→…→`B4BTMApproved`/`B4BFailed` lifecycl
 with a callback on every transition. The judgement is not real: every
 company, person and beneficiary screens `pass` at creation, documents are
 measured and discarded, statuses move only through the lab-only
-`PUT /sim/...` hooks on its control port, and an approved payout reaches
-Banking Circle through a lab bridge rather than a real banking relationship.
-Everything it is told is persisted to one state file.
+`PUT /sim/...` hooks on its control port, a payout walks the lifecycle on
+a fixed delay unless a [trap](#traps) decides its walk, and an approved
+payout reaches Banking Circle through a lab bridge rather than a real
+banking relationship. Everything it is told is persisted to one state file.
 
 ## At a glance
 
@@ -23,8 +24,8 @@ Everything it is told is persisted to one state file.
 | Listens | `:8086`, plain HTTP (no TLS): the Oversight API. Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086`.<br>`:9086`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://b4b:9086` |
 | Auth | Every `/oversight/v1/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt). `GET /health`: none. The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The old `/sim/*` paths on `:8086` keep the JWT until phase 4, but for `GET /sim/activity` |
 | A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names |
-| Activity logs | `GET /sim/activity` keeps two in-memory rings of 256 events. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. Boarding, beneficiary and `/sim` calls are not logged |
-| Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
+| Activity logs | `GET /sim/activity` keeps three in-memory rings of 256 events. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. `traps` (*Traps*): every trap armed, every payout one caught, each hop it took and each one disarmed, ops `trap.armed`, `trap.caught`, `trap.step`, `trap.disarmed`. A payout a trap caught, and each callback for a transition the trap made, carries `detail.trap`. Boarding, beneficiary and other `/sim` calls are not logged |
+| Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop, a trap's hops included.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`: each is a [standing trap](#standing-traps), armed at start.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-b4b-oversight.md](../../ARCHITECTURE-b4b-oversight.md) (boarding), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §4 and Addendum §A/D/F (payout half), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §4 (wire-shape fixes), [structure/b4b.md](../../structure/b4b.md) (file by file) |
 
 ## Vendor surface
@@ -478,13 +479,15 @@ Answers `202`:
 
 Side effects: recorded in the `payments` activity log. The payment then
 moves `B4BAccepted` → `B4BSanctionsPending` → `B4BSanctionsApproved` →
-`B4BTMPending` → `B4BTMApproved`, one hop per `B4B_PROCESSING_DELAY`, or ends
-`B4BFailed` when its `beneficiary_id` is listed in
-`B4B_FORCE_FAILURE_BENEFICIARY_IDS`. Each transition fires a
+`B4BTMPending` → `B4BTMApproved`, one hop per `B4B_PROCESSING_DELAY`, unless
+a [trap](#traps) on `payment.create` caught it, in which case the trap's
+path is its walk instead (`B4B_FORCE_FAILURE_BENEFICIARY_IDS` are such
+traps). Each transition fires a
 [payment lifecycle callback](#payment-lifecycle-callback); reaching
 `B4BTMApproved` first calls the [Banking Circle bridge](#lab-plumbing).
 Persisted after every transition, and a payment caught mid-lifecycle by a
-restart resumes from where it stopped.
+restart resumes from where it stopped; one a trap was walking does not
+(see [Traps](#traps)).
 
 ### `GET /oversight/v1/payments/{id}`
 
@@ -560,8 +563,10 @@ record.
 
 Sent once per transition: `B4BAccepted` (immediately on create), then
 `B4BSanctionsPending`, `B4BSanctionsApproved`, `B4BTMPending`, and finally
-`B4BTMApproved` or `B4BFailed`: five callbacks per payment. After a restart
-only the transitions not yet made fire. To the payment's `callback_url`,
+`B4BTMApproved` or `B4BFailed`: five callbacks per payment. A
+[trap](#traps) can stop a payment short or fail it earlier, and then there
+are fewer; each looks exactly as it does without one. After a restart only
+the transitions not yet made fire. To the payment's `callback_url`,
 else `B4B_CALLBACK_URL` as it stood when the payment was created.
 
 ```json
@@ -621,7 +626,7 @@ probes.
 
 ### `GET /sim/activity`
 
-The two activity logs, newest event first. No auth on either port. Query:
+The three activity logs, newest event first. No auth on either port. Query:
 `limit` (positive integer, default 100).
 
 Answers `200`:
@@ -635,7 +640,8 @@ Answers `200`:
       "last": {"seq": 1, "at": "2026-11-07T09:40:00Z", "op": "payment.create", "peer": "10.89.0.7", "summary": "payout 12.34 EUR to MID0001 (Southwind Coffee Ltd)", "status": "ok", "detail": {"payment_id": "6f1c2a7e-…", "status": "Accepted"}},
       "events": [{"seq": 1, "…": "as last"}]
     },
-    {"name": "callbacks", "title": "Callbacks sent", "total": 5, "kept": 5, "events": [{"op": "callback", "peer": "http://settlement:8083/internal/b4b-webhook", "summary": "payment 6f1c2a7e-… status=B4BAccepted delivered", "status": "ok", "detail": {"attempt": "1", "http": "200"}}]}
+    {"name": "callbacks", "title": "Callbacks sent", "total": 5, "kept": 5, "events": [{"op": "callback", "peer": "http://settlement:8083/internal/b4b-webhook", "summary": "payment 6f1c2a7e-… status=B4BAccepted delivered", "status": "ok", "detail": {"attempt": "1", "http": "200"}}]},
+    {"name": "traps", "title": "Traps", "total": 0, "kept": 0, "events": []}
   ]
 }
 ```
@@ -643,7 +649,11 @@ Answers `200`:
 Event `status` is `ok`, `warn` (a 4xx answer, or a callback with nowhere to
 go) or `bad` (a 5xx answer, or a callback refused after every attempt). A
 refused payout's summary ends with b4b's own error message. `at` is wall
-time, not the lab clock.
+time, not the lab clock. What a trap caused is marked `detail.trap` (the
+trap's id): the `payment.create` event of a payout it caught, and the
+callback event of each transition it made, with `detail.reason` on a
+`B4BFailed` it gave a reason for. `B4BAccepted` is b4b's own and is never
+marked.
 
 ### `POST /sim/beneficiaries`
 
@@ -700,38 +710,218 @@ Answers `200` with the person; `400` when both are empty or a value is
 invalid; `404` for an unknown person. Fires the person screening callback
 if either status changed. Persisted.
 
+### Traps
+
+One hook, `payment.create`
+([traps.md §9.2](../../lab-api/traps.md#92-b4b); matching, precedence,
+`times` and the lifecycle of a trap are the lab's, in
+[the API overview](../README.md#traps)). It is offered every payout
+`POST /oversight/v1/payments` accepts, after the gates: a payout refused
+`422` is never offered. Subject: the payment id.
+
+| Match field | |
+| --- | --- |
+| `beneficiary_id` | as sent on the payment: a B4B id or the payee's `external_ref` |
+| `beneficiary.external_ref` | the payee's `external_ref`, the MID the lab registered it with; absent for a payee never registered |
+| `company_id` | as sent |
+| `debtor_viban` | `debtorViban.account`, compared as an IBAN |
+| `creditor.account` | `creditorAccount.account`, an IBAN or an account number, compared upper case without spaces |
+| `amount` | `amount.amount`, compared as a decimal |
+| `currency` | `currencyOfTransfer`, the currency that moves |
+| `external_ref` | the client's reference for the payout |
+
+```text
+B4BAccepted ─▶ B4BSanctionsPending ─▶ B4BSanctionsApproved ─▶ B4BTMPending ─▶ B4BTMApproved ─▶ (bridge to BC)
+ (automatic)        │                        │                      │
+                    └────────────────────────┴──────────────────────┴──▶ B4BFailed
+```
+
+- **`B4BAccepted` is automatic.** The create answers `202` and calls back
+  as always; the path starts after it. A payment a trap caught never takes
+  the default walk: the path is its walk.
+- **A step may name a state further along** (`"walks": true` in the
+  catalogue). b4b walks the states in between and calls back on each, as
+  the default walk does. A step's first hop waits the step's own `after`
+  or `after_lab`, or `B4B_PROCESSING_DELAY` when it names neither
+  (`first_step_default_after`); every hop after it waits
+  `B4B_PROCESSING_DELAY`. From `B4BAccepted`, `B4BFailed` is reached through
+  `B4BSanctionsPending`.
+- **Each hop goes through b4b's own engine**, exactly as a hop of the
+  default walk: the state, the status read, the callback, the state file,
+  and at `B4BTMApproved` the bridge call into Banking Circle, where a
+  `payment.outgoing` trap can take it.
+- **`B4BFailed` takes `reason`.** It is kept on the payment in the state
+  file (`failure_reason`) and in the `B4BFailed` callback's activity
+  (`detail.reason`). The callback and `GET /oversight/v1/payments/{id}`
+  carry no reason, as without a trap.
+- **A path may stop short.** If its last step is not `B4BTMApproved` or
+  `B4BFailed`, the payment stays there for good; `[]` leaves it
+  `B4BAccepted`.
+- **The trap schedules every hop.** `pending_steps` names the next hop and
+  when it is due, and `caught[].applied` lists each state the payment
+  reached. Disarming the trap, or a reset, stops the walk at the next hop;
+  a payment so stopped stays where it is.
+
+Hang at TM review:
+
+```json
+{"hook": "payment.create", "match": {"beneficiary.external_ref": "MID0001"},
+ "effect": {"path": [{"to": "B4BTMPending"}]}}
+```
+
+Fail at sanctions, five seconds after reaching it:
+
+```json
+{"hook": "payment.create", "match": {"beneficiary_id": "MID0001"},
+ "effect": {"path": [{"to": "B4BSanctionsPending"},
+                     {"to": "B4BFailed", "after": "5s", "reason": "sanctions hit"}]}}
+```
+
+The default, with no trap, is the walk to `B4BTMApproved`, then the
+bridge. Sanctions on a beneficiary, company or person stay setters
+(`PUT /sim/…/sanctions` above): the gates then refuse the payment by their
+own rule, `422` at create.
+
+#### Standing traps
+
+Each id in `B4B_FORCE_FAILURE_BENEFICIARY_IDS` is armed at start as a
+standing trap: `"label": "B4B_FORCE_FAILURE_BENEFICIARY_IDS <id>"`,
+`"match": {"beneficiary_id": "<id>"}`, `"times": null`, path
+`[{"to": "B4BTMPending"}, {"to": "B4BFailed"}]`. That is what the variable
+always did: five callbacks, `B4BFailed` where `B4BTMApproved` would have
+been, and no bridge call. They are listed with `"standing": true`, armed
+before any other, so they take a payment first. A reset arms them again,
+with new ids and nothing caught; disarming one lasts until the next reset.
+
+#### Restarts
+
+Traps are in memory, the standing ones apart. A payment a trap was walking
+when b4b stopped is not walked the default way after a restart: a standing
+trap that matches it takes it on from where it stopped (only the
+transitions not yet made call back, as for any resumed payment), and any
+other stays where it stopped, readable, for good. The log says which.
+
+### `GET /sim/traps/hooks`
+
+The catalogue: the `payment.create` hook with its match fields, its graph
+and `first_step_default_after`, which is `B4B_PROCESSING_DELAY`.
+
+```json
+{"service": "b4b",
+ "hooks": [{"hook": "payment.create",
+            "about": "A payout accepted by POST /oversight/v1/payments, once it cleared the gates. …",
+            "subject": "payment_id",
+            "match": [{"field": "beneficiary_id", "type": "string", "about": "as sent on the payment: …"},
+                      {"field": "debtor_viban", "type": "iban", "about": "debtorViban.account"},
+                      {"field": "amount", "type": "decimal", "about": "amount.amount"},
+                      {"…": "every field in the table above"}],
+            "effect": "path",
+            "graph": {"start": "B4BAccepted",
+                      "next": {"B4BAccepted": ["B4BSanctionsPending"],
+                               "B4BSanctionsPending": ["B4BSanctionsApproved", "B4BFailed"],
+                               "B4BSanctionsApproved": ["B4BTMPending", "B4BFailed"],
+                               "B4BTMPending": ["B4BTMApproved", "B4BFailed"]},
+                      "params": {"B4BFailed": ["reason"]},
+                      "walks": true},
+            "first_step_default_after": "300ms"}]}
+```
+
+### `GET /sim/traps`
+
+The traps, newest first, standing ones included. Query: `state` (`armed`,
+`spent`, `expired` or `disarmed`) filters; `400` for anything else.
+
+Answers `200` with `{"service": "b4b", "traps": [<trap>, …]}`.
+
+### `POST /sim/traps`
+
+Arms a trap. Body: `hook` (`payment.create`), `match` (`{}` takes every
+payout), `effect` (`{"path": […]}`), and optionally `label`, `times` (`1`
+when left out, `null` for every payout until disarmed) and `expires_at`. An
+unknown field is refused.
+
+Answers `201` with the trap:
+
+```json
+{"id": "trp_0002", "label": "MID0001 hangs at TM review", "hook": "payment.create",
+ "match": {"beneficiary.external_ref": "MID0001"}, "times": 1, "expires_at": null,
+ "effect": {"path": [{"to": "B4BTMPending"}]},
+ "state": "armed", "created_at": "2026-11-07T09:00:00Z", "caught": [], "pending_steps": []}
+```
+
+`400` with the reason: a hook b4b does not have, a match field it does not
+know (the answer lists the fields), a step that cannot follow the one
+before it (`B4BFailed cannot follow B4BTMApproved (B4BTMApproved is final)`),
+a parameter a state does not take (`B4BTMPending takes no parameters, not
+reason`), both `after` and `after_lab` on one step, or a wait that is not a
+duration (`10s`, `2h`, `1d`).
+
+### `GET /sim/traps/{id}`
+
+One trap. After it caught a payment and took two hops of three:
+
+```json
+{"id": "trp_0002", "…": "as armed", "state": "spent",
+ "caught": [{"subject": "6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b", "at": "2026-11-07T09:40:00Z",
+             "applied": [{"to": "B4BSanctionsPending", "at": "2026-11-07T09:40:00.3Z"},
+                         {"to": "B4BSanctionsApproved", "at": "2026-11-07T09:40:00.6Z"}]}],
+ "pending_steps": [{"trap_id": "trp_0002", "subject": "6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
+                    "step": {"to": "B4BTMPending", "after": "300ms"}, "due": "2026-11-07T09:40:00.9Z"}]}
+```
+
+`caught[].cancelled` is `true` when a disarm or a reset stopped the walk.
+`404` for an unknown id.
+
+### `DELETE /sim/traps/{id}`
+
+Disarms one trap and cancels its pending hop; the payment it was walking
+stays where it is. Answers `200` with `{"trap": <trap>, "cancelled":
+[<pending step>, …]}`, `404` for an unknown id.
+
+### `DELETE /sim/traps`
+
+Disarms every trap still armed or with a hop pending, standing ones
+included until the next reset. Answers `200` with `{"service": "b4b",
+"disarmed": 2, "cancelled": [<pending step>, …]}`.
+
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "b4b"`, `"kind": "vendor"`, `"vendor_listeners": [":8086"]`,
-`"control_listener": ":9086"`, `"reset_scopes": ["flow", "all"]`.
+`"control_listener": ":9086"`, `"reset_scopes": ["flow", "all"]`,
+`"hooks": ["payment.create"]`, and
+`"traps": {"armed": 1, "pending_steps": 0}`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
 ([the control contract](../README.md#the-control-contract)). Every
 request on either port but these reads and the health probes is a line, and
-so is every callback attempt, every bridge call and every piece of work a
-reset dropped.
+so is every callback attempt, every bridge call, every piece of work a
+reset dropped, and every trap armed, catch and hop.
 
 ### `POST /sim/reset`
 
 Puts b4b back to a known state.
 
 - **`flow`** clears every payment (`payments`; `payments_in_flight` of them
-  were still walking their phases), the callbacks and bridge calls in
-  flight (`callbacks_in_flight`), and both activity logs
-  (`activity_events`). It keeps the boarding: companies, addresses, people,
+  had not reached a final state), the callbacks and bridge calls in
+  flight (`callbacks_in_flight`), the `payments` and `callbacks` activity
+  logs (`activity_events`), and every trap but the standing ones (`traps`),
+  cancelling the hops they had scheduled (`trap_steps`) and emptying the
+  `traps` log. It keeps the boarding: companies, addresses, people,
   extended profiles, documents, vIBANs, and beneficiaries with their
   sanctions and status.
 - **`all`** clears the boarding too, counted per kind: the state file as on
   first start.
 - **Keeps**, either way, the JWT keys and
-  `B4B_FORCE_FAILURE_BENEFICIARY_IDS`: they are configuration.
+  `B4B_FORCE_FAILURE_BENEFICIARY_IDS`: they are configuration. Its standing
+  traps are armed again, afresh.
 - Work in flight is dropped, not raced. A payment still sleeping out
-  `B4B_PROCESSING_DELAY` takes no further step, and no callback, retry or
-  bridge call begun before the reset is made after it — boarding callbacks
+  `B4B_PROCESSING_DELAY`, or a trap's hop still waiting, takes no further
+  step, and no callback, retry or bridge call begun before the reset is
+  made after it — boarding callbacks
   included, even for a person or beneficiary a `flow` reset keeps; its
   status is still readable. The reset waits for a call already on the
   wire, so when it answers nothing it dropped is still being sent.
@@ -741,7 +931,7 @@ Puts b4b back to a known state.
 
 ```json
 {"service": "b4b", "scope": "flow",
- "cleared": {"payments": 3, "payments_in_flight": 1, "callbacks_in_flight": 1, "activity_events": 14},
+ "cleared": {"payments": 3, "payments_in_flight": 1, "callbacks_in_flight": 1, "activity_events": 14, "traps": 1, "trap_steps": 1},
  "kept": ["companies", "addresses", "people", "extended_profiles", "documents", "vibans", "beneficiaries", "jwt_keys", "force_failure_beneficiary_ids"],
  "at": "2026-11-07T12:00:00Z"}
 ```
@@ -765,6 +955,10 @@ Puts b4b back to a known state.
   read `GET /sim/activity`; `POST /v1/lab/reset` and
   `POST /v1/services/b4b/reset` call `POST /sim/reset`, and `GET /v1/logs`
   and `GET /v1/services/b4b/logs` read `GET /sim/logs`.
+  `GET /v1/traps`, `GET /v1/traps/hooks` and `DELETE /v1/traps` call
+  `GET /sim/traps`, `GET /sim/traps/hooks` and `DELETE /sim/traps`; a trap
+  is armed through `/v1/services/b4b/sim/traps`, which passes every
+  `/sim/*` route through.
   `GET /v1/connect/env/b4b` and `GET /v1/connect/files/b4b/{name}` hand
   out the signing key without calling b4b; the lab API signs nothing.
 - **harness** (`internal/harness`): `b4b-oversight-gates`
@@ -784,4 +978,4 @@ Puts b4b back to a known state.
 b4b itself calls banking-circle (the bridge) and whoever the callbacks are
 addressed to; nothing else.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

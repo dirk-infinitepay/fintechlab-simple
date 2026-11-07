@@ -559,4 +559,4 @@ again.
 - **the platform**: never. It replaces this service, and asks for it to be
   disconnected through its descriptor's `stand_ins`.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

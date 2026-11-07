@@ -400,4 +400,4 @@ and `portfolios` created.
 - **An operator or agent**: `GET` and `POST /sim/outcome` to arm a failure,
   through the lab API or on the control port.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

@@ -67,6 +67,7 @@ type routeGroup struct {
 var apiGroups = []routeGroup{
 	{"lab", "Lab", "What is running and what it has done: the index, the run diagram, the stand-ins."},
 	{"services", "Services", "Each service of the lab: its record and health, its logs, and its /sim/* hooks through one address."},
+	{"traps", "Traps", "Instructions armed in a simulation for a future event: read and disarm them across the lab; arm one through the passthrough."},
 	{"clock", "Clock", "The lab's business clock, fronted from the clock service."},
 	{"config", "Configuration", "What the lab is set to, and the one setting the lab API can change."},
 	{"merchants", "Merchants", "The lab's merchant registry, and putting its merchants on the vendors."},
@@ -100,6 +101,10 @@ func (a *app) apiRoutes() []route {
 		{"GET", "/v1/services/{id}/logs", "", "services", "One service's own log lines", "the service's GET /sim/logs", a.serviceLogs},
 		{"POST", "/v1/services/{id}/reset", "", "services", "Reset one service: flow or all", "the service's POST /sim/reset", a.serviceReset},
 		{"ANY", "/v1/services/{id}/sim/{path...}", "", "services", "Any of a service's /sim/* lab hooks, on its control port", "the service's control /sim/{path}: method, query and body as sent", a.simPassthrough},
+
+		{"GET", "/v1/traps", "", "traps", "Every simulation's traps, newest first; ?state= filters", "each service's control GET /sim/traps", a.listTraps},
+		{"GET", "/v1/traps/hooks", "", "traps", "Every simulation's trap hooks: fields, graphs, what a trap can do", "each service's control GET /sim/traps/hooks", a.trapHooks},
+		{"DELETE", "/v1/traps", "", "traps", "Disarm every trap in the lab and cancel its pending steps", "each service's control DELETE /sim/traps", a.disarmTraps},
 
 		{"GET", "/v1/clock", "/api/clock", "clock", "The lab clock as it stands", "clock GET /clock", a.labClock},
 		{"POST", "/v1/clock", "/api/clock", "clock", "Move the lab clock, or change its mode", "clock POST /clock", a.setLabClock},

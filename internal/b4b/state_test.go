@@ -161,16 +161,32 @@ func TestEngineResumesUnfinishedPaymentsAfterRestart(t *testing.T) {
 	}
 }
 
-func TestRemainingStates(t *testing.T) {
-	if got := remainingStates(StateAccepted); len(got) != 3 {
-		t.Errorf("from accepted = %v, want three hops left", got)
+// A payment a trap caught was walking the trap's path, and the trap went
+// with the process: it is not resumed the default way, but handed back for
+// cmd/b4b to decide, and stays where it stopped until something moves it.
+func TestEngineHoldsTrappedPaymentsAfterRestart(t *testing.T) {
+	seen := make(chan PaymentState, 8)
+	engine := NewEngine(time.Millisecond, func(p *Payment, _ uint64) { seen <- p.State })
+	held := engine.Restore(State{Payments: []*Payment{
+		{ID: "b4bp_hung", BeneficiaryID: "ben_1", State: StateTMPending, Trap: "trp_0001"},
+		{ID: "b4bp_trapped_done", BeneficiaryID: "ben_2", State: StateFailed, Trap: "trp_0002", FailureReason: "sanctions hit"},
+		{ID: "b4bp_plain", BeneficiaryID: "ben_3", State: StateTMPending},
+	}})
+	if len(held) != 1 || held[0].ID != "b4bp_hung" {
+		t.Fatalf("held = %+v, want the unfinished trapped payment only", held)
 	}
-	if got := remainingStates(StateTMPending); got == nil || len(got) != 0 {
-		t.Errorf("from TMPending = %v, want an empty-but-resumable result", got)
+	if got := <-seen; got != StateTMApproved {
+		t.Fatalf("the untrapped payment resumed to %s", got)
 	}
-	for _, terminal := range []PaymentState{StateTMApproved, StateFailed, PaymentState("nonsense")} {
-		if got := remainingStates(terminal); got != nil {
-			t.Errorf("from %s = %v, want nil (not resumable)", terminal, got)
-		}
+	select {
+	case extra := <-seen:
+		t.Fatalf("a trapped payment was resumed the default way: %s", extra)
+	case <-time.After(30 * time.Millisecond):
+	}
+	if p, _ := engine.Get("b4bp_hung"); p.State != StateTMPending {
+		t.Errorf("held payment = %s", p.State)
+	}
+	if p, _ := engine.Get("b4bp_trapped_done"); p.FailureReason != "sanctions hit" {
+		t.Errorf("failure reason after restore = %q", p.FailureReason)
 	}
 }

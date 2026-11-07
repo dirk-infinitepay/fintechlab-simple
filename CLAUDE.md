@@ -51,6 +51,12 @@ a vendor surface; if it needs something a sim only offers there, add a
 `/sim` route that answers the same. Vendor auth is for the platform;
 `LAB_API_TOKEN` is the only lab auth.
 
+A trap (`internal/trap`, `docs/lab-api/traps.md`) is armed in the sim that
+applies it and acts through that vendor's own engine: a new hook lives in
+the vendor's package, declares its fields and graph, offers each event to
+the sim's trap store, and applies each step as an untouched transition
+would. It only ever puts the vendor in a state the real vendor can be in.
+
 [docs/api/README.md](docs/api/README.md) maps every API in the lab. A cold
 start is `GET :8097/v1` (every route and what it reaches), then
 `GET :8097/v1/services` (every service and where it lives).

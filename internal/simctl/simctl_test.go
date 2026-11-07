@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
 func mounted(t *testing.T, reset ResetFunc, scopes ...string) (http.Handler, *logring.Ring) {
@@ -133,5 +134,27 @@ func TestEpochSaysWhenAResetHappenedSinceWorkStarted(t *testing.T) {
 	e.Bump()
 	if !e.Moved(started) {
 		t.Fatal("a reset was not noticed")
+	}
+}
+
+func TestASimWithTrapsServesThemAndAResetDisarmsThem(t *testing.T) {
+	store := trap.NewStore("test-sim", trap.Hook{Name: "payment.outgoing", Subject: "payment_id", Effect: trap.EffectPath,
+		Graph: &trap.Graph{Start: "Booked", Next: map[string][]string{"Booked": {"Processed"}}}})
+	ring := logring.New(50)
+	mux := http.NewServeMux()
+	Mount(mux, Config{Service: "test-sim", Reset: noReset, Logs: ring, Traps: store})
+	if w := do(mux, "POST", "/sim/traps", `{"hook":"payment.outgoing","match":{},"effect":{"path":[]}}`); w.Code != 201 {
+		t.Fatalf("arm = %d %s", w.Code, w.Body)
+	}
+	w := do(mux, "GET", "/sim/info", "")
+	if !strings.Contains(w.Body.String(), `"hooks":["payment.outgoing"]`) || !strings.Contains(w.Body.String(), `"armed":1`) {
+		t.Errorf("info = %s", w.Body)
+	}
+	w = do(mux, "POST", "/sim/reset", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"traps":1`) {
+		t.Errorf("reset = %d %s", w.Code, w.Body)
+	}
+	if armed, _ := store.Counts(); armed != 0 {
+		t.Errorf("%d trap(s) still armed after a reset", armed)
 	}
 }

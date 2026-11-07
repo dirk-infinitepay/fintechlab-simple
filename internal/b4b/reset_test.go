@@ -212,6 +212,29 @@ func TestAPaymentAfterAResetWalks(t *testing.T) {
 	}
 }
 
+// A trap's hop is gated like the default walk's: begun before a reset, it
+// is refused, moves nothing and fires no transition.
+func TestAResetRefusesATrapsHop(t *testing.T) {
+	events := make(chan Payment, 8)
+	engine := NewEngine(time.Hour, func(p *Payment, _ uint64) { events <- *p })
+	started := engine.Accept(&Payment{ID: "b4bp_trapped", BeneficiaryID: "MID001", Trap: "trp_0001"})
+	<-events
+	if err := engine.Hop("b4bp_trapped", started, StateSanctionsPending, "trp_0001", ""); err != nil {
+		t.Fatal(err)
+	}
+	<-events
+
+	reset(simctl.ScopeFlow, engine, NewDirectory(nil), NewBeneficiaryStore(nil))
+	if err := engine.Hop("b4bp_trapped", started, StateSanctionsApproved, "trp_0001", ""); err != ErrDropped {
+		t.Fatalf("a hop begun before the reset: %v, want ErrDropped", err)
+	}
+	select {
+	case ev := <-events:
+		t.Fatalf("a hop the reset dropped fired %s", ev.State)
+	default:
+	}
+}
+
 func TestGateRefusesWorkBegunBeforeAReset(t *testing.T) {
 	var g Gate
 	before := g.Begin(nil)

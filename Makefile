@@ -301,6 +301,7 @@ harness-docker:
 		-e WORLDLINE_URL=http://worldline:8084 \
 		-e BANKING_CIRCLE_URL=https://pod-bank-rails:9085 \
 		-e BANKING_CIRCLE_INTERNAL_URL=https://pod-bank-rails:9085 \
+		-e BANKING_CIRCLE_CONTROL_URL=http://banking-circle:9085 \
 		-e BANKING_CIRCLE_TARGET=pod \
 		-e ACI_URL=http://aci:8087 \
 		-e B4B_URL=http://b4b:8086 \

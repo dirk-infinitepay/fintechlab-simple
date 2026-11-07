@@ -28,6 +28,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
 // The reset scopes (sim-control.md §6).
@@ -56,6 +57,10 @@ type Config struct {
 	// Logs is the ring GET /sim/logs reads. Nil means logring.Default, and
 	// a sim with neither answers 501.
 	Logs *logring.Ring
+	// Traps is the sim's trap store, when it has hooks: Mount serves its
+	// /sim/traps routes, GET /sim/info lists its hooks, and a reset
+	// disarms every trap before the sim's own (internal/trap).
+	Traps *trap.Store
 }
 
 // ResetFunc does a reset. It returns what it cleared (a count per kind of
@@ -117,6 +122,9 @@ func Mount(mux *http.ServeMux, c Config) {
 	}
 	mux.HandleFunc("GET /sim/info", c.info)
 	mux.HandleFunc("GET /sim/logs", c.logs)
+	if c.Traps != nil {
+		c.Traps.Routes(mux)
+	}
 	var mu sync.Mutex // one reset at a time
 	mux.HandleFunc("POST /sim/reset", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -142,6 +150,11 @@ func (c Config) info(w http.ResponseWriter, r *http.Request) {
 		"control_listener": c.ControlListener,
 		"reset_scopes":     c.Scopes,
 		"hooks":            []string{},
+	}
+	if c.Traps != nil {
+		armed, pending := c.Traps.Counts()
+		out["hooks"] = c.Traps.Hooks()
+		out["traps"] = map[string]int{"armed": armed, "pending_steps": pending}
 	}
 	if b := build(); b != "" {
 		out["build"] = b
@@ -188,6 +201,14 @@ func (c Config) reset(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, fmt.Sprintf("%s resets with scope %s, not %q", c.Service, strings.Join(c.Scopes, " or "), req.Scope))
 		return
 	}
+	// Traps first: a step still waiting must not land on state the reset
+	// is about to clear (traps.md §6). A sim that then refuses its reset
+	// (409) has lost its traps all the same; the clock is the one sim that
+	// refuses, and it has no hooks.
+	var traps, steps int
+	if c.Traps != nil {
+		traps, steps = c.Traps.Reset()
+	}
 	res, err := c.Reset(r.Context(), req)
 	var refusal Refusal
 	if errors.As(err, &refusal) {
@@ -202,6 +223,10 @@ func (c Config) reset(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.Cleared == nil {
 		res.Cleared = map[string]int{}
+	}
+	if c.Traps != nil {
+		res.Cleared["traps"] = traps
+		res.Cleared["trap_steps"] = steps
 	}
 	res.Kept = nonNil(res.Kept)
 	// The log is kept across a reset, with this line marking it: the log is

@@ -191,7 +191,7 @@ func TestResetFlowClearsWhatARunMadeAndKeepsTheSetup(t *testing.T) {
 	// An operator's pause, so the platform's notifications park.
 	b.disp.Pause(platform.ID)
 
-	// A run: money in, a payout, and a forced outcome still waiting.
+	// A run: money in, and a payout.
 	if _, err := b.engine.CreditIncoming(SGAAccountEUR, "EUR", "100.00", "lump sum"); err != nil {
 		t.Fatal(err)
 	}
@@ -201,9 +201,6 @@ func TestResetFlowClearsWhatARunMadeAndKeepsTheSetup(t *testing.T) {
 		t.Fatalf("creditor balance before the reset = %s, want 10.00", got)
 	}
 	lastRef := mustGet(t, b.engine, "bcp_out").ReferenceNumber
-	if _, err := b.engine.ForceNext([]Outcome{OutcomeRejected, OutcomePending}); err != nil {
-		t.Fatal(err)
-	}
 	// Notifications in every place one can wait: batching (four
 	// transitions per subscription, under a batch of five, with an hour's
 	// flush interval), parked behind the pause, and retained after a
@@ -218,7 +215,6 @@ func TestResetFlowClearsWhatARunMadeAndKeepsTheSetup(t *testing.T) {
 
 	want := map[string]int{
 		"payments":      2,
-		"outcomes":      2,
 		"balances":      2,         // the safeguarding account and the creditor
 		"notifications": 4 + 4 + 2, // batching for the seed, parked for the platform, retained
 		"pauses":        1,
@@ -237,9 +233,6 @@ func TestResetFlowClearsWhatARunMadeAndKeepsTheSetup(t *testing.T) {
 
 	if got := b.engine.List(); len(got) != 0 {
 		t.Fatalf("%d payments after the reset, want none", len(got))
-	}
-	if got := b.engine.ForcedOutcomes(); len(got) != 0 {
-		t.Fatalf("forced outcomes after the reset = %v, want none", got)
 	}
 	for _, id := range []string{SGAAccountEUR, SGAAccountGBP, creditor} {
 		if got := balance(t, b.ledger, id); got != "0.00" {

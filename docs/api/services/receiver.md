@@ -198,4 +198,4 @@ run delivered.
 - **the platform**: never. A platform brings its own listener and points
   the vendors at it.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

@@ -319,6 +319,31 @@ All through the lab API; each is one call to Banking Circle's control port,
 with no vendor login. (The old bridge paths on `:8095/internal/…` still
 answer until phase 4.)
 
+A **trap** decides how a future payout ends, and when — for one IBAN, one
+payout or the next few. `GET localhost:8097/v1/traps/hooks` says what each
+simulation can trap and the states a path may take:
+
+```sh
+BC=localhost:8097/v1/services/banking-circle/sim
+# a payout to this IBAN is rejected with a reason code
+curl -s -XPOST $BC/traps -d '{"label":"merchant 7 rejected","hook":"payment.outgoing",
+  "match":{"creditor.iban":"GB00SIM0000000000777"},
+  "effect":{"path":[{"to":"OutgoingPaymentRejected","reason_code":"AC01","reason_description":"Incorrect account number"}]}}'
+# …or processed, then reversed ten seconds later
+curl -s -XPOST $BC/traps -d '{"hook":"payment.outgoing","match":{"creditor.iban":"GB00SIM0000000000777"},
+  "effect":{"path":[{"to":"OutgoingPaymentProcessed"},{"to":"Reversed","after":"10s","reason":"scheme"}]}}'
+# …or returned two days later by the lab clock: move the clock to see it
+#   {"to":"Returned","after_lab":"48h","reason_code":"AC04","reason_description":"Closed account number"}
+# B4B: hang a payment at TM review
+curl -s -XPOST localhost:8097/v1/services/b4b/sim/traps -d '{"hook":"payment.create",
+  "match":{"beneficiary.external_ref":"WL000123456789"},"effect":{"path":[{"to":"B4BTMPending"}]}}'
+curl -s localhost:8097/v1/traps                    # every trap: what it caught, what is still pending
+curl -s -XDELETE localhost:8097/v1/traps           # disarm them all
+```
+
+The outcome queue below is a shortcut that arms `match: {}` traps, one per
+outcome, in order.
+
 ```sh
 BC=localhost:8097/v1/services/banking-circle/sim
 # the next payouts end Rejected / stay Pending, one each, in order

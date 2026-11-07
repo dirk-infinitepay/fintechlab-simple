@@ -116,6 +116,12 @@ func simCalls(personID string) []simCall {
 		{"PUT", "/sim/beneficiaries/MID001/status", `{"status": "active"}`, 200},
 		{"PUT", "/sim/companies/mer_0001/sanctions", `{"sanctions_status": "review"}`, 200},
 		{"PUT", "/sim/people/" + personID + "/sanctions", `{"pep_sanctions_status": "review"}`, 200},
+		{"GET", "/sim/traps/hooks", "", 200},
+		{"POST", "/sim/traps", `{"hook": "payment.create", "match": {"beneficiary_id": "MID009"}, "effect": {"path": [{"to": "B4BTMPending"}]}}`, 201},
+		{"GET", "/sim/traps", "", 200},
+		{"GET", "/sim/traps/trp_0001", "", 200},
+		{"DELETE", "/sim/traps/trp_0001", "", 200},
+		{"DELETE", "/sim/traps", "", 200},
 		{"POST", "/sim/reset", `{"scope": "all"}`, 200},
 	}
 }

@@ -349,7 +349,7 @@ func Rejections(payments []*Payment, q RejectionQuery) []RejectionRow {
 			kind == rejectionPendingBooked && q.ExcludeBooked:
 			continue
 		}
-		status, reason := rejectionLabels(kind)
+		status, reason := rejectionLabels(kind, p)
 		txnDate := bcDate(BusinessDate(p.CreatedAt))
 		rows = append(rows, RejectionRow{
 			PTxndate:               txnDate,
@@ -422,10 +422,15 @@ func rejectionKindOf(s NotificationType) (rejectionKind, bool) {
 // is blank, while the API reference's example row is a pending payment
 // (the parameter that includes those is IncludeReceived) with status
 // "Received" and an empty statusReason. This follows the API reference,
-// the wire contract. The reasons are descriptive text, the lab's own.
-func rejectionLabels(kind rejectionKind) (status, reason string) {
+// the wire contract. The reasons are descriptive text, the lab's own,
+// except a rejection a trap gave a reason (Payment.RejectionReasonCode):
+// that reads "<code> <description>", as a return's remittance does.
+func rejectionLabels(kind rejectionKind, p *Payment) (status, reason string) {
 	switch kind {
 	case rejectionRejected:
+		if given := strings.TrimSpace(p.RejectionReasonCode + " " + p.RejectionReasonDescription); given != "" {
+			return "Rejected", given
+		}
 		return "Rejected", "Payment rejected by the beneficiary bank (simulated)"
 	case rejectionMissingFunds:
 		return "Insufficient Funds", "Insufficient funds on the debtor account (simulated)"

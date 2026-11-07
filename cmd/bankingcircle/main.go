@@ -24,9 +24,11 @@
 //     lab-only, same-network trust. b4b, worldline and settlement call it.
 //   - The control port (SIM_CONTROL_LISTEN, default LISTEN's port + 1000,
 //     :9085; plain HTTP, no vendor auth): every /sim route, the sim control
-//     contract (internal/simctl: /sim/info, /sim/logs, /sim/reset), and the
-//     lab's reads of what the vendor and bridge routes answer. The lab API
-//     calls only this, and holds no Banking Circle credentials.
+//     contract (internal/simctl: /sim/info, /sim/logs, /sim/reset), the
+//     traps (/sim/traps, internal/trap; the payment.outgoing hook is in
+//     traps.go), and the lab's reads of what the vendor and bridge routes
+//     answer. The lab API calls only this, and holds no Banking Circle
+//     credentials.
 package main
 
 import (
@@ -57,6 +59,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -91,6 +94,11 @@ type app struct {
 	// bank is the ledger, engine, dispatcher, mailbox and subscriptions
 	// together, for POST /sim/reset.
 	bank *bankingcircle.Bank
+	// traps is the payment.outgoing hook's trap store (traps.go), served on
+	// the control port and reset with it; outcomes is the outcome queue's
+	// traps, the shortcut that arms them.
+	traps    *trap.Store
+	outcomes outcomeQueue
 	// listeners are the vendor-facing addresses, for GET /sim/info.
 	listeners []string
 }
@@ -172,6 +180,7 @@ func main() {
 		delivery: deliveryCfg,
 
 		listeners: []string{addr, internalAddr},
+		traps:     newTraps(delay),
 
 		bankCreditURL: bankCreditURL,
 		payLog: activity.New("payments", "Payments received",
@@ -346,7 +355,7 @@ func (a *app) deliveryConfig(w http.ResponseWriter, r *http.Request) {
 
 // control builds the control surface (internal/simctl) for a listener of
 // its own, at SIM_CONTROL_LISTEN or else defaultAddr: the sim control
-// contract, GET /health, and every route in simRoutes.
+// contract, the trap routes, GET /health, and every route in simRoutes.
 //
 // It carries none of Banking Circle's authentication. mTLS and the
 // Basic→Bearer exchange are for the platform calling the bank's API;
@@ -359,6 +368,7 @@ func (a *app) control(defaultAddr string) (*simctl.Control, error) {
 		Service: "banking-circle", Kind: "vendor", Simulates: "Banking Circle Connect",
 		Listeners: a.listeners,
 		Reset:     a.reset,
+		Traps:     a.traps,
 	}, defaultAddr)
 	if err != nil {
 		return nil, err
@@ -375,8 +385,8 @@ func (a *app) control(defaultAddr string) (*simctl.Control, error) {
 func (a *app) simRoutes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		// Everything this vendor has done, as the console's activity view
-		// and the lab API's flow read it.
-		"GET /sim/activity": activity.Handler(a.payLog, a.notifLog, a.reportLog),
+		// and the lab API's flow read it, and what its traps did.
+		"GET /sim/activity": activity.Handler(a.payLog, a.notifLog, a.reportLog, a.trapLog()),
 		// The warning and deactivation emails the retry schedule emits, so
 		// a failing subscription is observable rather than just eventually
 		// silent.
@@ -413,10 +423,11 @@ func (a *app) simRoutes() map[string]http.HandlerFunc {
 
 // reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow clears
 // what a run makes -- payments, balances, notifications not yet delivered,
-// pauses, emails, forced outcomes, activity -- and keeps what a platform set
-// up once: its subscriptions and the accounts its payouts opened. all also
-// puts the bank back as it was on first start: the seeded subscription
-// only, the safeguarding accounts only, references from the first.
+// pauses, emails, activity -- and keeps what a platform set up once: its
+// subscriptions and the accounts its payouts opened. all also puts the bank
+// back as it was on first start: the seeded subscription only, the
+// safeguarding accounts only, references from the first. The traps, the
+// outcome queue's among them, are reset by simctl before this runs.
 //
 // Issued bearer tokens survive both. A lab reset must never log the
 // platform's Banking Circle client out, and nothing the lab does needs one.
@@ -426,6 +437,7 @@ func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetRes
 	all := req.Scope == simctl.ScopeAll
 	cleared := a.bank.Reset(all, func(cleared map[string]int) {
 		cleared["activity"] = int(a.payLog.Clear() + a.notifLog.Clear() + a.reportLog.Clear())
+		a.outcomes.clear()
 	})
 	kept := []string{"subscriptions", "accounts", "tokens"}
 	if all {
@@ -446,6 +458,14 @@ func (a *app) internalMux() *http.ServeMux {
 	mux.HandleFunc("POST /internal/incoming-payments", a.incomingPayments())
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
+}
+
+// trapLog is the traps' activity log, nil without a trap store.
+func (a *app) trapLog() *activity.Log {
+	if a.traps == nil {
+		return nil
+	}
+	return a.traps.Log()
 }
 
 // incomingPayments is money landing on a safeguarding account, logged as
@@ -927,7 +947,8 @@ type internalPaymentReq struct {
 // distinct creditor account per beneficiary, not a single fixed known one,
 // so this can no longer 404); the debtor is the safeguarding account
 // matching the payment's currency; externalRef lands on the existing
-// Payment.SettlementID field verbatim (Addendum section B).
+// Payment.SettlementID field verbatim (Addendum section B). The payout is
+// booked at once and offered to the payment.outgoing traps (book).
 func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 	var req internalPaymentReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -982,9 +1003,8 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:              now,
 		UpdatedAt:              now,
 	}
-	a.engine.Create(p)
-	got, _ := a.engine.Get(p.ID)
-	httputilx.WriteJSON(w, 202, got)
+	// Answered as booked: a trap's first step may already have landed.
+	httputilx.WriteJSON(w, 202, a.book(p))
 }
 
 type incomingPaymentReq struct {
@@ -1108,33 +1128,6 @@ func (a *app) returnInternalPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 200, p)
-}
-
-type forceOutcomesReq struct {
-	Outcomes []bankingcircle.Outcome `json:"outcomes"`
-}
-
-// forceOutcomes decides how the next outgoing payments end: each queued
-// outcome ("Rejected" or "Pending") is taken by one payment, in order.
-// Lab-only test hook, like reverse above — it lets a reconciliation sweep be
-// shown a rejection or a payment that never resolves, on demand.
-func (a *app) forceOutcomes(w http.ResponseWriter, r *http.Request) {
-	var req forceOutcomesReq
-	if err := httputilx.ReadJSON(r, &req); err != nil {
-		httputilx.Error(w, 400, err.Error())
-		return
-	}
-	queued, err := a.engine.ForceNext(req.Outcomes)
-	if err != nil {
-		httputilx.Error(w, 400, err.Error())
-		return
-	}
-	log.Printf("banking-circle: next %d outgoing payment(s) will end %v", len(queued), queued)
-	httputilx.WriteJSON(w, 200, map[string]any{"queued": queued})
-}
-
-func (a *app) forcedOutcomes(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"queued": a.engine.ForcedOutcomes()})
 }
 
 // --- notification delivery ---------------------------------------------

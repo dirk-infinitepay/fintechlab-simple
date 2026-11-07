@@ -77,6 +77,12 @@ type Payment struct {
 	ProcessedAt    string `json:"processedAt,omitempty"`
 	ReversedAt     string `json:"reversedAt,omitempty"`
 	ReversalReason string `json:"reversalReason,omitempty"`
+	// RejectionReasonCode and RejectionReasonDescription are why a payout
+	// was rejected, when a trap's step named a reason (docs/lab-api/traps.md
+	// §9.1). The rejection report's statusReason carries them; without
+	// them it carries the bank's fixed text.
+	RejectionReasonCode        string `json:"rejectionReasonCode,omitempty"`
+	RejectionReasonDescription string `json:"rejectionReasonDescription,omitempty"`
 
 	// A returned payout. The original keeps its state (a return is not a
 	// status in Banking Circle) and only records ReturnedBy; the money comes
@@ -104,15 +110,20 @@ type Payment struct {
 	// — its processing, its notifications, its credit at the beneficiary's
 	// bank — is dropped.
 	epoch uint64
+	// trap is the lab's trap that made this state, on the copy handed to
+	// onTransition for a trap's step and on a return payment a trap's step
+	// made. Never on the wire: see Trap.
+	trap string
 }
 
 // Epoch is the run the payment was made in, for work done on its behalf
 // outside the engine (Run.Do, Dispatcher.EnqueueFrom).
 func (p *Payment) Epoch() uint64 { return p.epoch }
 
-// errForcedRejection routes a ForceNext rejection through the same branch
-// as any other failed move.
-var errForcedRejection = errors.New("bankingcircle: rejected by lab outcome override")
+// Trap is the id of the trap whose step made this state, or "" for a state
+// the bank came to on its own (docs/lab-api/traps.md §7). It is for the
+// lab's own logs; nothing a platform reads carries it.
+func (p *Payment) Trap() string { return p.trap }
 
 // ErrPaymentNotFound is returned by Get and Reverse for an unknown payment ID.
 var ErrPaymentNotFound = errors.New("bankingcircle: payment not found")
@@ -125,26 +136,6 @@ var ErrInvalidState = errors.New("bankingcircle: payment is not in OutgoingPayme
 // has already come back.
 var ErrAlreadyReturned = errors.New("bankingcircle: payment has already been returned")
 
-// Outcome is a lab-only override for how an outgoing payment ends, queued
-// with Engine.ForceNext. Real Banking Circle decides this itself; the lab
-// needs to decide it so a reconciliation sweep can be shown a rejection, or
-// a payment that never resolves, on demand rather than by breaking an
-// account.
-type Outcome string
-
-const (
-	// OutcomeRejected ends the payment OutgoingPaymentRejected without
-	// moving any money.
-	OutcomeRejected Outcome = "Rejected"
-	// OutcomePending leaves the payment OutgoingPaymentBooked for good: the
-	// bank accepted it and never finished it.
-	OutcomePending Outcome = "Pending"
-)
-
-// ErrUnknownOutcome is returned by ForceNext for anything but the Outcome
-// constants.
-var ErrUnknownOutcome = errors.New("bankingcircle: unknown outcome (want Rejected or Pending)")
-
 // Engine owns the payment notification lifecycle, outgoing and incoming
 // alike. It is HTTP-free and fully unit-testable: onTransition (nil in
 // tests) is how the caller wires in webhook delivery without the engine
@@ -155,8 +146,7 @@ type Engine struct {
 	payments     map[string]*Payment
 	delay        time.Duration // PROCESSING_DELAY, simulates real bank latency
 	onTransition func(*Payment)
-	forced       []Outcome // taken in order by the next outgoing payments
-	refSeq       int64     // last ReferenceNumber handed out
+	refSeq       int64 // last ReferenceNumber handed out
 
 	// run is the epoch a reset moves; the engine owns it because the
 	// payments are where in-flight work starts. NewBank shares it with the
@@ -187,15 +177,29 @@ func (e *Engine) Run() *Run { return e.run }
 // been dropped. For tests.
 func (e *Engine) Wait() { e.wg.Wait() }
 
-// Create records p and immediately fires OutgoingPaymentBooked (the
-// equivalent of the old lifecycle's initial Received) and, after `delay`,
-// attempts the ledger move in a goroutine — the caller is never blocked
-// waiting on ledger settlement. Exactly one of three notifications follows:
-// OutgoingPaymentProcessed (ledger move succeeded), MissingFunding (the move
-// failed specifically due to insufficient funds on FromAccountID), or
-// OutgoingPaymentRejected (the move failed for any other reason, e.g.
-// unknown account or same-account).
-func (e *Engine) Create(p *Payment) {
+// Create books p (Book) and ends it the bank's own way (Booking.Process):
+// OutgoingPaymentBooked at once, then, after `delay` and in a goroutine so
+// the caller is never blocked on ledger settlement, exactly one of three
+// notifications: OutgoingPaymentProcessed (the ledger move succeeded),
+// MissingFunding (it failed for insufficient funds on FromAccountID), or
+// OutgoingPaymentRejected (it failed for any other reason, e.g. an unknown
+// account or the same account).
+func (e *Engine) Create(p *Payment) { e.Book(p).Process() }
+
+// Booking is a payout the bank has just booked, waiting to learn what
+// happens to it next. Process ends it the bank's own way; a trap's path
+// (docs/lab-api/traps.md §9.1) takes it along with Step instead. A booking
+// that is given neither stays OutgoingPaymentBooked for good.
+type Booking struct {
+	e      *Engine
+	p      *Payment
+	epoch  uint64
+	booked Payment
+}
+
+// Book records p and fires OutgoingPaymentBooked at once: the bank books a
+// payout the moment it arrives, whatever becomes of it next.
+func (e *Engine) Book(p *Payment) *Booking {
 	now := labclock.Now().Format(time.RFC3339)
 	e.mu.Lock()
 	p.epoch = e.run.Current()
@@ -204,47 +208,27 @@ func (e *Engine) Create(p *Payment) {
 	p.UpdatedAt = now
 	p.ReferenceNumber = e.nextReferenceNumber()
 	e.payments[p.ID] = p
-	var outcome Outcome
-	if len(e.forced) > 0 {
-		outcome, e.forced = e.forced[0], e.forced[1:]
-	}
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
-	e.wg.Add(1)
-	go e.process(p, outcome)
+	return &Booking{e: e, p: p, epoch: cp.epoch, booked: cp}
 }
 
-// ForceNext queues outcomes for the next outgoing payments, one each, in
-// order, after anything already queued. Payments beyond the queue take the
-// normal path. Returns the whole queue as it now stands.
-func (e *Engine) ForceNext(outcomes []Outcome) ([]Outcome, error) {
-	for _, o := range outcomes {
-		if o != OutcomeRejected && o != OutcomePending {
-			return nil, ErrUnknownOutcome
-		}
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.forced = append(e.forced, outcomes...)
-	return append([]Outcome{}, e.forced...), nil
-}
+// Booked is the payout as it was booked, whatever has happened to it since.
+func (b *Booking) Booked() Payment { return b.booked }
 
-// ForcedOutcomes returns the outcomes still waiting for a payment.
-func (e *Engine) ForcedOutcomes() []Outcome {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return append([]Outcome{}, e.forced...)
+// Process ends the booked payout the bank's own way, after the engine's
+// delay, in the background (see Create).
+func (b *Booking) Process() {
+	b.e.wg.Add(1)
+	go b.e.process(b.p)
 }
 
 // process ends an outgoing payment after the delay. A reset during the
 // delay, or before the move, drops it: no money moves, no state changes and
 // nothing is notified for a payment the reset cleared.
-func (e *Engine) process(p *Payment, outcome Outcome) {
+func (e *Engine) process(p *Payment) {
 	defer e.wg.Done()
-	if outcome == OutcomePending {
-		return
-	}
 	started := p.epoch
 	if !e.run.Sleep(started, e.delay) {
 		return
@@ -253,31 +237,202 @@ func (e *Engine) process(p *Payment, outcome Outcome) {
 		// The move and the state change are one step under e.mu, the lock a
 		// reset clears the payments under: a reset sees both or neither.
 		e.mu.Lock()
-		var err error
-		if outcome == OutcomeRejected {
-			err = errForcedRejection
-		} else {
-			var cents int64
-			cents, err = money.Parse(p.Amount)
-			if err == nil {
-				_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
-			}
-		}
-		now := labclock.Now().Format(time.RFC3339)
-		switch {
-		case err == nil:
-			p.State = NotificationOutgoingPaymentProcessed
-			p.ProcessedAt = now
-		case errors.Is(err, ErrInsufficientFunds):
-			p.State = NotificationMissingFunding
-		default:
-			p.State = NotificationOutgoingPaymentRejected
-		}
-		p.UpdatedAt = now
+		e.settleLocked(p)
 		cp := *p
 		e.mu.Unlock()
 		e.notify(cp)
 	})
+}
+
+// settleLocked is the bank processing a booked payout: the ledger move, and
+// the state the payout ends in by the move's outcome. It returns the move's
+// error, nil when the money moved. Caller holds e.mu.
+func (e *Engine) settleLocked(p *Payment) error {
+	cents, err := money.Parse(p.Amount)
+	if err == nil {
+		_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
+	}
+	now := labclock.Now().Format(time.RFC3339)
+	switch {
+	case err == nil:
+		p.State = NotificationOutgoingPaymentProcessed
+		p.ProcessedAt = now
+	case errors.Is(err, ErrInsufficientFunds):
+		p.State = NotificationMissingFunding
+	default:
+		p.State = NotificationOutgoingPaymentRejected
+	}
+	p.UpdatedAt = now
+	return err
+}
+
+// StepReturned is the step a returned payout takes. A return is not a
+// state in Banking Circle (the payout stays OutgoingPaymentProcessed and the
+// money comes back as a payment of its own, Engine.Return), so it is not a
+// NotificationType either.
+const StepReturned = "Returned"
+
+// Step is one state a trap's path takes a booked payout to
+// (docs/lab-api/traps.md §9.1): OutgoingPaymentProcessed,
+// OutgoingPaymentRejected or MissingFunding from booked, then Reversed or
+// StepReturned from processed, with the parameters that state takes.
+type Step struct {
+	To string
+	// Reason is a reversal's reason.
+	Reason string
+	// ReasonCode and ReasonDescription are a rejection's or a return's.
+	ReasonCode        string
+	ReasonDescription string
+	// Trap is the trap that asked for the step. Every notification the
+	// step fires carries it (Payment.Trap); the wire never does.
+	Trap string
+}
+
+// ErrReset is a step for a payout booked in a run a reset has since ended:
+// dropped, like every other piece of work from that run.
+var ErrReset = errors.New("bankingcircle: the run this payout was booked in has been reset")
+
+// Diverted is a step the books could not follow (docs/lab-api/traps.md
+// §4.1): processing with too little on the safeguarding account, or
+// reversing a payout that is no longer processed. The bank did what its own
+// rules say instead, if anything, and Reason says what and why.
+type Diverted struct {
+	To     string
+	Reason string
+}
+
+func (d *Diverted) Error() string {
+	return "bankingcircle: " + d.To + " diverted: " + d.Reason
+}
+
+// Step takes the booked payout to s.To through the bank's own code: the
+// same ledger move, notifications, report rows and status read as a
+// transition no trap touched. applied, when not nil, is called with the
+// payment as the step left it (for a return, the new incoming payment).
+//
+// The step goes through the run like every other piece of work on a
+// payment's behalf (Run.Do): if a reset has ended the run the payout was
+// booked in it does nothing and answers ErrReset, and a reset cannot land
+// halfway through it. applied runs inside that guard, so what it records
+// is cleared by a reset or never written.
+//
+// The books come first: a step they cannot follow answers a *Diverted,
+// after doing what the bank does instead (processing with the safeguarding
+// account short ends the payout MissingFunding, as it would untouched).
+func (b *Booking) Step(s Step, applied func(Payment)) error {
+	var err error
+	if !b.e.run.Do(b.epoch, func(context.Context) { err = b.e.step(b.p, s, applied) }) {
+		return ErrReset
+	}
+	return err
+}
+
+func (e *Engine) step(p *Payment, s Step, applied func(Payment)) error {
+	e.mu.Lock()
+	var (
+		notify   []Payment // in the order they fire
+		result   Payment
+		incoming *Payment // a return payment, to process after its booking
+		diverted error
+	)
+	switch s.To {
+	case string(NotificationOutgoingPaymentProcessed), string(NotificationOutgoingPaymentRejected), string(NotificationMissingFunding):
+		if p.State != NotificationOutgoingPaymentBooked {
+			reason := fmt.Sprintf("the payout is %s, no longer booked", p.State)
+			e.mu.Unlock()
+			return &Diverted{To: s.To, Reason: reason}
+		}
+		switch NotificationType(s.To) {
+		case NotificationOutgoingPaymentProcessed:
+			short := e.shortfallLocked(p)
+			if err := e.settleLocked(p); err != nil {
+				reason := fmt.Sprintf("the ledger refused the move (%v)", err)
+				if errors.Is(err, ErrInsufficientFunds) && short != "" {
+					reason = short
+				}
+				diverted = &Diverted{To: s.To, Reason: reason + "; " + string(p.State) + " instead"}
+			}
+		case NotificationOutgoingPaymentRejected:
+			e.endLocked(p, NotificationOutgoingPaymentRejected)
+			p.RejectionReasonCode, p.RejectionReasonDescription = s.ReasonCode, s.ReasonDescription
+		default:
+			e.endLocked(p, NotificationMissingFunding)
+		}
+		result = *p
+		result.trap = s.Trap
+		notify = []Payment{result}
+	case string(NotificationReversed):
+		cp, err := e.reverseLocked(p, s.Reason)
+		if err != nil {
+			reason := refusal(p, err)
+			e.mu.Unlock()
+			return &Diverted{To: s.To, Reason: reason}
+		}
+		cp.trap = s.Trap
+		booking := cp
+		booking.State = NotificationOutgoingPaymentBooked
+		result, notify = cp, []Payment{booking, cp}
+	case StepReturned:
+		ret, err := e.returnLocked(p, s.ReasonCode, s.ReasonDescription, s.Trap)
+		if err != nil {
+			reason := refusal(p, err)
+			e.mu.Unlock()
+			return &Diverted{To: s.To, Reason: reason}
+		}
+		result, incoming = *ret, ret
+		notify = []Payment{result}
+	default:
+		e.mu.Unlock()
+		return fmt.Errorf("bankingcircle: a payout has no step to %q", s.To)
+	}
+	e.mu.Unlock()
+	for _, n := range notify {
+		e.notify(n)
+	}
+	if incoming != nil {
+		e.wg.Add(1)
+		go e.processIncoming(incoming)
+	}
+	if applied != nil {
+		applied(result)
+	}
+	return diverted
+}
+
+// endLocked ends a booked payout in state without moving money: a
+// rejection, or missing funding. Caller holds e.mu.
+func (e *Engine) endLocked(p *Payment, state NotificationType) {
+	p.State = state
+	p.UpdatedAt = labclock.Now().Format(time.RFC3339)
+}
+
+// shortfallLocked says how far the debtor account is short of the payout,
+// or "" when it is not (or cannot be read). Caller holds e.mu.
+func (e *Engine) shortfallLocked(p *Payment) string {
+	cents, err := money.Parse(p.Amount)
+	if err != nil {
+		return ""
+	}
+	acc, err := e.ledger.Get(p.FromAccountID)
+	if err != nil {
+		return ""
+	}
+	if have, _ := money.Parse(acc.Balance); have >= cents {
+		return ""
+	}
+	return fmt.Sprintf("the safeguarding account %s holds %s %s, short of %s", acc.VIBAN, acc.Balance, acc.Currency, p.Amount)
+}
+
+// refusal is why the bank would not reverse or return p, in words. Caller
+// holds e.mu.
+func refusal(p *Payment, err error) string {
+	switch {
+	case errors.Is(err, ErrInvalidState):
+		return fmt.Sprintf("the payout is %s, not OutgoingPaymentProcessed", p.State)
+	case errors.Is(err, ErrAlreadyReturned):
+		return "the payout has already been returned, as " + p.ReturnedBy
+	}
+	return fmt.Sprintf("the ledger refused to move the money back (%v)", err)
 }
 
 // Get returns a copy of the payment by ID.
@@ -323,34 +478,41 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 		e.mu.Unlock()
 		return nil, ErrPaymentNotFound
 	}
-	if p.State != NotificationOutgoingPaymentProcessed {
-		e.mu.Unlock()
-		return nil, ErrInvalidState
-	}
-	if p.ReturnedBy != "" {
-		e.mu.Unlock()
-		return nil, ErrAlreadyReturned
-	}
-	cents, err := money.Parse(p.Amount)
-	if err != nil {
-		e.mu.Unlock()
-		return nil, err
-	}
-	if _, _, err := e.ledger.Move(p.ToAccountID, p.FromAccountID, cents); err != nil {
-		e.mu.Unlock()
-		return nil, err
-	}
-	p.State = NotificationReversed
-	p.ReversalReason = reason
-	p.ReversedAt = labclock.Now().Format(time.RFC3339)
-	p.UpdatedAt = p.ReversedAt
-	cp := *p
+	cp, err := e.reverseLocked(p, reason)
 	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	booking := cp
 	booking.State = NotificationOutgoingPaymentBooked
 	e.notify(booking)
 	e.notify(cp)
 	return &cp, nil
+}
+
+// reverseLocked moves a processed payout's money back and marks it
+// Reversed, returning a copy for the two notifications (the reversal's
+// booking, then Reversed) the caller fires once e.mu is released. Caller
+// holds e.mu.
+func (e *Engine) reverseLocked(p *Payment, reason string) (Payment, error) {
+	if p.State != NotificationOutgoingPaymentProcessed {
+		return Payment{}, ErrInvalidState
+	}
+	if p.ReturnedBy != "" {
+		return Payment{}, ErrAlreadyReturned
+	}
+	cents, err := money.Parse(p.Amount)
+	if err != nil {
+		return Payment{}, err
+	}
+	if _, _, err := e.ledger.Move(p.ToAccountID, p.FromAccountID, cents); err != nil {
+		return Payment{}, err
+	}
+	p.State = NotificationReversed
+	p.ReversalReason = reason
+	p.ReversedAt = labclock.Now().Format(time.RFC3339)
+	p.UpdatedAt = p.ReversedAt
+	return *p, nil
 }
 
 // notify hands a transition to the caller, unless a reset has ended the run
@@ -479,26 +641,44 @@ func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, err
 		e.mu.Unlock()
 		return nil, ErrPaymentNotFound
 	}
-	if orig.State != NotificationOutgoingPaymentProcessed {
-		e.mu.Unlock()
-		return nil, ErrInvalidState
-	}
-	if orig.ReturnedBy != "" {
-		e.mu.Unlock()
-		return nil, ErrAlreadyReturned
-	}
-	cents, err := money.Parse(orig.Amount)
+	p, err := e.returnLocked(orig, reasonCode, reasonDescription, "")
 	if err != nil {
 		e.mu.Unlock()
 		return nil, err
 	}
+	cp := *p
+	e.mu.Unlock()
+	e.notify(cp)
+
+	e.wg.Add(1)
+	go e.processIncoming(p)
+
+	return &cp, nil
+}
+
+// returnLocked moves a processed payout's money back as a new incoming
+// return payment, booked, and records it; the caller notifies its booking
+// once e.mu is released and then processes it (processIncoming). trap,
+// when set, is the trap whose step made the return: the return payment is
+// wholly its doing, so both its notifications carry it. Caller holds e.mu.
+func (e *Engine) returnLocked(orig *Payment, reasonCode, reasonDescription, trap string) (*Payment, error) {
+	if orig.State != NotificationOutgoingPaymentProcessed {
+		return nil, ErrInvalidState
+	}
+	if orig.ReturnedBy != "" {
+		return nil, ErrAlreadyReturned
+	}
+	cents, err := money.Parse(orig.Amount)
+	if err != nil {
+		return nil, err
+	}
 	if _, _, err := e.ledger.Move(orig.ToAccountID, orig.FromAccountID, cents); err != nil {
-		e.mu.Unlock()
 		return nil, err
 	}
 	now := labclock.Now().Format(time.RFC3339)
 	p := &Payment{
 		epoch:                   e.run.Current(),
+		trap:                    trap,
 		ID:                      "bcp_" + randomHex(6),
 		FromAccountID:           orig.ToAccountID,
 		ToAccountID:             orig.FromAccountID,
@@ -517,14 +697,7 @@ func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, err
 	}
 	orig.ReturnedBy = p.ID
 	e.payments[p.ID] = p
-	cp := *p
-	e.mu.Unlock()
-	e.notify(cp)
-
-	e.wg.Add(1)
-	go e.processIncoming(p)
-
-	return &cp, nil
+	return p, nil
 }
 
 // nextReferenceNumber hands out Banking Circle's reference for a new

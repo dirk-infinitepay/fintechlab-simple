@@ -488,4 +488,4 @@ and refusals, and the same file written.
   `POST :8095/internal/incoming-payments`, once per currency on each
   morning slot (the lump sum).
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

@@ -63,13 +63,15 @@ func testApp(t *testing.T, cb, bc *peer, statePath string, delay time.Duration) 
 		backs:         []time.Duration{100 * time.Millisecond},
 		maxTry:        3,
 		bcURL:         bc.srv.URL,
-		forceFails:    map[string]bool{},
 		statePath:     statePath,
 		callbackURL:   cb.srv.URL,
 		payLog:        activity.New("payments", "Payouts received", ""),
 		cbLog:         activity.New("callbacks", "Callbacks sent", ""),
 	}
 	a.engine = b4b.NewEngine(delay, a.onTransition)
+	if a.traps, err = newTraps(delay, nil); err != nil {
+		t.Fatal(err)
+	}
 	a.dir.OnChange = a.persist
 	a.beneficiaries.OnChange = a.persist
 	return a

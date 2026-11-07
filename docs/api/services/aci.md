@@ -229,4 +229,4 @@ set up once.
   (compose: the receiver's `POST /raw-events`, a raw capture that stores
   the body without decrypting it).
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -110,16 +111,17 @@ func TestResetOverHTTPFlowThenAll(t *testing.T) {
 	mustCall(t, 202, "POST", internalSrv.URL+"/internal/payments", "",
 		`{"paymentId":"bcp_run1","accountId":"`+merchantAccount+`","amount":"10.00","currency":"EUR"}`)
 	stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed)
-	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomeRejected}); err != nil {
-		t.Fatal(err)
-	}
+	queueOutcomes(t, a, "Rejected")
 
 	tok := a.tokens.issue(time.Hour)
 	out := mustCall(t, 200, "POST", ctl.URL+"/sim/reset", "", "")
 	cleared, _ := out["cleared"].(map[string]any)
 	if out["service"] != "banking-circle" || out["scope"] != "flow" ||
-		cleared["payments"] != float64(2) || cleared["outcomes"] != float64(1) || cleared["balances"] != float64(2) {
-		t.Fatalf("flow reset = %v, want 2 payments, 1 outcome and 2 balances cleared", out)
+		cleared["payments"] != float64(2) || cleared["traps"] != float64(1) || cleared["balances"] != float64(2) {
+		t.Fatalf("flow reset = %v, want 2 payments, 1 trap (the queued outcome) and 2 balances cleared", out)
+	}
+	if got := mustCall(t, 200, "GET", ctl.URL+"/sim/payments/outcomes", "", "")["queued"]; !reflect.DeepEqual(got, []any{}) {
+		t.Fatalf("the outcome queue after a flow reset = %v, want empty", got)
 	}
 	if n, _ := cleared["activity"].(float64); n < 2 {
 		t.Fatalf("flow reset cleared %v activity events, want at least the two bridge calls", cleared["activity"])

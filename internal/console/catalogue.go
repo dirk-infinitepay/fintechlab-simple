@@ -161,6 +161,8 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Point B4B_URL at the real Oversight API.",
 			Docs:       "docs/ARCHITECTURE-b4b-oversight.md",
 			Endpoints: []Endpoint{
+				{"POST", "/sim/traps", "arm a trap on payment.create: hang or fail a future payment (control port)"},
+				{"GET", "/sim/traps/hooks", "what can be trapped: fields and the payment's lifecycle (control port)"},
 				{"GET|POST", "/oversight/v1/companies", "list / board a company (422 on a repeated external_ref)"},
 				{"GET", "/oversight/v1/companies/{id}", "by id or external_ref"},
 				{"GET|POST", "/oversight/v1/companies/{id}/addresses", ""},
@@ -194,6 +196,8 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Point at the real Connect API.",
 			Docs:       "docs/ARCHITECTURE-banking-circle-webhooks.md",
 			Endpoints: []Endpoint{
+				{"POST", "/sim/traps", "arm a trap on payment.outgoing: decide how a future payout ends (control port)"},
+				{"GET", "/sim/traps/hooks", "what can be trapped: fields and the payout's state graph (control port)"},
 				// The Connect API, as the real bank serves it (mTLS, Bearer).
 				{"GET", "/api/v1/authorizations/authorize", "Basic -> Bearer"},
 				{"GET", "/api/v1/accounts/{id}/balances", "safeguarding balance; financialDate is the lab clock's date"},

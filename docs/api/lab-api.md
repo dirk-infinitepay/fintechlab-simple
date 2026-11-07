@@ -475,6 +475,72 @@ Bodies up to 32 MB.
 service's hooks are in its reference, [services/](services/), under *Lab
 control*.
 
+## Traps
+
+A trap is an instruction armed in advance in one simulation: it decides
+something about a future event at one of that simulation's hooks — which
+outcome a payout takes, and when. It is armed where it applies, through the
+passthrough, and read here across the lab. The model, the hooks and their
+graphs are in [README.md](README.md#traps) and each service's reference.
+
+```sh
+# what can be trapped, and how
+curl -s localhost:8097/v1/traps/hooks
+# Banking Circle: a payout to this IBAN is processed, then reversed ten seconds later
+curl -s -XPOST localhost:8097/v1/services/banking-circle/sim/traps -d '{
+  "label": "merchant 7: processed, then reversed",
+  "hook": "payment.outgoing",
+  "match": {"creditor.iban": "GB00SIM0000000000777"},
+  "effect": {"path": [{"to": "OutgoingPaymentProcessed"},
+                      {"to": "Reversed", "after": "10s", "reason": "scheme"}]}}'
+# did it fire?
+curl -s localhost:8097/v1/services/banking-circle/sim/traps/trp_0001
+```
+
+### `GET /v1/traps`
+
+Every simulation's traps, each with its `service`, newest first.
+
+**Query parameters** — `state`: `armed`, `spent`, `expired` or
+`disarmed`.
+
+**Answers** — `200 {"traps": [{"service": "banking-circle", "id":
+"trp_0001", "hook": "payment.outgoing", "state": "spent", "caught": […],
+"pending_steps": […], …}, …], "unreachable": [{"service", "error"}]}`.
+A simulation with no hooks is left out; one that cannot be reached is
+listed under `unreachable`. `400` for a bad `state`, in the simulation's
+words.
+
+**Reaches** — each service's control `GET /sim/traps`, in parallel.
+
+### `GET /v1/traps/hooks`
+
+Every simulation's hook catalogue, each hook with its `service`: its
+subject, the fields a trap can match on, its effect and, for a lifecycle,
+the graph of states that may follow each other and each state's
+parameters. What an agent reads before arming anything; a hook not listed
+here does not exist.
+
+**Answers** — `200 {"hooks": [{"service": "banking-circle", "hook":
+"payment.outgoing", "about": "…", "subject": "payment_id", "match": […],
+"effect": "path", "graph": {…}, "first_step_default_after": "2s"}, …],
+"unreachable": […]}`.
+
+**Reaches** — each service's control `GET /sim/traps/hooks`, in parallel.
+
+### `DELETE /v1/traps`
+
+Disarm every trap in the lab and cancel the steps still waiting. Standing
+traps (a simulation's own, from its configuration) are disarmed too, until
+its next reset arms them again.
+
+**Answers** — `200 {"ok": true, "services": [{"service", "status",
+"disarmed", "cancelled": [{"trap_id", "subject", "step", "due"}]}]}`;
+`502` with `"ok": false` when a simulation could not be reached, the rest
+still disarmed.
+
+**Reaches** — each service's control `DELETE /sim/traps`, in parallel.
+
 ## Clock
 
 ### `GET /v1/clock`

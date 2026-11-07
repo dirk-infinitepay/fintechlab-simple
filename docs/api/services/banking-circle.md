@@ -24,8 +24,8 @@ memory.
 | Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095`.<br>`:9085`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`, default `LISTEN`'s port + 1000), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://banking-circle:9085` |
 | Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
-| Activity logs | `GET /sim/activity` (on the control port) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `POST /sim/reset` empties all three |
-| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`) |
+| Activity logs | `GET /sim/activity` (on the control port) keeps four logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount; `payment.state` for each state a trap's step took a payout to, with `detail.trap` (green when processed, amber otherwise). `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume; a batch carrying a notification a trap's step made has `detail.trap` (the trap ids, comma-separated). `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `traps` (*Traps*): `trap.armed`, `trap.caught`, `trap.step`, `trap.diverted` (amber), `trap.disarmed`, each with `detail.trap`. `POST /sim/reset` empties all four |
+| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments, balances and traps. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`) |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
 
 | Variable | Default | Effect |
@@ -33,7 +33,7 @@ memory.
 | `BC_MTLS` | `require` | `off` (also `none`, `false`), `optional` (`verify-if-given`), `require` (`required`, `true`). Anything else is fatal at start. Bearer auth applies in every mode |
 | `CA_FILE`, `TLS_CERT`, `TLS_KEY` | `/keys/certs/ca.pem`, `/keys/certs/banking-circle.pem`, `/keys/certs/banking-circle-key.pem` | Waited for up to 30 s at start. The CA is also trusted for outbound HTTPS |
 | `TOKEN_TTL` | `1h` | Bearer token lifetime, on the wall clock |
-| `PROCESSING_DELAY` | `2s` | Wait between a payment booking and processing, outgoing and incoming |
+| `PROCESSING_DELAY` | `2s` | Wait between a payment booking and processing, outgoing and incoming. Also the wait before a trap's first step when it names none |
 | `LAB_CLOCK_URL` | unset (compose `http://clock:8096/clock`) | Follow the lab clock for booking times, notification timestamps, balance dates and report dates |
 | `WEBHOOK_URL` | `https://receiver:8443/webhooks` (compose `https://receiver:8443/raw-events`) | Endpoint of the seeded subscription. Must pass the allowlist or start-up fails |
 | `WEBHOOK_ALLOWLIST` | `receiver,receiver:8443,localhost,127.0.0.1` (compose adds `bank`, `bank:8081`, `host.containers.internal`) | Hosts a subscription endpoint and `BANK_CREDIT_URL` may name |
@@ -364,6 +364,9 @@ processed.
   Rows: `OutgoingPaymentRejected` as `Rejected`, `MissingFunding` as
   `Insufficient Funds`, still `OutgoingPaymentBooked` as `Received`. A
   reversed or processed payout never appears; neither does money in.
+  A `Rejected` row's `statusReason` is the fixed text below, or, for a
+  payout a trap rejected with a reason, `"<reason_code> <reason_description>"`
+  (`"AC01 Incorrect account number"`).
 - Answers `200`:
 
   ```json
@@ -435,12 +438,14 @@ beneficiary's account. Called by b4b when its payout reaches
   `accountId`, a bad amount, another currency
   (`no safeguarding account configured for currency "USD"`), an
   `accountId` that is not a UUID, or an unknown field.
-- Side effects: `OutgoingPaymentBooked` is notified at once. After
+- Side effects: `OutgoingPaymentBooked` is notified at once. The payout
+  is then offered to the `payment.outgoing` traps ([Traps](#traps)): the
+  first armed one that matches takes it along its path instead of what
+  follows, and the answer is still the payout as booked. Untrapped, after
   `PROCESSING_DELAY` the ledger moves the money and the payment ends
   `OutgoingPaymentProcessed`, `MissingFunding` (the safeguarding account is
-  short) or `OutgoingPaymentRejected` (any other failure, or a forced
-  outcome), each notified. A forced `Pending` leaves it booked for good.
-  On `OutgoingPaymentProcessed` the beneficiary's bank is credited:
+  short) or `OutgoingPaymentRejected` (any other failure), each notified.
+  On `OutgoingPaymentProcessed`, trapped or not, the beneficiary's bank is credited:
   `POST {BANK_CREDIT_URL}` with
   `{"iban", "account_number", "financial_institution", "holder", "amount", "currency", "reference"}`
   (reference: the `externalRef`, else the payment id), once,
@@ -512,10 +517,10 @@ the lab API's monitor probes.
 
 ### `GET /sim/activity`
 
-The three logs described under *At a glance*.
+The four logs described under *At a glance*.
 
 - Query: `limit` (default 100; each ring keeps 256).
-- Answers `200` `{"logs": [{"name": "payments", …}, {"name": "notifications", …}, {"name": "reports", …}]}`,
+- Answers `200` `{"logs": [{"name": "payments", …}, {"name": "notifications", …}, {"name": "reports", …}, {"name": "traps", …}]}`,
   in that order, each `{"name", "title", "note", "total", "kept", "last", "events": [{"seq", "at", "op", "peer", "summary", "status", "detail"}]}`.
 
 ### `GET /sim/info`
@@ -525,25 +530,28 @@ Who this is and what it can do, as every service answers it
 `"service": "banking-circle"`, `"kind": "vendor"`,
 `"simulates": "Banking Circle Connect"`,
 `"vendor_listeners": [":8085", ":8095"]` (`LISTEN` and `INTERNAL_LISTEN`),
-`"control_listener": ":9085"`, `"reset_scopes": ["flow", "all"]`.
+`"control_listener": ":9085"`, `"reset_scopes": ["flow", "all"]`,
+`"hooks": ["payment.outgoing"]` and `"traps": {"armed": 1, "pending_steps": 0}`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
 ([the control contract](../README.md#the-control-contract)): every
 request to `:8085`, the bridge and the control port,
-every delivery attempt and how it ended, pauses, forced outcomes, credits
-at the beneficiary's bank, and the line marking each reset.
+every delivery attempt and how it ended, pauses, each trap armed,
+catching a payout, taking a step or disarmed, credits at the beneficiary's
+bank, and the line marking each reset.
 
 ### `POST /sim/reset`
 
 Puts the bank back to a known state. Synchronous, and never refused.
 
-- **`flow`** (the default) **clears**: every payment (outgoing, incoming,
-  returns); every balance, back to `0.00`; the forced outcomes still
-  queued; every notification not yet delivered, whether batching, parked
+- **`flow`** (the default) **clears**: every trap, the outcome queue's
+  included, and every trap step still waiting, before anything else;
+  every payment (outgoing, incoming, returns); every balance, back to
+  `0.00`; every notification not yet delivered, whether batching, parked
   behind a pause, retained after a deactivation or mid-retry; every pause;
-  the emails; the three activity logs.
+  the emails; the four activity logs.
 - **`flow` keeps**: the subscriptions as they stand, deactivated ones too,
   with their events, targets and `rowVersion`; every account, including the
   creditor accounts payouts opened (at `0.00`); issued bearer tokens.
@@ -555,21 +563,25 @@ Puts the bank back to a known state. Synchronous, and never refused.
 - **Tokens survive both scopes.** A lab reset never logs the platform's
   Banking Circle client out, and nothing the lab does needs one.
 - Work in flight is dropped, not raced. A payment still sleeping out
-  `PROCESSING_DELAY` never moves money, changes state, is notified or is
-  credited at the beneficiary's bank. A batch on its flush timer or
+  `PROCESSING_DELAY`, or a trap's step still to come, never moves money,
+  changes state, is notified or is credited at the beneficiary's bank. A
+  step under way when the reset lands finishes first, and is cleared with
+  the rest. A batch on its flush timer or
   mid-retry is never sent, mails nothing and deactivates nothing. A webhook
   or credit already on the wire is aborted, so a hung subscriber does not
   hold the reset up.
 
 ```json
 {"service": "banking-circle", "scope": "flow",
- "cleared": {"payments": 3, "balances": 2, "outcomes": 0, "notifications": 4,
+ "cleared": {"traps": 1, "trap_steps": 0, "payments": 3, "balances": 2, "notifications": 4,
              "pauses": 0, "emails": 0, "activity": 11},
  "kept": ["subscriptions", "accounts", "tokens"], "at": "2026-11-07T12:00:00Z"}
 ```
 
-`balances` counts accounts that held anything but their seed;
-`notifications`, every one not yet delivered. `all` adds `subscriptions`
+`traps` counts the traps forgotten, spent and disarmed ones included;
+`trap_steps`, the steps that were still to come; `balances`, accounts that
+held anything but their seed; `notifications`, every one not yet
+delivered. The `activity` count leaves out the `traps` log. `all` adds `subscriptions`
 (removed, or put back to the seed) and `accounts` (opened by payouts) to
 `cleared`, and `kept` is `["tokens"]`.
 
@@ -673,7 +685,230 @@ The same handler as `GET /internal/payments/outcomes`: `200`
 ### `POST /sim/payments/outcomes`
 
 The same handler as `POST /internal/payments/outcomes`; the two share one
-queue.
+queue, which is a shortcut for traps.
+
+### Traps
+
+A trap is an instruction armed in advance: what happens to the next payout
+that matches, and when ([traps.md](../../lab-api/traps.md)). It only puts
+the bank in a state the real bank can be in, and every step goes through
+the bank's own code, so a trapped payout reads everywhere as an untouched
+one with that history would. The routes are on the control port only (and
+on `:8085` behind the bearer, like every `/sim` path).
+
+**`payment.outgoing`**, the one hook. A payout arriving over the bridge
+from B4B (`POST /internal/payments`), once B4B approved it. Subject: its
+`paymentId`. The bank books it, `OutgoingPaymentBooked`, the moment it
+arrives, trap or no trap. Then it is offered to the armed traps in the
+order they were armed: the first that matches takes it along its path, and
+the bank's own processing does not run for it. A payout no trap takes is
+processed as it always was.
+
+| Match field | Type | |
+| --- | --- | --- |
+| `payment_id` | string | `bcp_…`, B4B mints it |
+| `external_ref` | string | what B4B forwarded as `externalRef` |
+| `creditor.iban` | iban | the receiving account's IBAN, a vIBAN included |
+| `creditor.account_number`, `creditor.financial_institution` | string | a UK account number and sort code, when the payout has no IBAN |
+| `creditor.holder` | string | the beneficiary's name as sent |
+| `amount` | decimal | |
+| `currency` | string | `EUR` or `GBP` |
+
+A value is a string for an exact match, `{"in": [...]}`, `{"prefix": "..."}`,
+or for `amount` `{"gte": "...", "lte": "..."}` (either bound may be left
+out). Decimals compare as numbers (`"10"` is `"10.00"`), IBANs upper case
+with spaces removed. Every field given must match; `{}` matches every
+payout. A field the payout does not carry, an IBAN on a UK-account payout
+say, matches nothing.
+
+```text
+OutgoingPaymentBooked ──▶ OutgoingPaymentProcessed ──▶ Reversed
+   │  (automatic)                     └──────────────▶ Returned
+   ├──▶ OutgoingPaymentRejected
+   └──▶ MissingFunding
+```
+
+The path starts after the booking, and each step names a direct successor
+of the one before; anything else is refused when armed.
+
+| `to` | What the bank does | Notifications | Params |
+| --- | --- | --- | --- |
+| `OutgoingPaymentProcessed` | moves the money off the safeguarding account to the creditor account; credits the business bank (`BANK_CREDIT_URL`) | `OutgoingPaymentProcessed` | none |
+| `OutgoingPaymentRejected` | moves nothing. The payment gains `rejectionReasonCode` and `rejectionReasonDescription`, and its rejection report row reads `"<code> <description>"`; without them, the fixed reason | `OutgoingPaymentRejected` | `reason_code`, `reason_description` |
+| `MissingFunding` | moves nothing | `MissingFunding` | none |
+| `Reversed` | what `POST /internal/payments/{id}/reverse` does: the money moves back, `reversalReason` is `reason`, the intraday report gains the negative row | `OutgoingPaymentBooked` (the reversal's booking), then `Reversed` | `reason` |
+| `Returned` | what `POST /internal/payments/{id}/return` does: the payout stays processed; the money comes back as a new incoming payment with `return: true` | `IncomingPaymentBooked`, then `IncomingPaymentProcessed` after `PROCESSING_DELAY` | `reason_code`, `reason_description` |
+
+- **When.** A step waits `after` (real time) or `after_lab` (the lab
+  clock: it applies once the clock is that far past the previous step,
+  whether time passed or the clock was moved; the clock is looked at once
+  a second). Durations are Go's (`10s`, `2h`) or days (`2d`, `1d12h`).
+  The first step waits `PROCESSING_DELAY` when it names neither, as an
+  untouched payout does; later steps default to `0`.
+- **A path may stop short.** `[]` leaves the payout booked for good:
+  `PendingProcessing` on the status read, `Received` on the rejection
+  report. A path ending at `OutgoingPaymentProcessed` leaves it there.
+- **The books come first.** A step the books cannot follow is not taken;
+  the bank does what its own rules say instead and the rest of the path
+  is dropped. `OutgoingPaymentProcessed` with too little on the
+  safeguarding account ends the payout `MissingFunding`, notified, as an
+  untouched payout would (another ledger refusal, `OutgoingPaymentRejected`).
+  `Reversed` or `Returned` on a payout reversed or returned by hand in the
+  meantime does nothing. The catch's `diverted` says why ("the
+  safeguarding account BE00SIMSGA00000001 holds 0.50 EUR, short of 1.00;
+  MissingFunding instead"), and the `traps` log has an amber
+  `trap.diverted`.
+- **A reset** disarms every trap and cancels every step still to come
+  before it clears the bank. A step that falls due after a reset does
+  nothing.
+- **What a trap leaves.** Nothing on the Connect API: the notifications,
+  both reports, the status read and the balances are what an untouched
+  payout with that history gives. In the lab's own records: the `traps`
+  activity log, a `payment.state` event in the `payments` log for each
+  step, `detail.trap` on the `notifications` events whose batch carries a
+  notification a step made, and a line in `GET /sim/logs` per catch and
+  per step.
+
+The owner's two examples. A payout to one vIBAN is rejected:
+
+```http
+POST /sim/traps
+{"label": "merchant 7 rejected",
+ "hook": "payment.outgoing",
+ "match": {"creditor.iban": "GB00SIM0000000000777"},
+ "effect": {"path": [{"to": "OutgoingPaymentRejected", "reason_code": "AC01",
+                      "reason_description": "Incorrect account number"}]}}
+```
+
+Or processed, then reversed ten seconds later:
+
+```http
+POST /sim/traps
+{"label": "merchant 7 processed, then reversed",
+ "hook": "payment.outgoing",
+ "match": {"creditor.iban": "GB00SIM0000000000777"},
+ "effect": {"path": [{"to": "OutgoingPaymentProcessed"},
+                     {"to": "Reversed", "after": "10s", "reason": "scheme"}]}}
+```
+
+Returned two days after it was processed, by the lab clock. Move the clock
+to see it, or wait:
+
+```json
+{"hook": "payment.outgoing", "match": {"external_ref": "sttl_v1:4c1e…:7"},
+ "effect": {"path": [{"to": "OutgoingPaymentProcessed"},
+                     {"to": "Returned", "after_lab": "48h", "reason_code": "AC04",
+                      "reason_description": "Closed account number"}]}}
+```
+
+Every EUR payout of 500.00 or more, until disarmed, left booked:
+
+```json
+{"hook": "payment.outgoing", "match": {"currency": "EUR", "amount": {"gte": "500.00"}},
+ "times": null, "effect": {"path": []}}
+```
+
+"The next two payouts are rejected" is the outcome queue,
+`POST /sim/payments/outcomes`, a shortcut for two traps matching `{}`.
+
+### `GET /sim/traps/hooks`
+
+The hook catalogue: what can be caught, on which fields, and which states
+may follow which. An agent reads this before arming anything.
+
+- Answers `200`:
+
+  ```json
+  {"service": "banking-circle",
+   "hooks": [{"hook": "payment.outgoing",
+     "about": "A payout arriving over the bridge from B4B, once B4B approved it.",
+     "subject": "payment_id",
+     "match": [{"field": "payment_id", "type": "string", "about": "bcp_…, B4B mints it"},
+               {"field": "creditor.iban", "type": "iban", "about": "the receiving account's IBAN; a vIBAN is an IBAN"},
+               {"field": "amount", "type": "decimal"}, …],
+     "effect": "path",
+     "graph": {"start": "OutgoingPaymentBooked",
+       "next": {"OutgoingPaymentBooked": ["OutgoingPaymentProcessed", "OutgoingPaymentRejected", "MissingFunding"],
+                "OutgoingPaymentProcessed": ["Reversed", "Returned"]},
+       "params": {"OutgoingPaymentRejected": ["reason_code", "reason_description"],
+                  "Reversed": ["reason"], "Returned": ["reason_code", "reason_description"]}},
+     "first_step_default_after": "2s"}]}
+  ```
+
+  `match` lists all eight fields, in the order of the table above.
+  `first_step_default_after` is `PROCESSING_DELAY`.
+
+### `GET /sim/traps`
+
+The traps, newest first.
+
+- Query: `state` (`armed`, `spent`, `expired`, `disarmed`); without it,
+  every one. Anything else is `400`
+  `{"error": "state is armed, spent, expired or disarmed", "status": 400}`.
+- Answers `200` `{"service": "banking-circle", "traps": [{…}]}`, each as
+  `GET /sim/traps/{id}` answers it. A spent, expired or disarmed trap stays
+  listed, with what it caught, until a reset.
+
+### `POST /sim/traps`
+
+Arms a trap.
+
+- Body: `hook`, `match` and `effect` are required; `label`, `times` and
+  `expires_at` are optional. `times` is how many payouts it takes: `1` by
+  default, a whole number from 1, or `null` for every one until disarmed.
+  `expires_at` is a wall-clock RFC 3339 time after which it takes nothing.
+  `effect` is `{"path": [step, …]}`, each step `{"to"}` with `after` or
+  `after_lab` and the params its state takes. Decoded strictly: an unknown
+  field, in the body or in a step, is a `400`.
+- Answers `201` with the trap:
+
+  ```json
+  {"id": "trp_0003", "label": "merchant 7 processed, then reversed", "hook": "payment.outgoing",
+   "match": {"creditor.iban": "GB00SIM0000000000777"}, "times": 1, "expires_at": null,
+   "effect": {"path": [{"to": "OutgoingPaymentProcessed"}, {"to": "Reversed", "after": "10s", "reason": "scheme"}]},
+   "state": "armed", "created_at": "2026-11-07T09:00:00Z", "caught": [], "pending_steps": []}
+  ```
+
+  `400` `{"error": "invalid trap: …", "status": 400}` with the reason: an
+  unknown hook or match field (the message lists the fields), a malformed
+  value, a step that cannot follow the one before
+  (`"invalid trap: Reversed cannot follow OutgoingPaymentRejected (OutgoingPaymentRejected is final)"`),
+  a param the state does not take, both `after` and `after_lab`, a
+  duration that does not parse, or `times` below 1.
+- Side effects: `trap.armed` in the `traps` log. It takes payouts from the
+  next one to arrive, after any trap armed before it.
+
+### `GET /sim/traps/{id}`
+
+One trap: whether it fired, and what it did.
+
+- Answers `200` with the trap as `POST /sim/traps` returns it. `state` is
+  `armed`, `spent` (taken `times` payouts), `expired` or `disarmed`.
+  `caught` lists each payout taken, `{"subject": "bcp_…", "at": "…", "applied": [{"to": "OutgoingPaymentProcessed", "at": "…"}]}`,
+  with `"diverted": "…"` when the books turned a step away (or a step
+  failed) and `"cancelled": true` when a disarm cut its path short.
+  `pending_steps` lists the steps scheduled and not yet applied,
+  `{"trap_id", "subject", "step": {…}, "due": "…"}`, or `"due_lab"` for an
+  `after_lab` step. `404` `{"error": "no trap trp_9999", "status": 404}`.
+
+### `DELETE /sim/traps/{id}`
+
+Disarms one trap and cancels its pending steps.
+
+- Answers `200` `{"trap": {…, "state": "disarmed"}, "cancelled": [{…pending step…}]}`;
+  `404` `{"error": "no trap trp_9999", "status": 404}`. A spent trap with
+  nothing pending stays `spent`.
+- Side effects: a payout whose path is cut short stays where its last step
+  left it. `trap.disarmed` in the `traps` log. An outcome-queue trap
+  disarmed here leaves the queue.
+
+### `DELETE /sim/traps`
+
+Disarms every trap still armed or with steps pending.
+
+- Answers `200` `{"service": "banking-circle", "disarmed": 2, "cancelled": [{…}]}`.
+- Side effects: as `DELETE /sim/traps/{id}`, for each. The outcome queue
+  is emptied with them.
 
 ### `GET /sim/subscriptions`
 
@@ -734,7 +969,8 @@ One payment with the lab's bookkeeping.
 
 - Answers `200` with the payment as `POST /internal/payments` returns it,
   plus whatever applies: `processedAt`; `reversedAt` and `reversalReason`;
-  `returnedBy` on a returned payout; `return`, `returnOf`,
+  `rejectionReasonCode` and `rejectionReasonDescription` on a payout a
+  trap rejected with a reason; `returnedBy` on a returned payout; `return`, `returnOf`,
   `returnedReference`, `returnReasonCode`, `returnReasonDescription` and
   `remittanceInformation` on a return. `state` is the last notification
   type fired. `404` `{"error": "payment not found", "status": 404}`.
@@ -790,23 +1026,32 @@ back.
 
 ### `GET /internal/payments/outcomes`
 
-On the bridge, no auth. The forced outcomes still waiting for a payout.
+On the bridge, no auth. The queued outcomes still waiting for a payout:
+the outcome queue's traps that are still armed, in the order they were
+armed.
 
-- Answers `200` `{"queued": ["Rejected", "Pending"]}`; `[]` when none.
+- Answers `200` `{"queued": ["Rejected", "Pending"]}`; `[]` when none. A
+  queued trap that has taken its payout, or was disarmed, is gone from it.
 
 ### `POST /internal/payments/outcomes`
 
 On the bridge, no auth. Decides how the next payouts end, one each, in
-order, after anything already queued.
+order, after anything already queued. A shortcut for traps
+([Traps](#traps)).
 
-- Body: `{"outcomes": ["Rejected", "Pending"]}`. `Rejected` ends a payout
-  `OutgoingPaymentRejected` without moving money; `Pending` leaves it
-  `OutgoingPaymentBooked` for good.
+- Body: `{"outcomes": ["Rejected", "Pending"]}`. Each outcome arms one
+  `payment.outgoing` trap with `match: {}`, labelled
+  `outcome queue: Rejected` or `outcome queue: Pending`. `Rejected` is the
+  path `[{"to": "OutgoingPaymentRejected"}]`: no money moves, the fixed
+  reason. `Pending` is `[]`: the payout stays `OutgoingPaymentBooked` for
+  good.
 - Answers `200` with the whole queue, `{"queued": ["Rejected", "Pending"]}`.
-  `400` `{"error": "bankingcircle: unknown outcome (want Rejected or Pending)", "status": 400}`
-  or for a body that does not decode.
-- Side effects: taken by whichever `POST /internal/payments` comes next,
-  whoever sends it. In memory only.
+  `400` `{"error": "bankingcircle: unknown outcome (want Rejected or Pending)", "status": 400}`,
+  with nothing armed, or for a body that does not decode.
+- Side effects: the traps are listed by `GET /sim/traps` and logged in the
+  `traps` log. Each is taken by whichever `POST /internal/payments` comes
+  next, whoever sends it, unless a trap armed before it takes that payout
+  first. `POST /sim/reset` clears them. In memory only.
 
 ## Called by
 
@@ -862,9 +1107,11 @@ order, after anything already queued.
   `b4b-oversight-gates` reaches `POST /internal/payments` through b4b.
 - **Agents and operators** (agent.runbooks.md): `POST`/`GET :8095/internal/payments/outcomes`
   and `POST :8095/internal/payments/{id}/return` and `/reverse`, or the
-  same on the control port under `/sim/payments/…`.
+  same on the control port under `/sim/payments/…`; the traps on the
+  control port, `/sim/traps…`, directly or through the lab API's
+  `/v1/services/banking-circle/sim/traps…`.
 - **Banking Circle calls out** to every subscription endpoint (the
   receiver's `/raw-events`, or the platform's listener) and to the business
   bank's `POST /internal/credit`.
 
-Routes checked against the source at commit db5e695.
+Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

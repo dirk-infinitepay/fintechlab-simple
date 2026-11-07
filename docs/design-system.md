@@ -630,7 +630,7 @@ agent reads before calling anything.
   load; the service cards re-render with the overview poll like everywhere
   else, so a health dot here is as true as on the Vendors view.
 - **Planned is not documented.** Routes that are designed but not built
-  (the lab API's traps, in `docs/lab-api/`) get one `.note`
+  (the lab API's event streams, in `docs/lab-api/`) get one `.note`
   pointing at the design, never rows in the reference. A reference that lists routes which
   do not answer yet is a reference nobody can trust.
 

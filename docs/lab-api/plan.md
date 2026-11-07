@@ -14,7 +14,16 @@ the lab working end to end, and `make harness` green.
   its `/sim/*` routes, `/sim/info`, `/sim/logs` and `/sim/reset` among
   them, on its control port, with the old paths kept as aliases;
 - `POST /v1/lab/reset`, `GET /v1/logs`, `GET /v1/services/{id}/logs` and
-  `POST /v1/services/{id}/reset`.
+  `POST /v1/services/{id}/reset`;
+- `internal/trap` (store, matching, the path validated against a hook's
+  graph, steps in real or lab time, cancelling on disarm and reset,
+  standing traps, the `traps` activity log, the `/sim/traps` routes);
+  Banking Circle's `payment.outgoing`, with the outcome queue rebuilt as a
+  shortcut over it; B4B's `payment.create`, with
+  `B4B_FORCE_FAILURE_BENEFICIARY_IDS` as standing traps; `/v1/traps`,
+  `/v1/traps/hooks` and `DELETE /v1/traps`;
+- the harness scenarios for the trap paths and for a reset mid-payout
+  (`HARNESS_ONLY` runs a few).
 
 Choices made on the way:
 
@@ -49,8 +58,15 @@ Choices made on the way:
 - **Log rings leave out `GET /health` and `GET /sim/logs`**, so watching the
   lab does not fill them.
 
-Not built yet: `internal/trap` and the first traps, `/v1/traps`,
-`openapi.yaml`, and the harness scenarios for traps and reset. Four services each carry their own
+Traps took the proposals of [OPEN 5, 6, 7, 9](open.md): a trap takes one
+event unless `times` says otherwise, `after` is real time and `after_lab`
+the lab clock's, the vendor's own rule wins when its books cannot follow a
+step (`trap.diverted`), and disarming cancels pending steps. B4B walks a
+step to a state further along as one step per hop, so `pending_steps`
+shows the next hop and a disarm stops at it. [OPEN 8](open.md) is not
+decided: `MissingFunding` stays final.
+
+Not built yet: `openapi.yaml`. That is the last of phase 1. Four services each carry their own
 reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and settlement's
 `runGuard`); one in `internal/simctl` should replace them.
 

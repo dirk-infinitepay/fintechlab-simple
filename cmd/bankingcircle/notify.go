@@ -217,7 +217,9 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 	for _, rec := range recipients {
 		// From the payment's run: if a reset has cleared the payment, the
 		// dispatcher drops this rather than queue it.
-		a.dispatch.EnqueueFrom(p.Epoch(), rec.Subscription, newNotification(rec, eventType, detail))
+		n := newNotification(rec, eventType, detail)
+		n.Trap = p.Trap() // the lab's mark, for the notifications log; never sent
+		a.dispatch.EnqueueFrom(p.Epoch(), rec.Subscription, n)
 	}
 }
 

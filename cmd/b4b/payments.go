@@ -164,7 +164,8 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 	// The gates. All answer 422 and forward nothing: creditor fields check
 	// the beneficiary, they do not override it, and accepting a mismatch
 	// silently is how money reaches the wrong account.
-	if a.gateBeneficiary(w, req) == nil {
+	ben := a.gateBeneficiary(w, req)
+	if ben == nil {
 		return
 	}
 
@@ -188,13 +189,14 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 		RequestedExecutionDate: req.RequestedExecutionDate,
 		RemittanceInformation:  remittance,
 		DebtorReference:        "B4BREF" + shortID(),
-		ForceFail:              a.forceFails[req.BeneficiaryID],
 	}
 	if req.DebtorAccount != nil {
 		ref := b4b.AccountRef(*req.DebtorAccount)
 		p.DebtorAccount = &ref
 	}
-	a.engine.Submit(p)
+	// The payment.create traps see it first (traps.go): B4B_FORCE_FAILURE_
+	// BENEFICIARY_IDS among them, as standing traps.
+	a.accept(p, ben)
 
 	httputilx.WriteJSON(w, 202, createPaymentResp{
 		ID:      p.ID,
@@ -287,7 +289,7 @@ func (a *app) deliverPaymentCallback(started uint64, p *b4b.Payment, bcResp map[
 	if bcResp != nil {
 		body["banking_circle_api_response"] = bcResp
 	}
-	a.deliverCallback(started, fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body)
+	a.deliverMarked(started, fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body, trapMark(p))
 }
 
 // summarizePayment writes the one line an operator reads in the console's
@@ -320,6 +322,19 @@ func summarizePayment(c *activity.Call) (string, map[string]string) {
 	} {
 		if v != "" {
 			detail[k] = v
+		}
+	}
+	return summary, detail
+}
+
+// summarizeCreate is summarizePayment plus the trap that caught the payout,
+// if one did (detail.trap): the payouts panel then says what decides its
+// fate.
+func (a *app) summarizeCreate(c *activity.Call) (string, map[string]string) {
+	summary, detail := summarizePayment(c)
+	if id := detail["payment_id"]; id != "" {
+		if p, err := a.engine.Get(id); err == nil && p.Trap != "" {
+			detail["trap"] = p.Trap
 		}
 	}
 	return summary, detail
