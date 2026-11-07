@@ -79,11 +79,10 @@ func TestResetClearsWhatTheStandInMadeAndKeepsTheRest(t *testing.T) {
 		writeFile(t, filepath.Join(archive, "dropped-by-hand.csv")),
 	}
 
-	// Through the contract, as the lab API calls it.
-	mux := http.NewServeMux()
-	simctl.Mount(mux, simctl.Config{Service: "settlement", Kind: "stand-in", Reset: a.reset(p)})
+	// Through the contract on the control port, as the lab API calls it.
+	_, ctl := testSurfaces(t, a, p)
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/sim/reset", strings.NewReader(`{"scope": "all"}`)))
+	ctl.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/sim/reset", strings.NewReader(`{"scope": "all"}`)))
 	if rr.Code != 200 {
 		t.Fatalf("POST /sim/reset: %d %s", rr.Code, rr.Body)
 	}

@@ -18,8 +18,9 @@ import (
 // that document to exactly this table.
 //
 // The lab API stays a client of the services (docs/api/README.md): most
-// routes are one call to one service's own API, and Reaches names it, so a
-// script or an agent can tell when it could have gone to the service itself.
+// routes are one call to one service's control port, and Reaches names the
+// route, so a script or an agent can tell when it could have gone to the
+// service itself. Every /sim route named here is on that control port.
 
 // route is one lab API route.
 type route struct {
@@ -84,57 +85,57 @@ func (a *app) apiRoutes() []route {
 	return []route{
 		{"GET", "/health", "", "lab", "Whether the lab API process is up", "nothing — the lab API's own state", a.health},
 		{"GET", "/v1", "/api", "lab", "This index: every route, its alias, its group and what it reaches", "nothing — the lab API's own state", nil},
-		{"GET", "/v1/lab", "/api/overview", "lab", "Every service and registered plugin with its last health probe", "each service's health_path, probed in the background", a.overview},
+		{"GET", "/v1/lab", "/api/overview", "lab", "Every service and registered plugin with its last health probe", "each service's control GET /health, probed in the background", a.overview},
 		{"GET", "/v1/flow", "/api/flow", "lab", "The settlement run as a sequence: participants, hops, counts, report", "each vendor's GET /sim/activity, the plugin's status_path", a.flow},
 		{"GET", "/v1/flow/hops/{id}", "/api/flow/hops/{id}", "lab", "The events behind one arrow of the run diagram", "same reads as GET /v1/flow", a.flowHop},
 		{"POST", "/v1/lab/reset", "", "lab", "Reset every service in order, producers first and the clock last", "every service's POST /sim/reset; the merchant registry on all", a.labReset},
 		{"GET", "/v1/logs", "", "lab", "Every service's log lines, merged by time, behind one cursor", "every service's GET /sim/logs", a.labLogs},
 		{"GET", "/v1/stand-ins", "/api/stand-ins", "lab", "The stand-ins: shown or hidden, and how each is wired, read live", "settlement+aci /sim/connected, banking-circle subscriptions", a.listStandIns},
-		{"POST", "/v1/stand-ins/{id}", "/api/stand-ins/{id}", "lab", "Show, hide, connect or disconnect one stand-in", "settlement+aci POST /sim/connected; BC (de)activate", a.setStandIn},
+		{"POST", "/v1/stand-ins/{id}", "/api/stand-ins/{id}", "lab", "Show, hide, connect or disconnect one stand-in", "settlement+aci POST /sim/connected; BC /sim/subscription/{id}/(de)activate", a.setStandIn},
 
-		{"GET", "/v1/services", "", "services", "Every service: its catalogue entry and its last health probe", "each service's health_path, probed in the background", a.listServices},
-		{"GET", "/v1/services/{id}", "", "services", "One service: its catalogue entry and its last health probe", "the service's health_path, probed in the background", a.getService},
-		{"POST", "/v1/services/{id}/probe", "/api/services/{id}/probe", "services", "Probe one service's health now instead of waiting for the monitor", "the service's GET health_path", a.probeService},
-		{"GET", "/v1/services/{id}/activity", "/api/services/{id}/activity", "services", "One service's activity logs, as the service reports them", "the service's GET /sim/activity (or plugin activity_path)", a.serviceActivity},
+		{"GET", "/v1/services", "", "services", "Every service: its catalogue entry and its last health probe", "each service's control GET /health, probed in the background", a.listServices},
+		{"GET", "/v1/services/{id}", "", "services", "One service: its catalogue entry and its last health probe", "the service's control GET /health, probed in the background", a.getService},
+		{"POST", "/v1/services/{id}/probe", "/api/services/{id}/probe", "services", "Probe one service's health now instead of waiting for the monitor", "the service's control GET /health", a.probeService},
+		{"GET", "/v1/services/{id}/activity", "/api/services/{id}/activity", "services", "One service's activity logs, as the service reports them", "the service's control GET /sim/activity (or plugin activity_path)", a.serviceActivity},
 		{"GET", "/v1/services/{id}/logs", "", "services", "One service's own log lines", "the service's GET /sim/logs", a.serviceLogs},
 		{"POST", "/v1/services/{id}/reset", "", "services", "Reset one service: flow or all", "the service's POST /sim/reset", a.serviceReset},
-		{"ANY", "/v1/services/{id}/sim/{path...}", "", "services", "Any of a service's /sim/* lab hooks, with the credentials it needs", "the service's /sim/{path}: method, query and body as sent", a.simPassthrough},
+		{"ANY", "/v1/services/{id}/sim/{path...}", "", "services", "Any of a service's /sim/* lab hooks, on its control port", "the service's control /sim/{path}: method, query and body as sent", a.simPassthrough},
 
 		{"GET", "/v1/clock", "/api/clock", "clock", "The lab clock as it stands", "clock GET /clock", a.labClock},
 		{"POST", "/v1/clock", "/api/clock", "clock", "Move the lab clock, or change its mode", "clock POST /clock", a.setLabClock},
 		{"POST", "/v1/clock/holds", "", "clock", "Hold the lab clock while a run is in flight: moves are refused", "clock POST /clock/holds", a.clockHold},
 		{"DELETE", "/v1/clock/holds/{holder}", "", "clock", "Release a hold on the lab clock", "clock DELETE /clock/holds/{holder}", a.clockRelease},
 
-		{"GET", "/v1/config", "/api/config", "config", "The lab's settings: env knobs, BC delivery table, Worldline channel", "banking-circle /sim/delivery-config, worldline GET /config", a.getConfig},
-		{"PUT", "/v1/config/worldline-channel", "/api/config/worldline-channel", "config", "Change Worldline's SFT file-exchange channel config", "worldline PUT /config", a.putWorldlineChannel},
+		{"GET", "/v1/config", "/api/config", "config", "The lab's settings: env knobs, BC delivery table, Worldline channel", "banking-circle /sim/delivery-config, worldline GET /sim/config", a.getConfig},
+		{"PUT", "/v1/config/worldline-channel", "/api/config/worldline-channel", "config", "Change Worldline's SFT file-exchange channel config", "worldline PUT /sim/config", a.putWorldlineChannel},
 
 		{"GET", "/v1/merchants", "/api/merchants", "merchants", "The merchant registry: distributors, partners, merchants, outlets, batches", "nothing — the lab API's own state", a.listMerchants},
 		{"POST", "/v1/merchants", "/api/merchants", "merchants", "Create a merchant and its outlets in the registry", "nothing — the lab API's own state", a.createMerchant},
 		{"DELETE", "/v1/merchants/{id}", "/api/merchants/{id}", "merchants", "Delete a merchant from the registry; vendors keep what they had", "nothing — the lab API's own state", a.deleteMerchant},
 		{"POST", "/v1/merchants/batches", "/api/merchants/batches", "merchants", "Generate a batch of merchants with outlets from a seed", "nothing — the lab API's own state", a.createBatch},
 		{"DELETE", "/v1/merchants/batches/{id}", "/api/merchants/batches/{id}", "merchants", "Delete a batch and its merchants from the registry", "nothing — the lab API's own state", a.deleteBatch},
-		{"POST", "/v1/merchants/batches/{id}/provision", "/api/merchants/batches/{id}/provision", "merchants", "Register every outlet of a batch as a B4B beneficiary", "b4b POST /oversight/v1/beneficiaries, per outlet", a.provisionBatch},
+		{"POST", "/v1/merchants/batches/{id}/provision", "/api/merchants/batches/{id}/provision", "merchants", "Register every outlet of a batch as a B4B beneficiary", "b4b POST /sim/beneficiaries, per outlet", a.provisionBatch},
 		{"POST", "/v1/merchants/batches/{id}/trading", "/api/merchants/batches/{id}/trading", "merchants", "Seed card payments at Worldline for every outlet of a batch", "worldline POST /sim/transactions, per merchant", a.tradeBatch},
 		{"POST", "/v1/merchants/{id}/outlets", "/api/merchants/{id}/outlets", "merchants", "Open another outlet (a new MID) for a merchant", "nothing — the lab API's own state", a.addOutlet},
 		{"POST", "/v1/merchants/{id}/status", "/api/merchants/{id}/status", "merchants", "Set a merchant's status: draft, active or suspended", "nothing — the lab API's own state", a.setMerchantStatus},
-		{"POST", "/v1/merchants/{id}/provision", "/api/merchants/{id}/provision", "merchants", "Register a merchant's outlets as B4B beneficiaries", "b4b POST /oversight/v1/beneficiaries, per outlet", a.provisionMerchant},
+		{"POST", "/v1/merchants/{id}/provision", "/api/merchants/{id}/provision", "merchants", "Register a merchant's outlets as B4B beneficiaries", "b4b POST /sim/beneficiaries, per outlet", a.provisionMerchant},
 		{"POST", "/v1/merchants/{id}/trading", "/api/merchants/{id}/trading", "merchants", "Seed card payments at Worldline for a merchant's outlets", "worldline POST /sim/transactions", a.seedTrading},
 		{"POST", "/v1/outlets/{mid}/sanctions", "/api/outlets/{mid}/sanctions", "merchants", "Set an outlet's sanctions status at B4B: pass, review or fail", "b4b PUT /sim/beneficiaries/{mid}/sanctions", a.setSanctions},
 		{"POST", "/v1/partners", "/api/partners", "merchants", "Add a partner under a distributor", "nothing — the lab API's own state", a.createPartner},
 
-		{"GET", "/v1/banks", "/api/banks", "banks", "Both banks with their accounts and balances", "bank GET /accounts; banking-circle GET /accounts", a.listBanks},
-		{"POST", "/v1/banks/{id}/accounts", "/api/banks/{id}/accounts", "banks", "Open an account at the business bank (Banking Circle: 501)", "bank POST /accounts", a.openAccount},
-		{"GET", "/v1/banking-circle/subscriptions", "/api/banking-circle/subscriptions", "banks", "Banking Circle's notification subscriptions, with what is waiting", "banking-circle subscription list and /sim pending reads", a.bcSubscriptions},
-		{"POST", "/v1/banking-circle/subscriptions/{id}/test", "/api/banking-circle/subscriptions/{id}/test", "banks", "Send a subscription a test notification and report what it did", "banking-circle POST clienttest/{id}, GET /sim/activity", a.bcSubscriptionTest},
+		{"GET", "/v1/banks", "/api/banks", "banks", "Both banks with their accounts and balances", "bank and banking-circle GET /sim/accounts", a.listBanks},
+		{"POST", "/v1/banks/{id}/accounts", "/api/banks/{id}/accounts", "banks", "Open an account at the business bank (Banking Circle: 501)", "bank POST /sim/accounts", a.openAccount},
+		{"GET", "/v1/banking-circle/subscriptions", "/api/banking-circle/subscriptions", "banks", "Banking Circle's notification subscriptions, with what is waiting", "banking-circle GET /sim/subscriptions and each one's /pending", a.bcSubscriptions},
+		{"POST", "/v1/banking-circle/subscriptions/{id}/test", "/api/banking-circle/subscriptions/{id}/test", "banks", "Send a subscription a test notification and report what it did", "banking-circle POST /sim/subscription/{id}/test, GET /sim/activity", a.bcSubscriptionTest},
 		{"POST", "/v1/banking-circle/subscriptions/{id}/pause", "/api/banking-circle/subscriptions/{id}/pause", "banks", "Hold a subscription's deliveries", "banking-circle POST /sim/subscription/{id}/pause", a.bcSubscriptionPause},
 		{"POST", "/v1/banking-circle/subscriptions/{id}/resume", "/api/banking-circle/subscriptions/{id}/resume", "banks", "Release a paused subscription's deliveries", "banking-circle POST /sim/subscription/{id}/resume", a.bcSubscriptionPause},
-		{"GET", "/v1/banking-circle/payouts", "/api/banking-circle/payouts", "banks", "Banking Circle's outgoing payouts, and which can be returned or reversed", "banking-circle GET /payments", a.bcPayouts},
+		{"GET", "/v1/banking-circle/payouts", "/api/banking-circle/payouts", "banks", "Banking Circle's outgoing payouts, and which can be returned or reversed", "banking-circle GET /sim/payments", a.bcPayouts},
 		{"POST", "/v1/banking-circle/payouts/{id}/return", "/api/banking-circle/payouts/{id}/return", "banks", "Return a processed payout, as the beneficiary's bank would", "banking-circle POST /sim/payments/{id}/return", a.bcPayoutAction},
 		{"POST", "/v1/banking-circle/payouts/{id}/reverse", "/api/banking-circle/payouts/{id}/reverse", "banks", "Reverse a processed payout, as the scheme would", "banking-circle POST /sim/payments/{id}/reverse", a.bcPayoutAction},
-		{"POST", "/v1/actions/fund-sga", "/api/actions/fund-sga", "banks", "Fund the empty safeguarding accounts, as Worldline's wire would", "banking-circle bridge GET balances, POST incoming-payments", a.fundSGA},
+		{"POST", "/v1/actions/fund-sga", "/api/actions/fund-sga", "banks", "Fund the empty safeguarding accounts, as Worldline's wire would", "banking-circle /sim/accounts/{id}/balances, /sim/incoming-payments", a.fundSGA},
 
 		{"POST", "/v1/actions/worldline-cycle", "/api/actions/worldline-cycle", "actions", "Cut and publish Worldline's settlement files now", "worldline POST /sim/settlement-cycle/run", a.runWorldlineCycle},
-		{"POST", "/v1/actions/settlement-pull", "/api/actions/settlement-pull", "actions", "Make the settlement stand-in pull Worldline's SFTP now", "settlement POST /worldline/pull", a.settlementPull},
+		{"POST", "/v1/actions/settlement-pull", "/api/actions/settlement-pull", "actions", "Make the settlement stand-in pull Worldline's SFTP now", "settlement POST /sim/pull", a.settlementPull},
 
 		{"GET", "/v1/plugins", "/api/plugins", "plugins", "The registered platforms and how each registration stands", "nothing — the lab API's own state", a.listPlugins},
 		{"POST", "/v1/plugins", "/api/plugins", "plugins", "Register or renew a platform's card (docs/plugins.md)", "the lab API's own state; then health_path and stand-in wiring", a.registerPlugin},

@@ -118,11 +118,16 @@ health probe. What the Vendors, Platform and Verification views draw.
   `registration stopped` / `registration lapsed`.
 - A stand-in also carries `stand_in`: `shown`, `set_by`, `set_at`,
   `plays`, `starts_off`.
-- `provisioning_ready` is false while the B4B signing key is unreadable;
-  `provisioning_error` says why. Registering outlets at B4B needs it.
+- `control_url` is the service's control port (`base_url`'s port plus
+  1000, plain HTTP): every `/sim/*` route and its own `GET /health`. It is
+  where the lab API reaches the service, with no vendor login. A plugin has
+  none.
+- `provisioning_ready` is true whenever B4B has a control address;
+  `provisioning_error` is kept for older pages and is empty.
 
 **Reaches** — nothing at request time. A background monitor probes each
-service's `health_path` every `CONSOLE_PROBE_INTERVAL` (5 s).
+service's control `GET /health` every `CONSOLE_PROBE_INTERVAL` (5 s); a
+plugin's `health_path` on its `base_url`.
 
 ### `POST /v1/lab/reset`
 
@@ -313,8 +318,9 @@ no Banking Circle subscription points at the receiver, or ACI delivers
 somewhere else.
 
 **Reaches** — `settlement GET /sim/connected`; `banking-circle GET
-/api/v1/notificationselfservice/subscription?PageSize=50` (the
-subscriptions whose endpoint host is `receiver`); `aci GET /sim/connected`.
+/sim/subscriptions` (the subscriptions whose endpoint host is
+`receiver`); `aci GET /sim/connected` — each on the service's control
+port.
 
 ### `POST /v1/stand-ins/{id}`
 
@@ -340,10 +346,10 @@ did not switch. `502` with the same body when nothing took.
 `400 want {"connected": true|false} and/or {"shown": true|false}`;
 `404 "<id>" is not a stand-in; the lab's are [...]`.
 
-**Reaches** — `settlement POST /sim/connected` `{"connected", "reason"}`;
-`banking-circle PUT /api/v1/notificationselfservice/subscription/{id}/activate`
-or `/deactivate`, with `If-Match`, per receiver subscription; `aci POST
-/sim/connected` (only while ACI delivers to the receiver); then the reads
+**Reaches** — on each service's control port: `settlement POST
+/sim/connected` `{"connected", "reason"}`; `banking-circle POST
+/sim/subscription/{id}/activate` or `/deactivate` per receiver
+subscription; `aci POST /sim/connected` (only while ACI delivers to the receiver); then the reads
 of `GET /v1/stand-ins`.
 
 ## Services
@@ -358,7 +364,7 @@ of `services` in `GET /v1/lab`: its catalogue record (`base_url`,
 **Answers** — `200 {"services": [ … ]}`
 
 **Reaches** — nothing at request time; the background monitor probes each
-service's `health_path`.
+service's control `GET /health`.
 
 ### `GET /v1/services/{id}`
 
@@ -383,9 +389,8 @@ plugin's id.
 `GET /v1/lab`. A service that is down is still `200`, with
 `"state": "down"`. `404 unknown service <id>`.
 
-**Reaches** — the service's `GET {base_url}{health_path}`
-(`banking-circle` and `receiver` over TLS, Banking Circle with the client
-certificate).
+**Reaches** — the service's `GET {control_url}/health`; a plugin's
+`GET {base_url}{health_path}`.
 
 ### `GET /v1/services/{id}/activity`
 
@@ -411,9 +416,8 @@ log, passed through (the service's default is 100; rings hold 256).
 the service cannot be read (a non-2xx arrives as `GET <url>: HTTP <code>`,
 its body dropped).
 
-**Reaches** — the service's `GET /sim/activity?limit=` (Banking Circle's
-on its credentialed listener, with a bearer token); for a plugin,
-`base_url` + `activity_path`.
+**Reaches** — the service's `GET /sim/activity?limit=` on its control
+port; for a plugin, `base_url` + `activity_path`.
 
 ### `GET /v1/services/{id}/logs`
 
@@ -442,8 +446,8 @@ when it cannot be reached.
 ### `ANY /v1/services/{id}/sim/{path...}`
 
 The passthrough: any of a service's `/sim/*` lab hooks, through the one
-address, with the credentials that service asks for added here. Method,
-query and body go to the service as sent; its status, `Content-Type` and
+address, on the service's control port. Method, query and body go to the
+service as sent; its status, `Content-Type` and
 body come back as it gave them. A hook a service gains is reachable here
 the moment it exists.
 
@@ -460,16 +464,14 @@ own hooks are its declared actions). `path`: the rest of the service's
 
 **Headers carried on** — `Content-Type`, `Accept`, `If-Match`,
 `If-None-Match`. The caller's `Authorization` is not: it was for the lab
-API. Instead, `banking-circle` gets the lab API's bearer token over mTLS,
-and `b4b` an RS512 JWT signed with the key b4b generated; every other
-service's hooks need nothing.
+API, and a control port asks for none — no vendor login, Banking Circle's
+and B4B's included. The vendors' credentials are the platform's.
 
 **Answers** — *verbatim*: whatever the service answered. `404 no lab
-service <id>`. `502` when the service cannot be reached, or the
-credentials for it cannot be had (no client certificate, B4B's key not
-generated yet), saying which. Bodies up to 32 MB.
+service <id>`. `502` when the service's control port cannot be reached.
+Bodies up to 32 MB.
 
-**Reaches** — the service's `{method} {base_url}/sim/{path}?{query}`. Each
+**Reaches** — `{method} {control_url}/sim/{path}?{query}`. Each
 service's hooks are in its reference, [services/](services/), under *Lab
 control*.
 
@@ -588,8 +590,9 @@ notification delivery table, and Worldline's file-exchange channel.
   cannot be read, including `HTTP 404` before any channel config has been
   saved.
 
-**Reaches** — `banking-circle GET /sim/delivery-config` (bearer), or the
-config file; `worldline GET /config`.
+**Reaches** — `banking-circle GET /sim/delivery-config`, or the config
+file; `worldline GET /sim/config` (the same answer as its `GET /config`) —
+each on its control port.
 
 ### `PUT /v1/config/worldline-channel`
 
@@ -612,7 +615,8 @@ it whole, so a field left out is cleared.
 The lab API answers `400 body must be JSON: …` for a body it cannot parse,
 and `502` when Worldline is unreachable.
 
-**Reaches** — `worldline PUT /config`.
+**Reaches** — `worldline PUT /sim/config` on its control port (the same
+handler as its `PUT /config`).
 
 ## Merchants
 
@@ -746,12 +750,13 @@ merchant: `POST /v1/merchants/{id}/provision` for the whole batch.
  "note": "49 of 50 merchants on the payout rail, 70 outlet(s) registered at B4B"}
 ```
 
-`404` for an unknown batch. `400` when provisioning is unavailable (the
-B4B signing key is unreadable); the call stops at the first merchant. The
-whole batch may take up to two minutes.
+`404` for an unknown batch. An outlet B4B refuses, or a B4B control port
+that does not answer, is reported per outlet. The whole batch may take up
+to two minutes.
 
-**Reaches** — `b4b POST /oversight/v1/beneficiaries`, once per outlet,
-with an RS512 bearer token.
+**Reaches** — `b4b POST /sim/beneficiaries` on its control port, once per
+outlet: the same registration, answer and callbacks as its Oversight
+`POST /oversight/v1/beneficiaries`, with no JWT.
 
 ### `POST /v1/merchants/batches/{id}/trading`
 
@@ -835,12 +840,12 @@ outlet. Safe to repeat: B4B corrects the record for a repeated
               "error": "POST /oversight/v1/beneficiaries: HTTP 422: …"}]}
 ```
 
-`404` for an unknown merchant. `400 … b4b signing key unavailable, set
-B4B_JWT_PRIVATE_KEY_PATH …` when provisioning is unavailable.
+`404` for an unknown merchant.
 
-**Reaches** — `b4b POST /oversight/v1/beneficiaries` per outlet,
-`{"external_ref", "account_name", "account_number",
-"financial_institution", "country"}`, with an RS512 bearer token.
+**Reaches** — `b4b POST /sim/beneficiaries` on its control port, per
+outlet, `{"external_ref", "account_name", "account_number",
+"financial_institution", "country"}` — the Oversight API's registration,
+with no JWT.
 
 ### `POST /v1/merchants/{id}/trading`
 
@@ -896,8 +901,8 @@ provisioning is unavailable. `502` when B4B refuses (a status other than
 unreachable. `404` when the MID is not in the registry; B4B has already
 been changed by then.
 
-**Reaches** — `b4b PUT /sim/beneficiaries/{mid}/sanctions`, with an RS512
-bearer token.
+**Reaches** — `b4b PUT /sim/beneficiaries/{mid}/sanctions` on its control
+port.
 
 ### `POST /v1/partners`
 
@@ -944,9 +949,8 @@ no accounts.
 The bank ids are `core-ledger` and `banking-circle`; `service_id` is the
 catalogue id.
 
-**Reaches** — `bank GET /accounts`; `banking-circle GET
-/api/v1/authorizations/authorize` (Basic for Bearer, cached) and `GET
-/accounts`, over mTLS.
+**Reaches** — `GET /sim/accounts` on the bank's and Banking Circle's
+control ports (each the same answer as the service's `GET /accounts`).
 
 ### `POST /v1/banks/{id}/accounts`
 
@@ -967,10 +971,10 @@ The bank requires `holder` and defaults `currency` to EUR;
 **Answers** — `201 {"id": "acc_…", "number": "GB00SIM…", "holder": "Carol Simulator", "currency": "EUR", "balance": "250.00"}`.
 `400` for a bad body; `404 unknown bank <id>`; `501` for Banking Circle;
 `502` when the bank refuses or is unreachable. A missing `holder` is the
-bank's refusal: `502 POST /accounts: HTTP 400: …`.
+bank's refusal: `502 POST /sim/accounts: HTTP 400: …`.
 
-**Reaches** — `bank POST /accounts` `{"holder", "currency",
-"openingBalance"}`.
+**Reaches** — `bank POST /sim/accounts` on its control port `{"holder",
+"currency", "openingBalance"}`.
 
 ### `GET /v1/banking-circle/subscriptions`
 
@@ -999,9 +1003,9 @@ events, its status, and how much is waiting.
 - At most 50 subscriptions. `502` when Banking Circle refuses or is
   unreachable.
 
-**Reaches** — `banking-circle GET
-/api/v1/notificationselfservice/subscription?PageSize=50`, then `GET
-/sim/subscription/{id}/pending` per subscription.
+**Reaches** — `banking-circle GET /sim/subscriptions` (the same answer as
+its subscription list), then `GET /sim/subscription/{id}/pending` per
+subscription, on its control port.
 
 ### `POST /v1/banking-circle/subscriptions/{id}/test`
 
@@ -1024,9 +1028,9 @@ three seconds later — …"}`. `result` and `detail` are the newest entry in
 Banking Circle's notifications log, which during a run may be another
 delivery. `502` when the test call fails, an unknown id included.
 
-**Reaches** — `banking-circle POST
-/api/v1/notificationselfservice/clienttest/{id}`, and `GET
-/sim/activity?limit=1` before it and every 200 ms after.
+**Reaches** — `banking-circle POST /sim/subscription/{id}/test` (the same
+as its `clienttest`), and `GET /sim/activity?limit=1` before it and every
+200 ms after, on its control port.
 
 ### `POST /v1/banking-circle/subscriptions/{id}/pause`
 
@@ -1078,7 +1082,7 @@ payments are left out: a return shows as the payout's `returned_by`.
 Banking Circle's `paymentReferenceNumber`; `external_ref` is the payout's
 `settlementId`. `502` when Banking Circle cannot be read.
 
-**Reaches** — `banking-circle GET /payments` (lab introspection, bearer).
+**Reaches** — `banking-circle GET /sim/payments` on its control port.
 
 ### `POST /v1/banking-circle/payouts/{id}/return`
 
@@ -1099,9 +1103,8 @@ payment flagged `return`. Cannot be undone.
 The lab API sends no reason code. `502` when Banking Circle refuses (not
 processed, already returned, unknown id) or is unreachable.
 
-**Reaches** — `banking-circle POST /sim/payments/{id}/return` on the
-credentialed listener (the same handler as the bridge's
-`/internal/payments/{id}/return`).
+**Reaches** — `banking-circle POST /sim/payments/{id}/return` on its
+control port.
 
 ### `POST /v1/banking-circle/payouts/{id}/reverse`
 
@@ -1114,8 +1117,8 @@ booking. Cannot be undone.
 `{"id": "bcp_…", "state": "Reversed", "processedAt": "…", "reversedAt": "…", …}`.
 `502` as for return.
 
-**Reaches** — `banking-circle POST /sim/payments/{id}/reverse` on the
-credentialed listener.
+**Reaches** — `banking-circle POST /sim/payments/{id}/reverse` on its
+control port.
 
 ### `POST /v1/actions/fund-sga`
 
@@ -1139,10 +1142,10 @@ included:
 `502 {"error": "EUR: …; GBP: …", "results": […]}` when every currency
 failed (no `status` field).
 
-**Reaches** — Banking Circle's bridge (`CONSOLE_BC_INTERNAL_URL`,
-`:8095`, no auth): `GET /internal/accounts/{id}/balances` per account,
-then `POST /internal/incoming-payments` `{"currency", "amount",
-"reference"}` for each empty one.
+**Reaches** — Banking Circle's control port: `GET
+/sim/accounts/{id}/balances` per account, then `POST
+/sim/incoming-payments` `{"currency", "amount", "reference"}` for each
+empty one (the same money landing as Worldline's wire on the bridge).
 
 ## Vendor actions
 
@@ -1193,7 +1196,8 @@ timers.
 <host>:<port> failed: …` from settlement when SFTP fails; `502` from the
 lab API when settlement is unreachable.
 
-**Reaches** — `settlement POST /worldline/pull`.
+**Reaches** — `settlement POST /sim/pull` on its control port (the same
+as its `POST /worldline/pull`).
 
 ## Plugins
 

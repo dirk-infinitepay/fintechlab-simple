@@ -18,11 +18,11 @@ does not read, which is minimal, fixed or echoed. Nothing is persisted.
 
 | | |
 | --- | --- |
-| Listens | `:8089`, plain HTTP. Compose service `verification` (`http://verification:8089` on the compose network); host `http://127.0.0.1:8089` |
-| Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes. `/health` and `/sim/*`: none |
+| Listens | `:8089`, plain HTTP: the vendor routes. Compose service `verification` (`http://verification:8089` on the compose network); host `http://127.0.0.1:8089`.<br>`:9089`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://verification:9089` |
+| Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes. `/health` and `/sim/*`: none. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The lab API hands these out at `GET :8097/v1/connect/env/verification` |
 | Activity logs | None. There is no `GET /sim/activity`, so the console card shows no panels. Each request line is logged on stdout |
-| Configuration | `LISTEN` (`:8089`). Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
+| Configuration | `LISTEN` (`:8089`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9089`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
 | Design record | [integration/verification-vendor-edge.md](../../integration/verification-vendor-edge.md), the package comment in `cmd/verification/main.go`, [catalogue.md](../../catalogue.md) |
 
 ## Vendor surface
@@ -304,11 +304,17 @@ any is missing. `identity` outcome as for IDU (`REFER`/500, `FAIL`/100).
 ## Lab control
 
 Hooks a test, agent or operator uses to observe or steer the sim. They do
-not exist at the real vendors.
+not exist at the real vendors. They are on the control port, `:9089`
+([the control contract](../README.md#the-control-contract)); the same
+`/sim/*` paths still answer on `:8089` until phase 4 of
+[the plan](../../lab-api/plan.md) retires them.
 
 ### `GET /health`
 
-Liveness. Answers `200` with `{"status": "ok", "service": "verification"}`.
+Liveness, on both ports. `:8089` answers `{"status": "ok", "service":
+"verification"}`; the control port answers `{"status": "ok", "service":
+"verification", "surface": "control"}`, and that is the one the lab API
+probes.
 
 ### `GET /sim/outcome`
 
@@ -380,12 +386,18 @@ and `portfolios` created.
 - **The platform** under test: its own Creditsafe, iban.com, KYC6 and
   LexisNexis clients, through the variables in the table above. Nothing in
   the lab calls the vendor routes.
-- **lab API** (`cmd/labapi`): `GET /v1/lab` and
-  `POST /v1/services/verification/probe` probe `GET /health`.
+- **lab API** (`cmd/labapi`): only the control port,
+  `http://verification:9089`. `GET /v1/lab` and
+  `POST /v1/services/verification/probe` probe its `GET /health`.
+  `POST /v1/lab/reset` and `POST /v1/services/verification/reset` call
+  `POST /sim/reset`; `GET /v1/logs` and
+  `GET /v1/services/verification/logs` read `GET /sim/logs`. No dedicated
+  route calls `/sim/outcome`; flip outcomes through the passthrough,
+  `/v1/services/verification/sim/outcome`.
   `GET /v1/connect/env/verification` hands out the variables without
-  calling this service. No dedicated route calls `/sim/outcome`; flip outcomes through the
-  passthrough, `/v1/services/verification/sim/outcome`.
+  calling this service.
 - **harness**: no scenario calls this service.
-- **An operator or agent**: `GET` and `POST /sim/outcome` to arm a failure.
+- **An operator or agent**: `GET` and `POST /sim/outcome` to arm a failure,
+  through the lab API or on the control port.
 
 Routes checked against the source at commit db5e695.

@@ -28,8 +28,7 @@ func TestResetPutsTheLedgerBackToItsSeed(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			s := newStore()
 			credits, ledger := newLogs()
-			mux := routes(s, credits, ledger)
-			simctl.Mount(mux, control(s, credits, ledger, ":8081"))
+			mux, ctl := testSurfaces(t, s, credits, ledger)
 
 			// A run: two payouts (one opens an account, one lands in a seeded
 			// one), a transfer between seeded accounts, an account by hand.
@@ -48,7 +47,8 @@ func TestResetPutsTheLedgerBackToItsSeed(t *testing.T) {
 				t.Fatalf("open: %d %s", w.Code, w.Body)
 			}
 
-			w := serve(t, mux, "POST", "/sim/reset", `{"scope":"`+scope+`"}`)
+			// On the control port, as the lab API calls it.
+			w := serve(t, ctl.Handler(), "POST", "/sim/reset", `{"scope":"`+scope+`"}`)
 			if w.Code != 200 {
 				t.Fatalf("reset: %d %s", w.Code, w.Body)
 			}
@@ -103,9 +103,8 @@ func TestResetPutsTheLedgerBackToItsSeed(t *testing.T) {
 func TestResetOfAFreshBankClearsNothing(t *testing.T) {
 	s := newStore()
 	credits, ledger := newLogs()
-	mux := routes(s, credits, ledger)
-	simctl.Mount(mux, control(s, credits, ledger, ":8081"))
-	w := serve(t, mux, "POST", "/sim/reset", "")
+	_, ctl := testSurfaces(t, s, credits, ledger)
+	w := serve(t, ctl.Handler(), "POST", "/sim/reset", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"cleared":{"accounts":0,"activity":0,"balances":0,"credits":0,"transfers":0}`) {
 		t.Fatalf("reset: %d %s", w.Code, w.Body)
 	}

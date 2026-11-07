@@ -90,6 +90,45 @@ func TestMutationsRequireAMatchingRowVersion(t *testing.T) {
 	}
 }
 
+// TestOverrideActiveSkipsIfMatchButStillMovesTheRowVersion: the lab's
+// switch needs no token, and a client holding the old one is still told
+// its view is stale.
+func TestOverrideActiveSkipsIfMatchButStillMovesTheRowVersion(t *testing.T) {
+	s := newStore(t)
+	sub, err := s.Create(CreateParams{Endpoint: "https://a.test/h", EncryptionKey: testKey, Status: StatusActive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddEvent(sub.ID, "PaymentStatus", TargetCompany, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, eventHeld := sub.RowVersion, sub.Events[0].RowVersion
+
+	off, err := s.OverrideActive(sub.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.IsActive || off.Status != StatusInactive || off.StatusMessage != "Subscription is inactive" || off.Events[0].IsActive {
+		t.Fatalf("after OverrideActive(false): %+v", off.Public())
+	}
+	if off.RowVersion == held || off.Events[0].RowVersion == eventHeld {
+		t.Fatal("rowVersions did not move")
+	}
+	if _, err := s.SetActive(sub.ID, held, true); !errors.Is(err, ErrRowVersionMismatch) {
+		t.Fatalf("SetActive with the token from before the override: err = %v, want ErrRowVersionMismatch", err)
+	}
+	on, err := s.OverrideActive(sub.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !on.IsActive || on.Status != StatusActive || !on.Events[0].IsActive {
+		t.Fatalf("after OverrideActive(true): %+v", on.Public())
+	}
+	if _, err := s.OverrideActive("sub_nope", true); !errors.Is(err, ErrSubscriptionNotFound) {
+		t.Fatalf("OverrideActive of an unknown id: err = %v, want ErrSubscriptionNotFound", err)
+	}
+}
+
 func TestEventsRouteByTypeAndTarget(t *testing.T) {
 	s := newStore(t)
 	// Two subscribers wanting different things.

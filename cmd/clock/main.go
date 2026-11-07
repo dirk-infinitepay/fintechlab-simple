@@ -11,6 +11,11 @@
 //	POST   /clock                 {"at": "<RFC 3339>"}, {"advance": "1d"}, {"mode": "real"|"auto-business-day"}
 //	POST   /clock/holds           {"holder", "reason", "ttl_seconds"} — refuse moves while a run is in flight
 //	DELETE /clock/holds/{holder}  release it
+//
+// and on the control port (LISTEN's port + 1000, SIM_CONTROL_LISTEN), the
+// lab's hooks — still answered at the same paths on LISTEN until phase 4:
+//
+//	GET    /health                the control port's own
 //	GET    /sim/activity          every move and hold
 //	GET    /sim/info, /sim/logs   the sim control contract (internal/simctl)
 //	POST   /sim/reset             holds released, back to CLOCK_START; 409 while held
@@ -58,11 +63,12 @@ func main() {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "clock"})
 	})
 	s.Routes(mux)
-	simctl.Mount(mux, simctl.Config{
+
+	// The control surface: the lab's /sim hooks on a port of their own,
+	// apart from the clock API its followers read (internal/simctl).
+	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "clock", Kind: "lab", Simulates: "the lab's business clock",
 		Listeners: []string{addr},
-		// One scope: the clock has nothing a platform set up once.
-		Scopes: []string{simctl.ScopeFlow, simctl.ScopeAll},
 		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 			start, _ := startRequest()
 			holds, changes, err := s.Reset(req.Force, start)
@@ -77,7 +83,15 @@ func main() {
 				Kept:    []string{"calendars"},
 			}, nil
 		},
-	})
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		log.Fatalf("clock: %v", err)
+	}
+	s.SimRoutes(ctl.Mux)
+	// The old /sim paths on the clock's own port, until phase 4 of
+	// docs/lab-api/plan.md retires them.
+	mux.Handle("/sim/", ctl.Mux)
+	ctl.Start()
 
 	log.Printf("clock listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))

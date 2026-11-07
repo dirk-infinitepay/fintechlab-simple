@@ -10,6 +10,12 @@
 // merchant-onboarding REST client and its separate SFTP+PGP file-exchange
 // channel are explicitly out of scope (section 2) -- this binary is the
 // webhook only.
+//
+// The lab steers it on a control port of its own, LISTEN's port + 1000
+// (:9087, SIM_CONTROL_LISTEN; internal/simctl): POST /sim/payments,
+// GET /sim/sent[/{id}], the delivery switch and the control contract. The
+// /internal/* trigger and reads and the old /sim paths still answer on
+// LISTEN until phase 4 of docs/lab-api/plan.md retires them.
 package main
 
 import (
@@ -107,21 +113,21 @@ func main() {
 			env("ACI_WEBHOOK_CONNECTED", "true")).Target(targetURL),
 	}
 
+	ctl, err := a.control(addr)
+	if err != nil {
+		log.Fatalf("aci: %v", err)
+	}
+	ctl.Start()
+
 	log.Printf("aci listening on %s target=%s body_mode=%s allowlist=%s", addr, targetURL, bodyMode, spec)
-	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(ctl.Mux))))
 }
 
-// routes is ACI's HTTP surface. addr is the listener, for GET /sim/info.
-func (a *app) routes(addr string) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "aci"})
-	})
-	mux.HandleFunc("POST /internal/simulate-payment", a.simulatePayment)
-	mux.HandleFunc("GET /internal/sent", a.listSent)
-	mux.HandleFunc("GET /internal/sent/{id}", a.getSent)
-	a.wiring.Routes(mux, "/sim/connected")
-	simctl.Mount(mux, simctl.Config{
+// control is ACI's control surface (internal/simctl), on a port of its own:
+// the control contract and simRoutes. addr is the vendor listener, for
+// GET /sim/info and the control port's default (its port + 1000).
+func (a *app) control(addr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "aci", Kind: "vendor", Simulates: "ACI payment notification webhooks",
 		Listeners: []string{addr},
 		// Both scopes, and they do the same: ACI holds nothing a platform
@@ -130,7 +136,37 @@ func (a *app) routes(addr string) *http.ServeMux {
 		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
 			return a.reset(), nil
 		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, err
+	}
+	a.simRoutes(ctl.Mux)
+	return ctl, nil
+}
+
+// simRoutes are ACI's own lab hooks, on the control port's mux: make a card
+// payment happen, see what was sent, and the delivery switch. The first
+// three are POST /internal/simulate-payment and GET /internal/sent[/{id}]
+// under their control-port names (docs/lab-api/sim-control.md §7).
+func (a *app) simRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /sim/payments", a.simulatePayment)
+	mux.HandleFunc("GET /sim/sent", a.listSent)
+	mux.HandleFunc("GET /sim/sent/{id}", a.getSent)
+	a.wiring.Routes(mux, "/sim/connected")
+}
+
+// routes is ACI's own listener. ctl is the control surface's mux: the /sim
+// paths here delegate to it, and the /internal routes stay, until phase 4
+// of docs/lab-api/plan.md retires them.
+func (a *app) routes(ctl http.Handler) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "aci"})
 	})
+	mux.HandleFunc("POST /internal/simulate-payment", a.simulatePayment)
+	mux.HandleFunc("GET /internal/sent", a.listSent)
+	mux.HandleFunc("GET /internal/sent/{id}", a.getSent)
+	mux.Handle("/sim/", ctl)
 	return mux
 }
 
@@ -164,11 +200,12 @@ type simulateResp struct {
 	ID string `json:"id"`
 }
 
-// simulatePayment implements POST /internal/simulate-payment: builds ACI's
-// real notification payload from this lab's trigger shape, encrypts it, and
-// queues fire-and-retry delivery. It never blocks on delivery -- the
-// response is 202 with the generated event id as soon as encryption
-// succeeds, matching every other sender in this lab.
+// simulatePayment implements POST /sim/payments and its alias
+// POST /internal/simulate-payment: builds ACI's real notification payload
+// from this lab's trigger shape, encrypts it, and queues fire-and-retry
+// delivery. It never blocks on delivery -- the response is 202 with the
+// generated event id as soon as encryption succeeds, matching every other
+// sender in this lab.
 func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 	var req simulateReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -332,7 +369,8 @@ func (a *app) postWebhook(rec *aci.Record) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// --- sent-notification introspection (GET /internal/sent[/{id}]) -------
+// --- sent-notification introspection (GET /sim/sent[/{id}], and
+// GET /internal/sent[/{id}] on the vendor port) ---
 
 func (a *app) listSent(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{"result": a.sent.List()})

@@ -44,14 +44,26 @@ func (tg *target) attempts() int {
 }
 
 // testServer is ACI as main builds it, delivering to tg with a 100ms
-// backoff between attempts, behind an HTTP server.
+// backoff between attempts, behind its own listener: the /internal routes
+// and the old /sim paths.
 func testServer(t *testing.T, tg *target) (*app, *httptest.Server) {
 	t.Helper()
+	a, vendor, _ := testServers(t, tg)
+	return a, vendor
+}
+
+// testServers is testServer with the control port as well.
+func testServers(t *testing.T, tg *target) (a *app, vendor, control *httptest.Server) {
+	t.Helper()
+	// Where the control port listens and who may call it come from the
+	// environment; the one the tests run in must not leak in.
+	t.Setenv("SIM_CONTROL_LISTEN", "")
+	t.Setenv("SIM_CONTROL_ALLOW", "")
 	list, err := allowlist.Parse("127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &app{
+	a = &app{
 		secret:    []byte(strings.Repeat("k", 32)),
 		client:    &http.Client{Timeout: 2 * time.Second},
 		list:      list,
@@ -62,9 +74,15 @@ func testServer(t *testing.T, tg *target) (*app, *httptest.Server) {
 		sent:      aci.NewSentLog(),
 		wiring:    labswitch.New("aci", "delivers webhooks to ACI_WEBHOOK_TARGET_URL", true).Target(tg.srv.URL),
 	}
-	srv := httptest.NewServer(a.routes(":8087"))
-	t.Cleanup(srv.Close)
-	return a, srv
+	ctl, err := a.control(":8087")
+	if err != nil {
+		t.Fatal(err)
+	}
+	vendor = httptest.NewServer(a.routes(ctl.Mux))
+	control = httptest.NewServer(ctl.Handler())
+	t.Cleanup(vendor.Close)
+	t.Cleanup(control.Close)
+	return a, vendor, control
 }
 
 func call(t *testing.T, srv *httptest.Server, method, path, body string) (int, map[string]any) {

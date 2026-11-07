@@ -42,25 +42,26 @@ func main() {
 		apiKey: apiKey,
 	}
 
+	mux, ctl, err := a.routes(addr)
+	if err != nil {
+		log.Fatalf("verify: %v", err)
+	}
+	ctl.Start()
 	log.Printf("verify listening on %s delay=%s", addr, delay)
-	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
 
-// routes is verify's HTTP surface: the platform's verification-service
-// routes, and the sim control contract beside them.
-func (a *app) routes(addr string) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/verification/health", func(w http.ResponseWriter, r *http.Request) {
-		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "verify"})
-	})
-	mux.HandleFunc("POST /api/v1/verification/verify/aml-decision", a.requireInternalKey(a.triggerAMLDecision))
-	mux.HandleFunc("GET /api/v1/verification/verify/data/verify-decision/{merchantApplicationId}", a.requireInternalKey(a.getDecision))
-
+// routes is verify's two surfaces: the platform's verification-service
+// routes on addr, and the lab's control surface on a port of its own
+// (internal/simctl) — every /sim route and its own GET /health, with no
+// x-internal-api-key. The service port still answers the /sim paths until
+// phase 4 of docs/lab-api/plan.md retires them.
+func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	// Both scopes do the same: verify has nothing a platform sets up once.
 	// What a run makes is decisions, recorded or still in their delay; the
 	// force-decline list is configuration and stays.
-	simctl.Mount(mux, simctl.Config{
-		Service: "verify", Kind: "vendor", Simulates: "the platform's verification-service (AML decision)",
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "verify", Kind: "stand-in", Simulates: "the platform's verification-service (AML decision)",
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
 		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
@@ -70,8 +71,20 @@ func (a *app) routes(addr string) *http.ServeMux {
 				Kept:    []string{"force_decline_ids"},
 			}, nil
 		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/verification/health", func(w http.ResponseWriter, r *http.Request) {
+		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "verify"})
 	})
-	return mux
+	mux.HandleFunc("POST /api/v1/verification/verify/aml-decision", a.requireInternalKey(a.triggerAMLDecision))
+	mux.HandleFunc("GET /api/v1/verification/verify/data/verify-decision/{merchantApplicationId}", a.requireInternalKey(a.getDecision))
+	// The old /sim paths on the service port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
 }
 
 // requireInternalKey guards every /verify/* route (not /health) with a

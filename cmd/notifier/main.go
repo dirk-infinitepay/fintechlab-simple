@@ -129,12 +129,32 @@ func main() {
 		log.Fatalf("tls client: %v", err)
 	}
 	a := newApp(dest, list, secret, client, backs, envInt("MAX_ATTEMPTS", 4))
+	mux, ctl, err := a.routes(addr)
+	if err != nil {
+		log.Fatalf("notifier: %v", err)
+	}
+	ctl.Start()
 	log.Printf("notifier listening on %s dest=%s allowlist=%s", addr, dest, spec)
-	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
 
-// routes is the notifier's HTTP surface and its sim control contract.
-func (a *app) routes(addr string) *http.ServeMux {
+// routes is the notifier's two surfaces: its own routes on addr, and the
+// lab's control surface on a port of its own (internal/simctl) — the
+// activity log, the sim control contract and its own GET /health. addr
+// still answers the /sim paths until phase 4 of docs/lab-api/plan.md
+// retires them.
+func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "notifier", Kind: "stand-in", Simulates: "a webhook worker of the platform's own (demo)",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset:     a.reset,
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(a.log))
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "notifier"})
@@ -143,14 +163,9 @@ func (a *app) routes(addr string) *http.ServeMux {
 	mux.HandleFunc("POST /subscriptions", a.putSub)
 	mux.HandleFunc("POST /enqueue", a.enqueue)
 	mux.HandleFunc("GET /deliveries", a.listDeliveries)
-	mux.HandleFunc("GET /sim/activity", activity.Handler(a.log))
-	simctl.Mount(mux, simctl.Config{
-		Service: "notifier", Kind: "stand-in", Simulates: "a webhook worker of the platform's own (demo)",
-		Listeners: []string{addr},
-		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset:     a.reset,
-	})
-	return mux
+	// The old /sim paths on the service port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
 }
 
 // reset is POST /sim/reset. Both scopes clear the deliveries — stopping

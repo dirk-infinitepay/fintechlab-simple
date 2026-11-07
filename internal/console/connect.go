@@ -33,10 +33,12 @@ import (
 
 // Lab constants a platform needs, as compose.yml sets them.
 const (
-	kitSFTPUser       = "infinitepay"
-	kitSFTPPassword   = "sim-sftp-dev-only"
-	kitSettlementID   = "Worldline_Settlement"
-	kitB4BKeyID       = "b4b-mock-1"
+	kitSFTPUser     = "infinitepay"
+	kitSFTPPassword = "sim-sftp-dev-only"
+	kitSettlementID = "Worldline_Settlement"
+	kitB4BKeyID     = "b4b-mock-1"
+	// Banking Circle takes any Basic credentials; these are simply the
+	// ones a platform is handed. Nothing in the lab logs in with them.
 	kitBCUser         = "sim"
 	kitBCPassword     = "sim-bc-dev-only"
 	kitSGAEUR         = "00000000-0000-4000-8000-000000000978"

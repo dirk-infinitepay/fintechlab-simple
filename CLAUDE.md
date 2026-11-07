@@ -44,6 +44,13 @@ server; a vendor's behaviour still goes in that vendor's own package, and a
 `/sim` hook it gains is reachable through the lab API's passthrough
 (`/v1/services/{id}/sim/*`) with no lab API change.
 
+The lab API reaches a simulation only on its **control port** (the vendor
+port + 1000, `internal/simctl`): every `/sim/*` route, plain HTTP, no
+vendor login. Never give the lab API a vendor's credentials or have it call
+a vendor surface; if it needs something a sim only offers there, add a
+`/sim` route that answers the same. Vendor auth is for the platform;
+`LAB_API_TOKEN` is the only lab auth.
+
 [docs/api/README.md](docs/api/README.md) maps every API in the lab. A cold
 start is `GET :8097/v1` (every route and what it reaches), then
 `GET :8097/v1/services` (every service and where it lives).

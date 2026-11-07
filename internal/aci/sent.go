@@ -25,7 +25,7 @@ type Record struct {
 	DeliveredAt    *time.Time    `json:"delivered_at,omitempty"`
 }
 
-// SentLog is every notification ACI built (GET /internal/sent), and the
+// SentLog is every notification ACI built (GET /sim/sent), and the
 // epoch their deliveries run under, so a reset cancels a delivery rather
 // than racing it (docs/lab-api/sim-control.md §6).
 //

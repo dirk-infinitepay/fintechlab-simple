@@ -124,3 +124,30 @@ func TestStandInsStartHidden(t *testing.T) {
 		t.Error("CONSOLE_STAND_INS_SHOWN=true did not show it")
 	}
 }
+
+func TestTheControlAddressIsPlainHTTPOnThePortPlus1000(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://banking-circle:8085": "http://banking-circle:9085",
+		"http://127.0.0.1:8084":       "http://127.0.0.1:9084",
+		"https://receiver:8443":       "http://receiver:9443",
+		"http://no-port":              "",
+	} {
+		if got := ControlURL(base); got != want {
+			t.Errorf("ControlURL(%q) = %q, want %q", base, got, want)
+		}
+	}
+	t.Setenv("CONSOLE_URL_BANK", "http://bank:8081")
+	t.Setenv("CONSOLE_CONTROL_URL_WORLDLINE", "http://elsewhere:7000")
+	for _, s := range DefaultCatalogue().Services {
+		switch s.ID {
+		case "bank":
+			if s.Control != "http://bank:9081" {
+				t.Errorf("bank control = %q", s.Control)
+			}
+		case "worldline":
+			if s.Control != "http://elsewhere:7000" {
+				t.Errorf("worldline control = %q: the override should win", s.Control)
+			}
+		}
+	}
+}

@@ -488,10 +488,14 @@ services:
       - "8097:8097"
     environment:
       LISTEN: ":8097"
-      # Reached over the compose network by service name. The catalogue's
-      # own port list is what builds the "open in a browser" links, which
-      # have to point at the published host ports instead -- CONSOLE_BROWSE_HOST
-      # names the host those are published on.
+      # Reached over the compose network by service name. The lab API steers
+      # each one on its control port -- this URL's port plus 1000, plain
+      # HTTP, no vendor login (internal/simctl) -- and holds no vendor
+      # credentials: those are the platform's. CONSOLE_CONTROL_URL_<ID>
+      # overrides a control address. The catalogue's own port list is what
+      # builds the "open in a browser" links, which have to point at the
+      # published host ports instead -- CONSOLE_BROWSE_HOST names the host
+      # those are published on.
       CONSOLE_URL_WORLDLINE: http://worldline:8084
       CONSOLE_URL_B4B: http://b4b:8086
       CONSOLE_URL_BANKING_CIRCLE: https://banking-circle:8085
@@ -506,30 +510,13 @@ services:
       CONSOLE_URL_CLOCK: http://clock:8096
       CONSOLE_BROWSE_HOST: 127.0.0.1
       CONSOLE_PROBE_INTERVAL: 5s
-      # Banking Circle's internal bridge: "Fund safeguarding accounts" on
-      # its card credits the platform's SGAs there, as Worldline's wire does.
-      CONSOLE_BC_INTERNAL_URL: http://banking-circle:8095
       CONSOLE_STATE_FILE: /console-data/registry.json
       CONSOLE_BC_DELIVERY_CONFIG: /config/banking-circle.json
-      # Banking Circle's API requires mTLS by default (BC_MTLS above), so
-      # the lab API presents the same client certificate the harness does.
-      # Basic credentials are not checked by the simulator, but the
-      # exchange is: the lab API gets a real bearer token like any client.
-      CA_FILE: /keys/certs/ca.pem
-      CLIENT_CERT: /keys/certs/client.pem
-      CLIENT_KEY: /keys/certs/client-key.pem
-      BC_USER: lab-api
-      BC_PASSWORD: sim-bc-dev-only
-      # Registering a merchant outlet as a B4B beneficiary needs the RS512
-      # signing key b4b generates -- read-only, same shared volume
-      # settlement already uses for exactly this.
-      B4B_JWT_PRIVATE_KEY_PATH: /keys/b4b-keys/private.pem
-      B4B_JWT_KEY_ID: "b4b-mock-1"
       # Where the lab API finds the keys and certificates it hands out: the
-      # "connect your platform" downloads on each vendor card. Every key
-      # the lab generates, read-only -- the lab API serves only the files a
-      # client needs (never a server's private key or the CA's), from a
-      # fixed list in internal/console/connect.go.
+      # "connect your platform" downloads on each vendor card. Files for a
+      # platform to use, never used by the lab API itself; read-only, and
+      # only the files a client needs (never a server's private key or the
+      # CA's), from a fixed list in internal/console/connect.go.
       CONSOLE_KEYS_DIR: /keys
     volumes:
       - ${LAB_KEYS_DIR:-./keys}:/keys:ro

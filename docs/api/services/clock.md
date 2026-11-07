@@ -15,9 +15,9 @@ decides what that means for its own work.
 
 | | |
 | --- | --- |
-| Listens | `:8096`, plain HTTP. Compose service `clock` (`http://clock:8096`); host `http://127.0.0.1:8096` |
-| Auth | None |
-| Found with | `LAB_CLOCK_URL` on bank, settlement, worldline, banking-circle, b4b, aci and verify: the full `http://clock:8096/clock`, not a base URL.<br>`CONSOLE_URL_CLOCK` (`http://clock:8096`) on the console.<br>A platform's own variable; buddy's runner uses `FINTECH_SIM_LAB_CLOCK_URL` (`http://127.0.0.1:8096/clock`) |
+| Listens | `:8096`, plain HTTP: the clock API. Compose service `clock` (`http://clock:8096`); host `http://127.0.0.1:8096`.<br>`:9096`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://clock:9096` |
+| Auth | None. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| Found with | `LAB_CLOCK_URL` on bank, settlement, worldline, banking-circle, b4b, aci and verify: the full `http://clock:8096/clock`, not a base URL.<br>`CONSOLE_URL_CLOCK` (`http://clock:8096`) on the lab API.<br>A platform's own variable; buddy's runner uses `FINTECH_SIM_LAB_CLOCK_URL` (`http://127.0.0.1:8096/clock`) |
 | Activity logs | `changes` (*Clock changes*): every move (op `clock.real`, `clock.pinned` or `clock.auto-business-day`), every move refused under a hold (`clock.refused`, amber), every new hold (`hold.take`) and every release (`hold.release`). A renewed hold, a hold lapsing and a malformed request are not logged |
 | Configuration | `CLOCK_START` (unset: the real clock; compose: `auto-business-day`): `real`, `auto-business-day`, or an RFC 3339 instant to pin to. Anything else stops the service at start.<br>`CLOCK_CALENDARS` (`GB=Europe/London,SE=Europe/Stockholm`): the calendars a business day must satisfy, `CODE=IANA zone`, comma-separated.<br>`CLOCK_HOLIDAYS_<CODE>` (empty): that calendar's bank holidays as `YYYY-MM-DD`, separated by commas, spaces or newlines. Compose sets GB and SE for 2026 and 2027.<br>`LISTEN` (`:8096`).<br>All state is in memory: a restarted clock is back on `CLOCK_START`, with no holds |
 | Design record | [plugins.md](../../plugins.md#the-clock) (the follower contract), [console.md](../../console.md#the-lab-clock) (the clock card), [agent.runbooks.md](../../../agent.runbooks.md#the-clock), and the package comments in `internal/labclock/server.go` and `follow.go` |
@@ -190,11 +190,16 @@ Side effects: recorded as `hold.release`.
 
 ## Lab control
 
+On the control port, `:9096` ([the control
+contract](../README.md#the-control-contract)). The same `/sim/*` paths
+still answer on `:8096` until phase 4 of
+[the plan](../../lab-api/plan.md) retires them.
+
 ### `GET /health`
 
-Liveness. The lab API's monitor probes it.
-
-Answers `200` with `{"status": "ok", "service": "clock"}`.
+Liveness, on both ports. `:8096` answers `{"status": "ok", "service":
+"clock"}`; the control port answers `{"status": "ok", "service": "clock",
+"surface": "control"}`, and that is the one the lab API's monitor probes.
 
 ### `GET /sim/activity`
 

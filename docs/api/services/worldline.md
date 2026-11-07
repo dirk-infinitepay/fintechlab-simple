@@ -18,9 +18,9 @@ served over plain HTTP rather than SFTP.
 
 | | |
 | --- | --- |
-| Listens | HTTP `:8084` (`LISTEN`) and SSH/SFTP `:2222` (`WORLDLINE_SFTP_PORT`), both in one process. Compose service `worldline`; from the host `http://127.0.0.1:8084` and `sftp://127.0.0.1:2222` |
-| Auth | HTTP: none, on every route. SFTP: password (`WORLDLINE_SFTP_PASSWORD`, compose `sim-sftp-dev-only`) and public key (`WORLDLINE_SFTP_AUTHORIZED_KEY`), each enabled independently. The username is never checked. With both unset, any credential is accepted (logged as a warning at start) |
-| A platform points here with | The settlement stand-in (`compose.yml`): `WORLDLINE_SFTP_HOST`, `WORLDLINE_SFTP_PORT`, `WORLDLINE_SFTP_USER`, `WORLDLINE_SFTP_PASSWORD` or `WORLDLINE_SFTP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_KNOWN_HOST_PATH`, `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_DIR` (default `download`). the lab API's connect kit (`GET :8097/v1/connect/env/worldline`) hands a platform `WORLDLINE_SFTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_HOST_KEY_FINGERPRINT`, `_DOWNLOAD_DIR`, `_RECONCILIATION_DIR`, `_DISPUTES_DIR`, `_UPLOAD_DIR`, `WORLDLINE_SETTLEMENT_IDENTIFIER`, `WORLDLINE_PGP_PUBLIC_KEY` and `INFINITE_PGP_PRIVATE_KEY`. The HTTP side is found with `WORLDLINE_URL` (harness) and `CONSOLE_URL_WORLDLINE` (lab API) |
+| Listens | HTTP `:8084` (`LISTEN`) and SSH/SFTP `:2222` (`WORLDLINE_SFTP_PORT`), both in one process. Compose service `worldline`; from the host `http://127.0.0.1:8084` and `sftp://127.0.0.1:2222`.<br>`:9084`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. It steers the SFTP side too, which has no control port of its own. Not published by compose; the lab API reaches it at `http://worldline:9084` |
+| Auth | HTTP: none, on every route. SFTP: password (`WORLDLINE_SFTP_PASSWORD`, compose `sim-sftp-dev-only`) and public key (`WORLDLINE_SFTP_AUTHORIZED_KEY`), each enabled independently. The username is never checked. With both unset, any credential is accepted (logged as a warning at start).<br>The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| A platform points here with | The settlement stand-in (`compose.yml`): `WORLDLINE_SFTP_HOST`, `WORLDLINE_SFTP_PORT`, `WORLDLINE_SFTP_USER`, `WORLDLINE_SFTP_PASSWORD` or `WORLDLINE_SFTP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_KNOWN_HOST_PATH`, `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_DIR` (default `download`). the lab API's connect kit (`GET :8097/v1/connect/env/worldline`) hands a platform `WORLDLINE_SFTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_HOST_KEY_FINGERPRINT`, `_DOWNLOAD_DIR`, `_RECONCILIATION_DIR`, `_DISPUTES_DIR`, `_UPLOAD_DIR`, `WORLDLINE_SETTLEMENT_IDENTIFIER`, `WORLDLINE_PGP_PUBLIC_KEY` and `INFINITE_PGP_PRIVATE_KEY`. The HTTP side is found with `WORLDLINE_URL` (harness) and `CONSOLE_URL_WORLDLINE` (lab API); the lab API takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_WORLDLINE` names it |
 | Activity logs | `GET /sim/activity` keeps one log, `sftp` (*File exchange*): `sftp.session` for each SSH login or refused handshake, then one event per SFTP request (`sftp.list`, `sftp.download`, `sftp.upload`, and the jail's other verbs, such as `sftp.rename`, `sftp.remove`, `sftp.mkdir`), each with `user` and `path`; a refused request is amber with the server's error. Stats are not logged. Each file taken over `GET /outbound/{merchant_id}/{category}/{filename}` lands in the same log as `http.download` |
 | Configuration | The important variables are in the table below. Slot times are read in the container's local zone; the image sets no `TZ`, so that is UTC |
 | Design record | [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md) (who owns the file, the two slots, one file per currency), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §1–2 and Addendum E (Bambora format, SFTP+PGP, encryption direction), [ARCHITECTURE-worldline-sftp-channel.md](../../ARCHITECTURE-worldline-sftp-channel.md) (historical; its SFT directory conventions still hold), [structure/worldline.md](../../structure/worldline.md) |
@@ -48,6 +48,8 @@ served over plain HTTP rather than SFTP.
 | `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP` | empty | A currency's lump sum is wired only when its account is set; no other currency is read |
 | `WORLDLINE_ENROLMENT_DELAY` | `30s` | How old an enrolment batch must be before it is answered, by file modification time on the wall clock |
 | `WORLDLINE_ENROLMENT_SWEEP` | `5s` | How often `to_WLNORDIC/` is checked for batches |
+| `SIM_CONTROL_LISTEN` | `:9084` (`LISTEN`'s port plus 1000) | The control port |
+| `SIM_CONTROL_ALLOW` | unset | Addresses or CIDRs, comma-separated, that may call the control port; unset, anyone who can reach it |
 
 ## Vendor surface
 
@@ -228,12 +230,18 @@ Replaces the channel configuration.
 ## Lab control
 
 Not part of Worldline. Everything under `/sim` is how a test, an agent or the
-lab API says "a card payment happened" or "deliver the file now".
+lab API says "a card payment happened" or "deliver the file now". It is on
+the control port, `:9084` ([the control
+contract](../README.md#the-control-contract)). The same `/sim/*` paths
+still answer on `:8084` until phase 4 of
+[the plan](../../lab-api/plan.md) retires them.
 
 ### `GET /health`
 
-Liveness. Answers `200` `{"status": "ok", "service": "worldline"}`. The
-SFTP listener is not checked.
+Liveness, on both ports. `:8084` answers `200` `{"status": "ok",
+"service": "worldline"}`; the control port answers `{"status": "ok",
+"service": "worldline", "surface": "control"}`, and that is the one the lab
+API's monitor probes. Neither checks the SFTP listener.
 
 ### `GET /sim/activity`
 
@@ -247,14 +255,15 @@ The `sftp` activity log described under *At a glance*. A reset clears it.
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "worldline"`, `"kind": "vendor"`,
-`"vendor_listeners": [":8084", ":2222"]`, `"reset_scopes": ["flow", "all"]`.
+`"vendor_listeners": [":8084", ":2222"]`, `"control_listener": ":9084"`,
+`"reset_scopes": ["flow", "all"]`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
 ([the control contract](../README.md#the-control-contract)): each slot
 planned and run, each lump sum, each enrolment batch answered, and every
-HTTP request.
+HTTP request on either port.
 
 ### `POST /sim/reset`
 
@@ -426,6 +435,17 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
   `pf_account_id` until a reset or a restart, not only the next one. It
   cannot change a receipt already written.
 
+### `GET /sim/config`
+
+[`GET /config`](#get-config) on the control port: the same handler,
+answering the same, so the lab reads the channel configuration without
+calling the vendor's own API.
+
+### `PUT /sim/config`
+
+[`PUT /config`](#put-config) on the control port: the same body, answers
+and refusals, and the same file written.
+
 ## Called by
 
 - **The settlement stand-in** (`cmd/settlement`): SFTP as `infinitepay`,
@@ -439,8 +459,10 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
   `GET /v1/connect/env/worldline`. It downloads settlement files, uploads
   enrolment batches to `to_WLNORDIC/` and collects receipts from
   `from_WLNORDIC/`.
-- **The lab API** (`cmd/labapi`): `GET /health` (its health monitor, behind
-  `GET /v1/lab` and `POST /v1/services/{id}/probe`); `POST /sim/reset`
+- **The lab API** (`cmd/labapi`), on the control port only
+  (`http://worldline:9084`), never the vendor's own surface: `GET /health`
+  (its health monitor, behind `GET /v1/lab` and
+  `POST /v1/services/{id}/probe`); `POST /sim/reset`
   (`POST /v1/lab/reset`, first in the order, and
   `POST /v1/services/{id}/reset`); `GET /sim/logs` (`GET /v1/logs`,
   `GET /v1/services/{id}/logs`); `GET /sim/activity`
@@ -448,9 +470,10 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
   `GET /v1/flow/hops/{id}`); `POST /sim/transactions`
   (`POST /v1/merchants/{id}/trading`, `POST /v1/merchants/batches/{id}/trading`);
   `POST /sim/settlement-cycle/run` (`POST /v1/actions/worldline-cycle`,
-  passing `slot` and `date`); `GET /config` (`GET /v1/config`); `PUT /config`
-  (`PUT /v1/config/worldline-channel`).
-- **The harness**: `worldline-settlement-to-sftp`
+  passing `slot` and `date`); `GET /sim/config` (`GET /v1/config`);
+  `PUT /sim/config` (`PUT /v1/config/worldline-channel`).
+- **The harness**, on `:8084` (`WORLDLINE_URL`), through the old paths:
+  `worldline-settlement-to-sftp`
   (`internal/harness/scenario_worldline.go`) seeds two transactions with
   `POST /sim/transactions`, runs
   `POST /sim/settlement-cycle/run?slot=morning&date=…`, then logs in over

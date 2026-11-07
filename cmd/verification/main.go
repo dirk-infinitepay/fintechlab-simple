@@ -23,9 +23,9 @@
 // to prevent, because a client could pass against it while being wired
 // wrongly.
 //
-// Every outcome is flippable at POST /sim/outcome, so the unhappy paths are
-// reachable when somebody wants them. Defaulting to "pass" is a
-// convenience, not a limitation.
+// Every outcome is flippable at POST /sim/outcome on the control port, so
+// the unhappy paths are reachable when somebody wants them. Defaulting to
+// "pass" is a convenience, not a limitation.
 package main
 
 import (
@@ -140,22 +140,40 @@ func main() {
 	logring.Install()
 	addr := env("LISTEN", ":8089")
 	a := &app{out: newOutcomes()}
-
-	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome to change one", addr)
-	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+	mux, ctl, err := a.routes(addr)
+	if err != nil {
+		log.Fatalf("verification: %v", err)
+	}
+	ctl.Start()
+	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome on %s to change one", addr, ctl.Addr())
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
 
-// routes is the four vendors' surface, the outcome switches, and the sim
-// control contract.
-func (a *app) routes(addr string) *http.ServeMux {
+// routes is verification's two surfaces: the four vendors on addr, and the
+// lab's control surface on a port of its own (internal/simctl) — the
+// outcome switches, the sim control contract and its own GET /health, with
+// no vendor auth. The vendor port still answers the /sim paths until
+// phase 4 of docs/lab-api/plan.md retires them.
+func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "verification", Kind: "vendor", Simulates: "Creditsafe, iban.com, KYC6 and LexisNexis",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset:     a.reset,
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	// --- the lab seam -----------------------------------------------
+	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
+	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]any{"status": "ok", "service": "verification"})
 	})
-
-	// --- the lab seam -----------------------------------------------
-	mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
-	mux.HandleFunc("POST /sim/outcome", a.setOutcome)
+	// The old /sim paths on the vendor port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
 
 	// --- Creditsafe: company data and UK bank verification ----------
 	mux.HandleFunc("POST /creditsafe/authenticate", a.creditsafeAuthenticate)
@@ -184,14 +202,7 @@ func (a *app) routes(addr string) *http.ServeMux {
 	mux.HandleFunc("POST /lexisnexis/oauth/token", a.lexisToken)
 	mux.HandleFunc("POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
 	mux.HandleFunc("POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
-
-	simctl.Mount(mux, simctl.Config{
-		Service: "verification", Kind: "vendor", Simulates: "Creditsafe, iban.com, KYC6 and LexisNexis",
-		Listeners: []string{addr},
-		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset:     a.reset,
-	})
-	return mux
+	return mux, ctl, nil
 }
 
 // reset is POST /sim/reset. Every scope puts the outcomes back to their

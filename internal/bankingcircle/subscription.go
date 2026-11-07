@@ -427,6 +427,22 @@ func (s *SubscriptionStore) SetActive(id, ifMatch string, active bool) (*Subscri
 	return sub, nil
 }
 
+// OverrideActive is SetActive without the If-Match check, for the lab's
+// control port: the lab switching a subscription on or off is not a client
+// that could be writing over another's change. The rowVersions move as
+// they do under SetActive, so a client holding the old one still gets its
+// mismatch.
+func (s *SubscriptionStore) OverrideActive(id string, active bool) (*Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, ok := s.subs[id]
+	if !ok {
+		return nil, ErrSubscriptionNotFound
+	}
+	s.setActiveLocked(sub, active, "")
+	return sub, nil
+}
+
 // Deactivate turns a subscription off without an If-Match check, for the
 // one case the API itself does it: retry exhaustion. reason becomes the
 // statusMessage a client sees on its next read, which is how it finds out

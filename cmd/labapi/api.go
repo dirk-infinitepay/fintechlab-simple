@@ -415,7 +415,7 @@ func (a *app) getConfig(w http.ResponseWriter, r *http.Request) {
 	// wrong number that costs an hour. The file is the fallback, labelled
 	// as such.
 	var live bankingcircle.DeliveryConfig
-	if err := a.bc.AuthorizedGet(ctx, "/sim/delivery-config", &live); err == nil {
+	if err := a.bc.Get(ctx, "/sim/delivery-config", &live); err == nil {
 		out["banking_circle"] = live
 		out["banking_circle_path"] = a.bcCfg
 		out["banking_circle_source"] = "live from banking-circle (the file plus any BC_TIME_SCALE override)"
@@ -433,7 +433,7 @@ func (a *app) getConfig(w http.ResponseWriter, r *http.Request) {
 	// Worldline's file-exchange channel config, which really is live and
 	// really is editable.
 	var ch map[string]any
-	if err := a.getJSON(ctx, a.client, a.baseURL("worldline")+"/config", &ch); err != nil {
+	if err := a.getJSON(ctx, a.client, a.controlURL("worldline")+"/sim/config", &ch); err != nil {
 		out["worldline_channel_error"] = err.Error()
 	} else {
 		out["worldline_channel"] = ch
@@ -449,7 +449,7 @@ func (a *app) putWorldlineChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := reqContext(r)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.baseURL("worldline")+"/config", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, a.controlURL("worldline")+"/sim/config", strings.NewReader(string(body)))
 	if err != nil {
 		httputilx.Error(w, 500, err.Error())
 		return
@@ -477,7 +477,7 @@ func (a *app) runWorldlineCycle(w http.ResponseWriter, r *http.Request) {
 	if slot == "" {
 		slot = "morning"
 	}
-	url := a.baseURL("worldline") + "/sim/settlement-cycle/run?slot=" + slot
+	url := a.controlURL("worldline") + "/sim/settlement-cycle/run?slot=" + slot
 	if d := r.URL.Query().Get("date"); d != "" {
 		url += "&date=" + d
 	}
@@ -485,7 +485,7 @@ func (a *app) runWorldlineCycle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) settlementPull(w http.ResponseWriter, r *http.Request) {
-	a.proxyPost(w, r, a.baseURL("settlement")+"/worldline/pull")
+	a.proxyPost(w, r, a.controlURL("settlement")+"/sim/pull")
 }
 
 // fundSGA tops up the empty safeguarding accounts — the wire Worldline
@@ -499,7 +499,7 @@ func (a *app) fundSGA(w http.ResponseWriter, r *http.Request) {
 	if amount == "" {
 		amount = "1000000.00"
 	}
-	results := console.FundSafeguarding(ctx, a.client, a.bcInternal, amount)
+	results := console.FundSafeguarding(ctx, a.client, a.bc.BaseURL, amount)
 	// Partial success is reported as partial (design-system.md, contract
 	// 4): one currency failing is a 200 whose rows say which. Only when
 	// nothing worked is it the peer's failure, in its own words.
@@ -637,15 +637,7 @@ func (a *app) serviceActivity(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var out any
-	var err error
-	if id == "banking-circle" {
-		// Banking Circle serves this on its credentialed API, so it goes
-		// through the same authorized client the Banks view uses rather
-		// than a bare GET that would be refused.
-		err = a.bc.AuthorizedGet(ctx, path, &out)
-	} else {
-		err = a.getJSON(ctx, a.client, svc.BaseURL+path, &out)
-	}
+	err := a.getJSON(ctx, a.client, activityBase(svc)+path, &out)
 	if err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
@@ -724,7 +716,7 @@ func (a *app) bcSubscriptions(w http.ResponseWriter, r *http.Request) {
 			} `json:"subscriptionEvents"`
 		} `json:"result"`
 	}
-	if err := a.bc.AuthorizedGet(ctx, "/api/v1/notificationselfservice/subscription?PageSize=50", &listed); err != nil {
+	if err := a.bc.Get(ctx, "/sim/subscriptions", &listed); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
 	}
@@ -750,7 +742,7 @@ func (a *app) bcSubscriptions(w http.ResponseWriter, r *http.Request) {
 			Paused  bool `json:"paused"`
 			Queued  int  `json:"queued"`
 		}
-		if err := a.bc.AuthorizedGet(ctx, "/sim/subscription/"+url.PathEscape(s.ID)+"/pending", &pending); err == nil {
+		if err := a.bc.Get(ctx, "/sim/subscription/"+url.PathEscape(s.ID)+"/pending", &pending); err == nil {
 			v.Pending = pending.Pending
 			v.Paused = pending.Paused
 			v.Queued = pending.Queued
@@ -775,8 +767,8 @@ func (a *app) bcSubscriptionTest(w http.ResponseWriter, r *http.Request) {
 	before := a.bcNotificationTotal(ctx)
 
 	var sent map[string]any
-	if err := a.bc.AuthorizedPost(ctx,
-		"/api/v1/notificationselfservice/clienttest/"+url.PathEscape(id), &sent); err != nil {
+	if err := a.bc.Post(ctx,
+		"/sim/subscription/"+url.PathEscape(id)+"/test", &sent); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
 	}
@@ -834,7 +826,7 @@ func (a *app) bcSubscriptionPause(w http.ResponseWriter, r *http.Request) {
 		action = "pause"
 	}
 	var out map[string]any
-	if err := a.bc.AuthorizedPost(ctx,
+	if err := a.bc.Post(ctx,
 		"/sim/subscription/"+url.PathEscape(r.PathValue("id"))+"/"+action, &out); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
@@ -881,7 +873,7 @@ func (a *app) bcPayouts(w http.ResponseWriter, r *http.Request) {
 			ReturnedBy   string `json:"returnedBy"`
 		} `json:"payments"`
 	}
-	if err := a.bc.AuthorizedGet(ctx, "/payments", &listed); err != nil {
+	if err := a.bc.Get(ctx, "/sim/payments", &listed); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
 	}
@@ -922,7 +914,7 @@ func (a *app) bcPayoutAction(w http.ResponseWriter, r *http.Request) {
 		action = "return"
 	}
 	var out map[string]any
-	if err := a.bc.AuthorizedPost(ctx,
+	if err := a.bc.Post(ctx,
 		"/sim/payments/"+url.PathEscape(r.PathValue("id"))+"/"+action, &out); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
@@ -946,7 +938,7 @@ func (a *app) bcLatestNotification(ctx context.Context) (*activity.Event, int64)
 			Events []activity.Event `json:"events"`
 		} `json:"logs"`
 	}
-	if err := a.bc.AuthorizedGet(ctx, "/sim/activity?limit=1", &logs); err != nil {
+	if err := a.bc.Get(ctx, "/sim/activity?limit=1", &logs); err != nil {
 		return nil, 0
 	}
 	for _, l := range logs.Logs {
@@ -960,4 +952,13 @@ func (a *app) bcLatestNotification(ctx context.Context) (*activity.Event, int64)
 		return &e, l.Total
 	}
 	return nil, 0
+}
+
+// activityBase is where a service's activity log is read: a lab service's
+// control port, or a plugin's own base_url (it declared the path there).
+func activityBase(s console.Service) string {
+	if s.Control != "" {
+		return s.Control
+	}
+	return s.BaseURL
 }

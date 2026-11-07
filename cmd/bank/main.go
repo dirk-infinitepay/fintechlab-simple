@@ -202,7 +202,6 @@ func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 	mux.HandleFunc("POST /accounts", ledger.Watch("account.open", summarizeOpen, s.createAccount))
 	mux.HandleFunc("POST /transfers", ledger.Watch("transfer", summarizeTransfer, s.transfer))
 	mux.HandleFunc("GET /ledger", s.listLedger)
-	mux.HandleFunc("GET /sim/activity", activity.Handler(credits, ledger))
 
 	// The rail hop: a payout leaving the settlement bank has to arrive
 	// somewhere, and this is where. No auth — it is a lab seam, and the
@@ -211,14 +210,41 @@ func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 	return mux
 }
 
+// simRoutes are the lab's hooks on the control port: the activity logs,
+// and the accounts the lab API lists and opens. GET and POST /sim/accounts
+// are GET and POST /accounts, the same handlers answering the same, so the
+// lab never has to call the ledger's own API to steer the bank.
+func simRoutes(mux *http.ServeMux, s *store, credits, ledger *activity.Log) {
+	mux.HandleFunc("GET /sim/activity", activity.Handler(credits, ledger))
+	mux.HandleFunc("GET /sim/accounts", s.listAccounts)
+	mux.HandleFunc("POST /sim/accounts", ledger.Watch("account.open", summarizeOpen, s.createAccount))
+}
+
+// surfaces builds the bank's two listeners: its own API on addr, and the
+// control surface on addr's port plus 1000 (internal/simctl), with every
+// /sim route. The old /sim paths still answer on addr, passed through to
+// the control surface, until phase 4 of docs/lab-api/plan.md retires them.
+func surfaces(s *store, credits, ledger *activity.Log, addr string) (*http.ServeMux, *simctl.Control, error) {
+	mux := routes(s, credits, ledger)
+	ctl, err := simctl.NewControl(control(s, credits, ledger, addr), simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	simRoutes(ctl.Mux, s, credits, ledger)
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
 func main() {
 	logring.Install()
 	addr := env("LISTEN", ":8081")
 	labclock.FollowEnv(context.Background(), "bank")
 	credits, ledger := newLogs()
-	s := newStore()
-	mux := routes(s, credits, ledger)
-	simctl.Mount(mux, control(s, credits, ledger, addr))
+	mux, ctl, err := surfaces(newStore(), credits, ledger, addr)
+	if err != nil {
+		log.Fatalf("bank: %v", err)
+	}
+	ctl.Start()
 	log.Printf("bank listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
@@ -228,7 +254,7 @@ func main() {
 // calls the bank — so "what a run made" is everything that was not seeded.
 func control(s *store, credits, ledger *activity.Log, addr string) simctl.Config {
 	return simctl.Config{
-		Service: "bank", Kind: "stand-in", Simulates: "the merchants' business bank",
+		Service: "bank", Kind: "vendor", Simulates: "the merchants' business bank",
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
 		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {

@@ -163,26 +163,18 @@ func (a *app) resetService(ctx context.Context, id, scope string, force bool) ma
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
 	body, _ := json.Marshal(map[string]any{"scope": scope, "force": force})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, svc.BaseURL+"/sim/reset", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, svc.Control+"/sim/reset", bytes.NewReader(body))
 	if err != nil {
 		out["status"], out["error"] = 500, err.Error()
 		return out
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if err := a.serviceCredentials(svc, req); err != nil {
-		out["status"], out["error"] = 502, "credentials for its /sim hooks: "+err.Error()
-		return out
-	}
-	resp, err := a.clientFor(svc).Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		out["status"], out["error"] = 502, err.Error()
 		return out
 	}
 	defer resp.Body.Close()
-	if id == "banking-circle" {
-		// An "all" reset drops the token the lab API holds.
-		a.bc.Forget()
-	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	var answer map[string]any
 	_ = json.Unmarshal(raw, &answer)
@@ -401,14 +393,11 @@ func (a *app) fetchLogs(ctx context.Context, id string, v url.Values) (logPage, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, svc.BaseURL+"/sim/logs?"+v.Encode(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, svc.Control+"/sim/logs?"+v.Encode(), nil)
 	if err != nil {
 		return p, err
 	}
-	if err := a.serviceCredentials(svc, req); err != nil {
-		return p, fmt.Errorf("credentials for its /sim hooks: %w", err)
-	}
-	resp, err := a.clientFor(svc).Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return p, err
 	}

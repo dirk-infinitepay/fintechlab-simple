@@ -54,9 +54,8 @@ func NewBank(e *Engine, d *Dispatcher) *Bank {
 // reference numbers start again at 1, as on first start.
 //
 // also, when given, runs inside the reset, after the bank is cleared and
-// before anything can run again: the caller's own run state (activity
-// logs, tokens) is cleared at the same instant. It must not call into the
-// bank.
+// before anything can run again: the caller's own run state (its activity
+// logs) is cleared at the same instant. It must not call into the bank.
 func (b *Bank) Reset(all bool, also func(cleared map[string]int)) map[string]int {
 	b.mu.Lock()
 	defer b.mu.Unlock()

@@ -64,18 +64,44 @@ func main() {
 	guard := &runGuard{}
 	acq, desk, sftpLog, sshAddr := startWorldlineSFTP(guard)
 
+	lab := &sim{guard: guard, acq: acq, desk: desk, sftpLog: sftpLog, ch: ch, merchantID: merchantID}
+	mux, ctl, err := lab.surfaces(addr, sshAddr)
+	if err != nil {
+		log.Fatalf("worldline: %v", err)
+	}
+	ctl.Start()
+
+	log.Printf("worldline listening on %s base=%s merchant=%s", addr, baseDir, merchantID)
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// surfaces builds worldline's two HTTP listeners: its own, on addr, and
+// the control surface on addr's port plus 1000 (internal/simctl). The SFTP
+// listener on sshAddr has no control port of its own; this one steers both.
+// The old /sim paths still answer on addr, passed through to the control
+// surface, until phase 4 of docs/lab-api/plan.md retires them.
+func (s *sim) surfaces(addr, sshAddr string) (*http.ServeMux, *simctl.Control, error) {
+	mux := vendorRoutes(s.ch, s.sftpLog)
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "worldline", Kind: "vendor", Simulates: "Worldline, the card acquirer",
+		Listeners: []string{addr, sshAddr},
+		Reset:     s.reset,
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	s.controlRoutes(ctl.Mux)
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
+// vendorRoutes is worldline's own HTTP surface: the SFT file-exchange
+// channel a platform calls. Nothing under /sim.
+func vendorRoutes(ch *sftpgateway.Channel, sftpLog *activity.Log) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "worldline"})
 	})
-	acq.routes(mux)
-	if desk != nil {
-		desk.routes(mux)
-	}
-	// Unauthenticated like /health: a read-only window onto a lab run,
-	// carrying no key material — only who connected and which files they
-	// touched.
-	mux.HandleFunc("GET /sim/activity", activity.Handler(sftpLog))
 	mux.HandleFunc("POST /inbound/onboarding/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryOnboarding))
 	mux.HandleFunc("POST /inbound/corrections/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryCorrections))
 	mux.HandleFunc("GET /inbound/onboarding/{merchant_id}", listInbound(ch, sftpgateway.CategoryOnboarding))
@@ -87,17 +113,25 @@ func main() {
 	mux.HandleFunc("GET /config", getConfig(ch))
 	mux.HandleFunc("PUT /config", putConfig(ch))
 	mux.HandleFunc("GET /archive/{year}/{month}", listArchive(ch))
-	// GET /sim/info, GET /sim/logs and POST /sim/reset: the control
-	// contract every sim serves (internal/simctl).
-	lab := &sim{guard: guard, acq: acq, desk: desk, sftpLog: sftpLog, ch: ch, merchantID: merchantID}
-	simctl.Mount(mux, simctl.Config{
-		Service: "worldline", Kind: "vendor", Simulates: "Worldline, the card acquirer",
-		Listeners: []string{addr, sshAddr},
-		Reset:     lab.reset,
-	})
+	return mux
+}
 
-	log.Printf("worldline listening on %s base=%s merchant=%s", addr, baseDir, merchantID)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+// controlRoutes registers the lab's hooks on the control surface, beside
+// the contract simctl mounts there: seeding transactions, running the
+// cycle, the enrolment desk, the activity log, and the channel config.
+// GET and PUT /sim/config are GET and PUT /config, the same handlers
+// answering the same, so the lab never has to call the vendor's own API to
+// read or change a setting.
+func (s *sim) controlRoutes(mux *http.ServeMux) {
+	s.acq.routes(mux)
+	if s.desk != nil {
+		s.desk.routes(mux)
+	}
+	// A read-only window onto a lab run, carrying no key material: only
+	// who connected and which files they touched.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(s.sftpLog))
+	mux.HandleFunc("GET /sim/config", getConfig(s.ch))
+	mux.HandleFunc("PUT /sim/config", putConfig(s.ch))
 }
 
 // ensureLayout creates the top-level Worldline SFTP directory skeleton

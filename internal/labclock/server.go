@@ -453,6 +453,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(204)
 	})
+}
+
+// SimRoutes serves the clock's lab-only hooks — its activity log — on the
+// control surface, apart from the clock API its followers read.
+func (s *Server) SimRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /sim/activity", activity.Handler(s.log))
 }
 

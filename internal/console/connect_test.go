@@ -199,7 +199,6 @@ func TestKitConstantsAreWhatComposeShips(t *testing.T) {
 		{"worldline", "WORLDLINE_SETTLEMENT_IDENTIFIER", kitSettlementID},
 		{"worldline", "WORLDLINE_SFTP_PORT", "2222"},
 		{"b4b", "B4B_JWT_KEY_ID", kitB4BKeyID},
-		{"lab-api", "BC_PASSWORD", kitBCPassword},
 		{"worldline", "BC_SAFEGUARDING_ACCOUNT_ID_EUR", kitSGAEUR},
 		{"worldline", "BC_SAFEGUARDING_ACCOUNT_ID_GBP", kitSGAGBP},
 		{"verify", "VERIFICATION_INTERNAL_API_KEY", kitVerifyKey},

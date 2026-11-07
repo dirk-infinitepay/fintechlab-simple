@@ -385,19 +385,14 @@ func (a *app) flowHop(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 404, map[string]string{"error": "no hop " + strconv.Quote(id) + " in the diagram"})
 }
 
-// fetchActivity reads one service's rings, through the same path the
-// activity panels use so there is one place that knows Banking Circle needs
-// a bearer token.
+// fetchActivity reads one service's rings where the activity panels do:
+// its control port.
 func (a *app) fetchActivity(ctx context.Context, id string, out any) error {
 	svc, ok := a.cat.Get(id)
 	if !ok || svc.Activity == "" {
 		return nil
 	}
-	path := svc.Activity + "?limit=" + itoa(flowWindow)
-	if id == "banking-circle" {
-		return a.bc.AuthorizedGet(ctx, path, out)
-	}
-	return a.getJSON(ctx, a.client, svc.BaseURL+path, out)
+	return a.getJSON(ctx, a.client, activityBase(svc)+svc.Activity+"?limit="+itoa(flowWindow), out)
 }
 
 // knownHosts is every name the lab's own services answer to on its network.

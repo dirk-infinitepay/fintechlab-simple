@@ -10,6 +10,13 @@
 // plain JSON callbacks, and bridges an approved payment into the Banking
 // Circle mock. Everything it is told is written to one state file, so a
 // merchant boarded before a restart is still boarded after one.
+//
+// Two listeners. LISTEN (:8086) is the vendor's: the Oversight API, behind
+// the RS512 bearer JWT. Its port + 1000 (:9086, SIM_CONTROL_LISTEN) is the
+// control port the lab steers the simulation through: every /sim/* route,
+// with no vendor auth (internal/simctl). The old /sim paths still answer on
+// LISTEN, behind the JWT as they were, until phase 4 of docs/lab-api/plan.md
+// retires them.
 package main
 
 import (
@@ -150,24 +157,65 @@ func main() {
 	a.dir.OnChange = a.persist
 	a.beneficiaries.OnChange = a.persist
 
+	ctl, err := a.control(addr)
+	if err != nil {
+		log.Fatalf("b4b: %v", err)
+	}
+	ctl.Start()
+
 	log.Printf("b4b listening on %s kid=%s allowlist=%s delay=%s banking_circle_url=%s state=%s callback_url=%q enforce_beneficiary_company=%t",
 		addr, kid, spec, delay, bcURL, statePathLabel(statePath), callbackURL, a.enforceCompany)
-	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(ctl.Mux))))
 }
 
-// routes is b4b's HTTP surface. addr is the vendor listener, for
-// GET /sim/info.
-func (a *app) routes(addr string) *http.ServeMux {
+// control is b4b's control surface (internal/simctl): every /sim/* route,
+// on a port of its own and with no bearer JWT. The JWT is for a platform
+// calling B4B; the lab steering its own simulation is not a B4B client, and
+// holds no B4B credential to do it. addr is the vendor listener, for
+// GET /sim/info and the control port's default (its port + 1000).
+func (a *app) control(addr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "b4b", Kind: "vendor", Simulates: "B4B Payments (Oversight API)",
+		Listeners: []string{addr},
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			return a.reset(req.Scope)
+		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, err
+	}
+	mux := ctl.Mux
+
+	// A read-only window onto a lab run: only what the platform itself sent
+	// and what this service said back.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog))
+
+	// Registering a payee exactly as POST /oversight/v1/beneficiaries does --
+	// the same handler, so the same body, refusals, answer, callback and
+	// state file -- for the lab API, which registers merchants' outlets and
+	// holds no B4B credential.
+	mux.HandleFunc("POST /sim/beneficiaries", a.registerBeneficiary)
+
+	// Real screening decides these, and they can change at any time under
+	// continuous screening. Exposing them lets a scenario exercise the paths
+	// a client has to handle -- a payee going from pass to fail, a clean
+	// payee that is nonetheless disabled, a PEP flagged separately from a
+	// sanctions hit -- instead of reading that it would.
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.setSanctions)
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.setBeneficiaryStatus)
+	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.setCompanySanctions)
+	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.setPersonSanctions)
+	return ctl, nil
+}
+
+// routes is b4b's vendor surface, the Oversight API a platform calls with
+// its bearer JWT. ctl is the control surface's mux: the old /sim paths here
+// delegate to it until phase 4 of docs/lab-api/plan.md retires them.
+func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "b4b"})
 	})
-
-	// Unauthenticated, like /health and for the same reason: the console
-	// holds no client credential, and this is a read-only window onto a lab
-	// run. It carries no key material -- only what the platform itself sent
-	// and what this service said back.
-	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog))
 
 	// Boarding: the chain a platform walks before it can pay anybody.
 	mux.HandleFunc("POST /oversight/v1/companies", a.requireAuth(a.createCompany))
@@ -199,29 +247,11 @@ func (a *app) routes(addr string) *http.ServeMux {
 	// the current state instead of trying to replay it.
 	mux.HandleFunc("GET /oversight/v1/payments/{id}", a.requireAuth(a.getPayment))
 
-	// Lab-only. Real screening decides these, and they can change at any
-	// time under continuous screening. Exposing them lets a scenario
-	// exercise the paths a client has to handle -- a payee going from pass
-	// to fail, a clean payee that is nonetheless disabled, a PEP flagged
-	// separately from a sanctions hit -- instead of reading that it would.
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.requireAuth(a.setSanctions))
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.requireAuth(a.setBeneficiaryStatus))
-	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.requireAuth(a.setCompanySanctions))
-	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.requireAuth(a.setPersonSanctions))
-
-	// The control contract (internal/simctl), behind the bearer JWT like
-	// the other /sim hooks: the lab API's passthrough signs one.
-	ctl := http.NewServeMux()
-	simctl.Mount(ctl, simctl.Config{
-		Service: "b4b", Kind: "vendor", Simulates: "B4B Payments (Oversight API)",
-		Listeners: []string{addr},
-		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
-			return a.reset(req.Scope)
-		},
-	})
-	for _, route := range []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"} {
-		mux.HandleFunc(route, a.requireAuth(ctl.ServeHTTP))
-	}
+	// The old /sim paths, answering as they did: behind the bearer JWT, but
+	// for GET /sim/activity, which never asked for one (the console held no
+	// client credential to read it with).
+	mux.Handle("GET /sim/activity", ctl)
+	mux.HandleFunc("/sim/", a.requireAuth(ctl.ServeHTTP))
 	return mux
 }
 

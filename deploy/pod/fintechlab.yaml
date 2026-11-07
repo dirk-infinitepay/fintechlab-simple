@@ -452,26 +452,10 @@ spec:
           value: "127.0.0.1"
         - name: CONSOLE_PROBE_INTERVAL
           value: "5s"
-        - name: CONSOLE_BC_INTERNAL_URL
-          value: "http://banking-circle:8095"
         - name: CONSOLE_STATE_FILE
           value: "/console-data/registry.json"
         - name: CONSOLE_BC_DELIVERY_CONFIG
           value: "/config/banking-circle.json"
-        - name: CA_FILE
-          value: "/keys/certs/ca.pem"
-        - name: CLIENT_CERT
-          value: "/keys/certs/client.pem"
-        - name: CLIENT_KEY
-          value: "/keys/certs/client-key.pem"
-        - name: BC_USER
-          value: "lab-api"
-        - name: BC_PASSWORD
-          value: "sim-bc-dev-only"
-        - name: B4B_JWT_PRIVATE_KEY_PATH
-          value: "/keys/b4b-keys/private.pem"
-        - name: B4B_JWT_KEY_ID
-          value: "b4b-mock-1"
         - name: CONSOLE_KEYS_DIR
           value: "/keys"
       volumeMounts:

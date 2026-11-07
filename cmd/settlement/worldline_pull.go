@@ -385,20 +385,24 @@ func (p *worldlinePuller) history() []pulledFile {
 
 // routes exposes the pull state, and a way to force a pull rather than
 // waiting for the next tick -- which is what a test wants right after it
-// has told the acquirer to cut a file.
+// has told the acquirer to cut a file. The control port serves the same
+// pull as POST /sim/pull (main.go, controlRoutes).
 func (p *worldlinePuller) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /worldline/files", func(w http.ResponseWriter, _ *http.Request) {
 		files := p.history()
 		httputilx.WriteJSON(w, 200, map[string]any{"count": len(files), "files": files})
 	})
-	mux.HandleFunc("POST /worldline/pull", func(w http.ResponseWriter, _ *http.Request) {
-		n, err := p.pullOnce()
-		if err != nil {
-			httputilx.Error(w, 502, fmt.Sprintf("pull from %s:%s failed: %v", p.cfg.Host, p.cfg.Port, err))
-			return
-		}
-		httputilx.WriteJSON(w, 200, map[string]any{"pulled": n, "files": p.history()})
-	})
+	mux.HandleFunc("POST /worldline/pull", p.pull)
+}
+
+// pull pulls now and answers with what it took and the whole history.
+func (p *worldlinePuller) pull(w http.ResponseWriter, _ *http.Request) {
+	n, err := p.pullOnce()
+	if err != nil {
+		httputilx.Error(w, 502, fmt.Sprintf("pull from %s:%s failed: %v", p.cfg.Host, p.cfg.Port, err))
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"pulled": n, "files": p.history()})
 }
 
 // envDuration reads a duration from the environment, falling back to def

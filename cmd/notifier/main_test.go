@@ -42,6 +42,22 @@ func newTestApp(t *testing.T, dest string, backs []time.Duration, maxTry int) *a
 	return newApp(dest, list, []byte("secret"), &http.Client{Timeout: 5 * time.Second}, backs, maxTry)
 }
 
+// surfaces builds the notifier's two surfaces with the control port on its
+// default and open to every caller, whatever the environment says.
+func surfaces(t *testing.T, a *app) (svc *http.ServeMux, ctl http.Handler) {
+	t.Helper()
+	t.Setenv("SIM_CONTROL_LISTEN", "")
+	t.Setenv("SIM_CONTROL_ALLOW", "")
+	svc, c, err := a.routes(":8082")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Addr() != ":9082" {
+		t.Errorf("control address = %q, want :9082", c.Addr())
+	}
+	return svc, c.Handler()
+}
+
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -91,14 +107,14 @@ func (a *app) state() (deliveries []*delivery, sub subscription, events int) {
 func TestResetStopsADeliveryWaitingToRetry(t *testing.T) {
 	l := newListener(t, http.StatusInternalServerError, nil)
 	a := newTestApp(t, l.URL+"/webhooks", []time.Duration{time.Hour}, 2)
-	mux := a.routes(":8082")
+	mux, ctl := surfaces(t, a)
 
 	if w := do(t, mux, "POST", "/enqueue", `{"paymentId":"pay_1"}`); w.Code != 202 {
 		t.Fatalf("enqueue: %d %s", w.Code, w.Body)
 	}
 	waitFor(t, "the first attempt", func() bool { _, _, events := a.state(); return events == 1 })
 
-	got := reset(t, mux, "flow")
+	got := reset(t, ctl, "flow")
 	if got.Cleared["deliveries"] != 1 || got.Cleared["in_flight"] != 1 || got.Cleared["activity"] != 1 {
 		t.Errorf("cleared = %v", got.Cleared)
 	}
@@ -123,7 +139,7 @@ func TestResetDropsTheOutcomeOfADeliveryOnTheWire(t *testing.T) {
 	arrived, release := make(chan struct{}), make(chan struct{})
 	l := newListener(t, http.StatusInternalServerError, func() { close(arrived); <-release })
 	a := newTestApp(t, l.URL+"/webhooks", []time.Duration{time.Millisecond}, 1)
-	mux := a.routes(":8082")
+	mux, ctl := surfaces(t, a)
 
 	do(t, mux, "POST", "/enqueue", `{"paymentId":"pay_2"}`)
 	select {
@@ -131,7 +147,7 @@ func TestResetDropsTheOutcomeOfADeliveryOnTheWire(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the delivery never reached the listener")
 	}
-	if got := reset(t, mux, "flow"); got.Cleared["in_flight"] != 1 || got.Cleared["activity"] != 0 {
+	if got := reset(t, ctl, "flow"); got.Cleared["in_flight"] != 1 || got.Cleared["activity"] != 0 {
 		t.Errorf("cleared = %v", got.Cleared)
 	}
 	close(release)
@@ -148,7 +164,7 @@ func TestResetDropsTheOutcomeOfADeliveryOnTheWire(t *testing.T) {
 // status, which only a run's exhausted delivery sets, is active again.
 func TestFlowResetKeepsTheSubscription(t *testing.T) {
 	a := newTestApp(t, "https://receiver:8443/webhooks", nil, 1)
-	mux := a.routes(":8082")
+	mux, ctl := surfaces(t, a)
 	w := do(t, mux, "POST", "/subscriptions", `{"url":"https://receiver:8443/other"}`)
 	var set subscription
 	if err := json.Unmarshal(w.Body.Bytes(), &set); err != nil || w.Code != 201 {
@@ -158,7 +174,7 @@ func TestFlowResetKeepsTheSubscription(t *testing.T) {
 	a.sub.Status = "failed"
 	a.mu.Unlock()
 
-	got := reset(t, mux, "flow")
+	got := reset(t, ctl, "flow")
 	if got.Cleared["failed_subscription"] != 1 || len(got.Kept) != 1 || got.Kept[0] != "subscription" {
 		t.Errorf("reset = %+v", got)
 	}
@@ -174,14 +190,51 @@ func TestFlowResetKeepsTheSubscription(t *testing.T) {
 // set since is replaced by the WEBHOOK_URL one.
 func TestAllResetGoesBackToWebhookURL(t *testing.T) {
 	a := newTestApp(t, "https://receiver:8443/webhooks", nil, 1)
-	mux := a.routes(":8082")
+	mux, ctl := surfaces(t, a)
 	do(t, mux, "POST", "/subscriptions", `{"url":"https://receiver:8443/other"}`)
 
-	got := reset(t, mux, "all")
+	got := reset(t, ctl, "all")
 	if got.Cleared["subscription"] != 1 || got.Cleared["failed_subscription"] != 0 || len(got.Kept) != 0 {
 		t.Errorf("reset = %+v", got)
 	}
 	if _, sub, _ := a.state(); sub != *defaultSub("https://receiver:8443/webhooks") {
 		t.Errorf("subscription after an all reset = %+v", sub)
+	}
+}
+
+// TestTheControlPortServesEverySimRoute: the activity log and the control
+// contract are on the control port and the notifier's own routes are not;
+// the service port still answers the old /sim paths the same way until
+// phase 4.
+func TestTheControlPortServesEverySimRoute(t *testing.T) {
+	a := newTestApp(t, "https://receiver:8443/webhooks", nil, 1)
+	svc, ctl := surfaces(t, a)
+
+	if w := do(t, ctl, "GET", "/health", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"surface":"control"`) {
+		t.Errorf("control GET /health = %d %s", w.Code, w.Body)
+	}
+	for _, r := range []struct{ method, path, body string }{
+		{"GET", "/sim/activity", ""},
+		{"GET", "/sim/info", ""},
+		{"GET", "/sim/logs", ""},
+		{"POST", "/sim/reset", `{"scope":"flow"}`},
+	} {
+		on := do(t, ctl, r.method, r.path, r.body)
+		if on.Code == 404 || on.Code == 405 {
+			t.Errorf("control %s %s = %d %s", r.method, r.path, on.Code, on.Body)
+		}
+		if alias := do(t, svc, r.method, r.path, r.body); alias.Code != on.Code {
+			t.Errorf("service %s %s = %d, want %d as on the control port", r.method, r.path, alias.Code, on.Code)
+		}
+	}
+	for _, r := range []struct{ method, path string }{
+		{"POST", "/enqueue"},
+		{"GET", "/subscriptions"},
+		{"POST", "/subscriptions"},
+		{"GET", "/deliveries"},
+	} {
+		if w := do(t, ctl, r.method, r.path, `{}`); w.Code != 404 {
+			t.Errorf("control %s %s = %d, want 404", r.method, r.path, w.Code)
+		}
 	}
 }

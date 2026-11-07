@@ -2084,7 +2084,7 @@ const API_INTENTS = [
   ['Drive the lab from a script or an agent: merchants, the clock, a run, what happened',
     'The lab API', 'GET /v1 first, then /v1/*'],
   ['Make a vendor misbehave, or read what it saw',
-    'The lab API’s passthrough', '/v1/services/{id}/sim/* — the credentials are added for you'],
+    'The lab API’s passthrough', '/v1/services/{id}/sim/* — on the service’s control port'],
   ['Test your integration with one vendor',
     'That vendor’s own surface', 'exactly the calls your platform makes to the real one'],
   ['Put your platform’s card in the console',
@@ -2109,11 +2109,12 @@ function renderApiRef() {
       <p class="guide-lede">The <b>lab API</b> is the one address for everything lab-level: merchants,
         the clock, settlement runs, what happened, and every service's lab hooks. This page calls
         it exactly as a script or an agent does — the console only serves the page and forwards
-        <span class="mono">/v1</span> to it. Behind it, every service answers on its own address
-        with up to three surfaces: the <b>vendor surface</b> your platform calls exactly as it would
-        call the real vendor, <b>/internal/*</b> plumbing where one simulation stands in for
-        something that has no API, and <b>/sim/*</b>, the lab-only hooks that drive and observe it,
-        which the lab API passes through with the credentials each one needs.</p>
+        <span class="mono">/v1</span> to it. Behind it, every service has two ports. Its
+        <b>vendor port</b> carries the vendor's own API behind the vendor's own login — your platform
+        calls it exactly as it would call the real vendor — and <b>/internal/*</b> plumbing where one
+        simulation stands in for something that has no API. Its <b>control port</b>, the vendor port
+        plus 1000, carries <b>/sim/*</b>, the lab-only hooks that drive and observe it, with no vendor
+        login: only the lab API calls it, and the lab API holds no vendor's credentials.</p>
       <div class="guide-diagram">${apiDiagram()}</div>
       <p class="hint">Purple arrows go to or from the lab API; grey ones are calls to a service's own API.
         Purple marks the system under test, as on the Dashboard.</p>
@@ -2193,7 +2194,8 @@ function apiServiceCard(s) {
       <div class="note">${esc(s.summary)}</div>
       <dl class="kv">
         ${where ? `<dt>From this machine</dt><dd>${esc(where)}</dd>` : ''}
-        ${s.base_url && s.base_url !== where ? `<dt>From the console</dt><dd>${esc(s.base_url)}</dd>` : ''}
+        ${s.base_url && s.base_url !== where ? `<dt>From the lab API</dt><dd>${esc(s.base_url)}</dd>` : ''}
+        ${s.control_url ? `<dt>Control port</dt><dd>${esc(s.control_url)} <span style="font-family:var(--sans);color:var(--text-faint)">— /sim/*, no vendor login; the lab API's way in</span></dd>` : ''}
         <dt>Ports</dt><dd>${esc((s.ports || []).join('  '))}</dd>
         ${s.transport ? `<dt>Transport</dt><dd>${esc(s.transport)}</dd>` : ''}
         ${s.auth ? `<dt>Auth</dt><dd>${esc(s.auth)}</dd>` : ''}
@@ -2252,8 +2254,8 @@ function apiDiagram() {
     ${gdBox(380, 200, 240, 260, 'is-lab', 'Services', 'one process each, own address')}
     ${gdChip(396, 256, 208, 'vendor surface')}
     ${gdChip(396, 288, 208, '/internal/* — plumbing')}
-    ${gdChip(396, 320, 208, '/sim/* — lab control', 'lib')}
-    ${gdChip(396, 352, 208, '/sim/activity — what it saw', 'lib')}
+    ${gdChip(396, 320, 208, 'control port — /sim/*', 'lib')}
+    ${gdChip(396, 352, 208, 'no vendor login there', 'lib')}
     ${gdChip(396, 400, 208, 'clock :8096 — GET /clock')}
 
     ${gdBox(770, 20, 210, 290, 'is-sut', 'Your platform', 'a registered plugin')}
@@ -2265,7 +2267,7 @@ function apiDiagram() {
     ${gdArrow(230, 140, 380, 'everything lab-level', 'GET /v1 · /v1/*')}
     ${gdArrow(230, 300, 380, 'vendor surfaces', 'as a platform would', 'is-traffic')}
     ${vert(500, 170, 200)}
-    <text class="gd-code gd-start" x="510" y="189">calls their own APIs</text>
+    <text class="gd-code gd-start" x="510" y="189">control ports only</text>
 
     <text class="gd-note" x="786" y="170">its production code calls</text>
     <text class="gd-note" x="786" y="188">the vendor surfaces only;</text>
@@ -2398,6 +2400,7 @@ function serviceCard(s) {
       <div class="note">${esc(s.summary)}</div>
       <dl class="kv">
         <dt>Reached at</dt><dd>${esc(s.base_url)}${s.health_path ? esc(s.health_path) : ''}</dd>
+        ${s.control_url ? `<dt>Control port</dt><dd>${esc(s.control_url)}/sim/* <span style="font-family:var(--sans);color:var(--text-faint)">— where the lab steers it, no vendor login</span></dd>` : ''}
         <dt>Ports</dt><dd>${esc((s.ports || []).join('  '))}</dd>
         <dt>Transport</dt><dd>${esc(s.transport)}</dd>
         <dt>Auth</dt><dd>${esc(s.auth)}</dd>

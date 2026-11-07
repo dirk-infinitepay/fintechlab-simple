@@ -11,7 +11,10 @@
 package console
 
 import (
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -46,12 +49,16 @@ type Endpoint struct {
 // service names) and one run from a shell (published 127.0.0.1 ports) --
 // hence Browse, the URL that works from the operator's browser instead.
 type Service struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Kind       Kind     `json:"kind"`
-	Summary    string   `json:"summary"`
-	BaseURL    string   `json:"base_url"`
-	Browse     string   `json:"browse_url"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Kind    Kind   `json:"kind"`
+	Summary string `json:"summary"`
+	BaseURL string `json:"base_url"`
+	Browse  string `json:"browse_url"`
+	// Control is where the lab steers the service: its control port, every
+	// /sim/* route and its own GET /health, plain HTTP with no vendor auth
+	// (internal/simctl). Empty for a plugin, which has none.
+	Control    string   `json:"control_url,omitempty"`
 	HealthPath string   `json:"health_path"`
 	Ports      []string `json:"ports"`
 	Transport  string   `json:"transport"`
@@ -230,9 +237,9 @@ func DefaultCatalogue() *Catalogue {
 			Auth:       "shared webhook secret (hex, 32 raw bytes)",
 			SwapFor:    "It is the sender -- point ACI_WEBHOOK_TARGET_URL at your own listener.",
 			Endpoints: []Endpoint{
-				{"POST", "/internal/simulate-payment", "emit a card-payment webhook"},
-				{"GET", "/internal/sent", "what it delivered"},
-				{"GET", "/internal/sent/{id}", "one delivery"},
+				{"POST", "/sim/payments", "emit a card-payment webhook (control port)"},
+				{"GET", "/sim/sent", "what it delivered (control port)"},
+				{"GET", "/sim/sent/{id}", "one delivery (control port)"},
 				{"GET|POST", "/sim/connected", "lab switch: whether it delivers webhooks at all"},
 			},
 		},
@@ -409,8 +416,33 @@ func DefaultCatalogue() *Catalogue {
 			svcs[i].BaseURL = v
 		}
 		svcs[i].Browse = browseURL(svcs[i])
+		svcs[i].Control = os.Getenv(controlEnvKeyFor(svcs[i].ID))
+		if svcs[i].Control == "" {
+			svcs[i].Control = ControlURL(svcs[i].BaseURL)
+		}
 	}
 	return &Catalogue{Services: svcs}
+}
+
+// controlEnvKeyFor is CONSOLE_CONTROL_URL_<ID>, the override for a
+// service's control address.
+func controlEnvKeyFor(id string) string {
+	return "CONSOLE_CONTROL_URL_" + strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
+}
+
+// ControlURL is a service's control address by the lab's convention: the
+// same host, plain HTTP, and the port plus 1000 (https://banking-circle:8085
+// → http://banking-circle:9085). "" when the base URL has no port to add to.
+func ControlURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port+1000 > 65535 {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(u.Hostname(), strconv.Itoa(port+1000))
 }
 
 // envKeyFor is the per-service base-URL override, e.g. banking-circle ->

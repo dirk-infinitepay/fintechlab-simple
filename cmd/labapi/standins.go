@@ -79,7 +79,7 @@ func (a *app) wiringFor(id string) []wiring {
 func (a *app) switchWiring(svcID, connID, label string, onlyReceiver bool) wiring {
 	base := func() string {
 		s, _ := a.cat.Get(svcID)
-		return s.BaseURL
+		return s.Control
 	}
 	return wiring{
 		id: connID, label: label,
@@ -145,7 +145,7 @@ func (a *app) bcReceiverWiring() wiring {
 				RowVersion string `json:"rowVersion"`
 			} `json:"result"`
 		}
-		if err := a.bc.AuthorizedGet(ctx, "/api/v1/notificationselfservice/subscription?PageSize=50", &listed); err != nil {
+		if err := a.bc.Get(ctx, "/sim/subscriptions", &listed); err != nil {
 			return nil, err
 		}
 		out := listed.Result[:0]
@@ -193,10 +193,9 @@ func (a *app) bcReceiverWiring() wiring {
 				if s.IsActive == on {
 					continue
 				}
-				path := "/api/v1/notificationselfservice/subscription/" + url.PathEscape(s.ID) + "/" + verb
-				// The bank's optimistic concurrency, as a real client must.
-				hdr := http.Header{"If-Match": []string{s.RowVersion}}
-				if err := a.bc.AuthorizedDo(ctx, http.MethodPut, path, hdr, nil); err != nil {
+				// The lab's own switch on the bank's control port: no
+				// If-Match, the operator's click is the last word.
+				if err := a.bc.Post(ctx, "/sim/subscription/"+url.PathEscape(s.ID)+"/"+verb, nil); err != nil {
 					errs = append(errs, err)
 				}
 			}

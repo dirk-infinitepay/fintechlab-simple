@@ -46,6 +46,9 @@ type Config struct {
 	Simulates string // "Banking Circle Connect"
 	// Listeners are the vendor-facing addresses, for GET /sim/info.
 	Listeners []string
+	// ControlListener is the control surface's own address, set by
+	// NewControl.
+	ControlListener string
 	// Scopes are the reset scopes the sim honours. Empty means both.
 	Scopes []string
 	// Reset puts the sim back to a known state. Required.
@@ -136,6 +139,7 @@ func (c Config) info(w http.ResponseWriter, r *http.Request) {
 		"simulates":        c.Simulates,
 		"started_at":       startedAt,
 		"vendor_listeners": nonNil(c.Listeners),
+		"control_listener": c.ControlListener,
 		"reset_scopes":     c.Scopes,
 		"hooks":            []string{},
 	}

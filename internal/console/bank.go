@@ -10,8 +10,6 @@ import (
 	"net/http"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 )
 
 // The Banks view. "Sim banks" in this lab are not one thing: the business
@@ -104,7 +102,7 @@ func (c *CoreLedgerBank) Accounts(ctx context.Context) ([]BankAccount, error) {
 			ID, IBAN, Holder, Currency, Balance string
 		} `json:"accounts"`
 	}
-	if err := getJSON(ctx, c.Client, c.BaseURL+"/accounts", nil, &body); err != nil {
+	if err := getJSON(ctx, c.Client, c.BaseURL+"/sim/accounts", nil, &body); err != nil {
 		return nil, err
 	}
 	out := make([]BankAccount, 0, len(body.Accounts))
@@ -118,7 +116,7 @@ func (c *CoreLedgerBank) Accounts(ctx context.Context) ([]BankAccount, error) {
 func (c *CoreLedgerBank) OpenAccount(ctx context.Context, holder, currency, opening string) (BankAccount, error) {
 	req := map[string]string{"holder": holder, "currency": currency, "openingBalance": opening}
 	var a struct{ ID, IBAN, Holder, Currency, Balance string }
-	if err := postJSON(ctx, c.Client, c.BaseURL+"/accounts", nil, req, &a); err != nil {
+	if err := postJSON(ctx, c.Client, c.BaseURL+"/sim/accounts", nil, req, &a); err != nil {
 		return BankAccount{}, err
 	}
 	return BankAccount{ID: a.ID, Number: a.IBAN, Holder: a.Holder, Currency: a.Currency, Balance: a.Balance}, nil
@@ -126,20 +124,18 @@ func (c *CoreLedgerBank) OpenAccount(ctx context.Context, holder, currency, open
 
 // --- Banking Circle ---------------------------------------------------
 
-// BankingCircleBank reads the safeguarding ledger through Banking Circle's
-// own credentialed API -- mTLS plus the Basic->Bearer exchange, exactly as
-// a real client would. Nothing here reaches around it: the console has no
-// privileged back door into the vendor's state, which is what keeps the
-// view honest.
+// BankingCircleBank reads and steers Banking Circle through its control
+// port (internal/simctl): the lab's own back link to its simulation, plain
+// HTTP with no vendor login. Banking Circle's mTLS and Basic->Bearer
+// exchange are for the platform calling its API; the lab looking at the
+// bank's books, or making a payout come back, is not that, and holding the
+// vendor's credentials to do it would make the lab one of the vendor's
+// clients. Every control route answers what its vendor counterpart answers,
+// so what is shown is what a client of the bank would see.
 type BankingCircleBank struct {
-	BaseURL  string
-	Client   *http.Client
-	User     string
-	Password string
-
-	mu      sync.Mutex
-	token   string
-	expires time.Time
+	// BaseURL is Banking Circle's control address (http://banking-circle:9085).
+	BaseURL string
+	Client  *http.Client
 }
 
 func (b *BankingCircleBank) Meta() Bank {
@@ -151,87 +147,13 @@ func (b *BankingCircleBank) Meta() Bank {
 	}
 }
 
-// Bearer is the token a call to Banking Circle's credentialed listener
-// carries, for a caller that builds its own request (the lab API's
-// passthrough to the /sim/* hooks).
-func (b *BankingCircleBank) Bearer(ctx context.Context) (string, error) { return b.bearer(ctx) }
-
-// bearer returns a cached token, exchanging Basic credentials for a new one
-// when it is missing or close to expiry.
-func (b *BankingCircleBank) bearer(ctx context.Context) (string, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.token != "" && time.Now().Before(b.expires) {
-		return b.token, nil
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.BaseURL+"/api/v1/authorizations/authorize", nil)
-	if err != nil {
-		return "", err
-	}
-	req.SetBasicAuth(b.User, b.Password)
-	resp, err := b.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("banking-circle authorize: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("banking-circle authorize: HTTP %d", resp.StatusCode)
-	}
-	var body struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", err
-	}
-	if body.AccessToken == "" {
-		return "", errors.New("banking-circle authorize: no access_token")
-	}
-	b.token = body.AccessToken
-	ttl := time.Duration(body.ExpiresIn) * time.Second
-	if ttl <= 0 {
-		ttl = time.Minute
-	}
-	// Re-exchange a little early: a token that expires mid-request shows
-	// up as a confusing 401 in the UI rather than as an expiry.
-	b.expires = time.Now().Add(ttl - ttl/5)
-	return b.token, nil
-}
-
-// Forget drops the cached token, so the next call exchanges credentials
-// again. Banking Circle's tokens do not survive a restart or an "all"
-// reset, and a cached one would otherwise fail every call until it expired.
-func (b *BankingCircleBank) Forget() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.token = ""
-}
-
-// authorized runs call with a bearer token, and once more with a fresh one
-// when Banking Circle answers 401.
-func (b *BankingCircleBank) authorized(ctx context.Context, call func(tok string) error) error {
-	for retried := false; ; retried = true {
-		tok, err := b.bearer(ctx)
-		if err != nil {
-			return err
-		}
-		err = call(tok)
-		var st *statusError
-		if !retried && errors.As(err, &st) && st.code == http.StatusUnauthorized {
-			b.Forget()
-			continue
-		}
-		return err
-	}
-}
-
 func (b *BankingCircleBank) Accounts(ctx context.Context) ([]BankAccount, error) {
 	var body struct {
 		Accounts []struct {
 			ID, VIBAN, Holder, Currency, Balance string
 		} `json:"accounts"`
 	}
-	if err := b.AuthorizedGet(ctx, "/accounts", &body); err != nil {
+	if err := b.Get(ctx, "/sim/accounts", &body); err != nil {
 		return nil, err
 	}
 	out := make([]BankAccount, 0, len(body.Accounts))
@@ -242,54 +164,32 @@ func (b *BankingCircleBank) Accounts(ctx context.Context) ([]BankAccount, error)
 	return out, nil
 }
 
-// AuthorizedGet performs a GET against Banking Circle carrying a bearer
-// token, for the read-only panels that are not about accounts. Same
-// credentials, same listener -- the console never gets a privileged
-// side-channel into a vendor.
-func (b *BankingCircleBank) AuthorizedGet(ctx context.Context, path string, out any) error {
-	return b.authorized(ctx, func(tok string) error {
-		return getJSON(ctx, b.Client, b.BaseURL+path, http.Header{"Authorization": []string{"Bearer " + tok}}, out)
-	})
+// Get reads one of Banking Circle's control routes.
+func (b *BankingCircleBank) Get(ctx context.Context, path string, out any) error {
+	return getJSON(ctx, b.Client, b.BaseURL+path, nil, out)
 }
 
-// AuthorizedPost is AuthorizedGet's counterpart for the endpoints that do
-// something. Same token, same client, so a console action goes through the
-// credentialed path the Banks view already established rather than a
-// second one that would have to learn mTLS all over again.
-func (b *BankingCircleBank) AuthorizedPost(ctx context.Context, path string, out any) error {
-	return b.AuthorizedDo(ctx, http.MethodPost, path, nil, out)
-}
-
-// AuthorizedDo is the same for any method and extra headers — the
-// subscription activate and deactivate calls are PUTs carrying If-Match.
-func (b *BankingCircleBank) AuthorizedDo(ctx context.Context, method, path string, hdr http.Header, out any) error {
-	return b.authorized(ctx, func(tok string) error { return b.do(ctx, tok, method, path, hdr, out) })
-}
-
-func (b *BankingCircleBank) do(ctx context.Context, tok, method, path string, hdr http.Header, out any) error {
-	req, err := http.NewRequestWithContext(ctx, method, b.BaseURL+path, nil)
+// Post calls one of Banking Circle's control routes that does something.
+// A refusal comes back in the bank's own words.
+func (b *BankingCircleBank) Post(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+path, nil)
 	if err != nil {
 		return err
 	}
-	for k, v := range hdr {
-		req.Header[k] = v
-	}
-	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := b.Client.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// The vendor's own words, not a status code translated into ours.
 		var body struct {
 			Error string `json:"error"`
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if body.Error != "" {
-			return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle %s %s: %s", method, path, body.Error)}
+			return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle POST %s: %s", path, body.Error)}
 		}
-		return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle %s %s: HTTP %d", method, path, resp.StatusCode)}
+		return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle POST %s: HTTP %d", path, resp.StatusCode)}
 	}
 	if out == nil {
 		return nil

@@ -66,29 +66,22 @@ func within(t *testing.T, d time.Duration, what string, f func()) {
 	}
 }
 
-func TestSimControlIsOnTheCredentialedListener(t *testing.T) {
+func TestSimControlIsOnTheControlPortWithoutAToken(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
-	defer srv.Close()
+	ctl := controlServer(t, a)
 
-	for _, r := range []struct{ method, path string }{
-		{"GET", "/sim/info"}, {"GET", "/sim/logs"}, {"POST", "/sim/reset"},
-	} {
-		if code, _ := call(t, r.method, srv.URL+r.path, "", ""); code != 401 {
-			t.Fatalf("%s %s without a bearer = %d, want 401", r.method, r.path, code)
-		}
-	}
-
-	tok := a.tokens.issue(time.Hour)
-	info := mustCall(t, 200, "GET", srv.URL+"/sim/info", tok, "")
+	info := mustCall(t, 200, "GET", ctl.URL+"/sim/info", "", "")
 	if info["service"] != "banking-circle" || info["kind"] != "vendor" || info["simulates"] != "Banking Circle Connect" {
 		t.Fatalf("info = %v", info)
 	}
 	if scopes, _ := info["reset_scopes"].([]any); len(scopes) != 2 {
 		t.Fatalf("reset_scopes = %v, want flow and all", info["reset_scopes"])
 	}
-	if code, out := call(t, "POST", srv.URL+"/sim/reset", tok, `{"scope":"some"}`); code != 400 {
+	if code, out := call(t, "POST", ctl.URL+"/sim/reset", "", `{"scope":"some"}`); code != 400 {
 		t.Fatalf("an unknown scope = %d %v, want 400", code, out)
+	}
+	if health := mustCall(t, 200, "GET", ctl.URL+"/health", "", ""); health["surface"] != "control" {
+		t.Fatalf("control /health = %v", health)
 	}
 }
 
@@ -98,8 +91,9 @@ func TestResetOverHTTPFlowThenAll(t *testing.T) {
 	logring.Install() // so /sim/logs has a ring to read
 	a := newTestApp(t)
 	a.payLog = activity.New("payments", "Payments received", "")
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
+	ctl := controlServer(t, a)
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
 
@@ -121,7 +115,7 @@ func TestResetOverHTTPFlowThenAll(t *testing.T) {
 	}
 
 	tok := a.tokens.issue(time.Hour)
-	out := mustCall(t, 200, "POST", srv.URL+"/sim/reset", tok, "")
+	out := mustCall(t, 200, "POST", ctl.URL+"/sim/reset", "", "")
 	cleared, _ := out["cleared"].(map[string]any)
 	if out["service"] != "banking-circle" || out["scope"] != "flow" ||
 		cleared["payments"] != float64(2) || cleared["outcomes"] != float64(1) || cleared["balances"] != float64(2) {
@@ -135,7 +129,7 @@ func TestResetOverHTTPFlowThenAll(t *testing.T) {
 	}
 
 	// Cleared: payments, balances, activity. Kept: the merchant's account,
-	// both subscriptions, the token this call came with.
+	// both subscriptions, the platform's token.
 	if got, _ := mustCall(t, 200, "GET", srv.URL+"/payments", tok, "")["payments"].([]any); len(got) != 0 {
 		t.Fatalf("payments after a flow reset = %v", got)
 	}
@@ -151,41 +145,30 @@ func TestResetOverHTTPFlowThenAll(t *testing.T) {
 	if got := mustCall(t, 200, "GET", srv.URL+"/api/v1/notificationselfservice/subscription", tok, "")["totalItems"]; got != float64(2) {
 		t.Fatalf("%v subscriptions after a flow reset, want 2", got)
 	}
-	logs, _ := mustCall(t, 200, "GET", srv.URL+"/sim/activity", tok, "")["logs"].([]any)
+	logs, _ := mustCall(t, 200, "GET", ctl.URL+"/sim/activity", "", "")["logs"].([]any)
 	for _, raw := range logs {
 		if l := raw.(map[string]any); l["total"] != float64(0) {
 			t.Fatalf("log %v has %v events after the reset, want none", l["name"], l["total"])
 		}
 	}
-	lines, _ := mustCall(t, 200, "GET", srv.URL+"/sim/logs?q=reset+(flow)", tok, "")["lines"].([]any)
+	lines, _ := mustCall(t, 200, "GET", ctl.URL+"/sim/logs?q=reset+(flow)", "", "")["lines"].([]any)
 	if len(lines) == 0 {
 		t.Fatal("no line in /sim/logs marks the reset")
 	}
 
-	// all: back to the seed, and every token forgotten -- this one too.
-	out = mustCall(t, 200, "POST", srv.URL+"/sim/reset", tok, `{"scope":"all"}`)
+	// all: back to the seed. The platform's token survives it: a lab reset
+	// never logs the platform's Banking Circle client out.
+	out = mustCall(t, 200, "POST", ctl.URL+"/sim/reset", "", `{"scope":"all"}`)
 	cleared, _ = out["cleared"].(map[string]any)
-	if cleared["subscriptions"] != float64(1) || cleared["accounts"] != float64(1) || cleared["tokens"] != float64(1) {
-		t.Fatalf("all reset = %v, want the platform's subscription, the merchant's account and the token cleared", out)
+	if cleared["subscriptions"] != float64(1) || cleared["accounts"] != float64(1) {
+		t.Fatalf("all reset = %v, want the platform's subscription and the merchant's account cleared", out)
 	}
-	if kept, _ := out["kept"].([]any); len(kept) != 0 {
-		t.Fatalf("kept = %v after an all reset, want nothing", out["kept"])
+	if _, ok := cleared["tokens"]; ok {
+		t.Fatalf("all reset cleared tokens: %v", out)
 	}
-	if code, _ := call(t, "GET", srv.URL+"/sim/info", tok, ""); code != 401 {
-		t.Fatalf("a token from before an all reset = %d, want 401", code)
+	if kept, _ := out["kept"].([]any); len(kept) != 1 || kept[0] != "tokens" {
+		t.Fatalf("kept = %v after an all reset, want [tokens]", out["kept"])
 	}
-	req, _ := http.NewRequest("GET", srv.URL+"/api/v1/authorizations/authorize", nil)
-	req.SetBasicAuth("lab", "lab")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var auth struct {
-		AccessToken string `json:"access_token"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&auth)
-	resp.Body.Close()
-	tok = auth.AccessToken
 
 	subs := mustCall(t, 200, "GET", srv.URL+"/api/v1/notificationselfservice/subscription", tok, "")
 	if result, _ := subs["result"].([]any); len(result) != 1 || result[0].(map[string]any)["id"] != seed.ID {
@@ -212,7 +195,7 @@ func TestAPayoutInFlightAtResetNeverReachesTheSubscriberOrTheBank(t *testing.T) 
 	}))
 	defer bank.Close()
 	a.bankCreditURL = bank.URL
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
@@ -289,7 +272,7 @@ func TestAResetDoesNotWaitOnAHungPeer(t *testing.T) {
 	}
 	a.bankCreditURL = hung("bank").URL
 	subscribeAll(t, a, hung("subscriber").URL)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()

@@ -21,11 +21,11 @@ memory.
 
 | | |
 | --- | --- |
-| Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095` |
-| Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none |
-| A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` and `CONSOLE_BC_INTERNAL_URL` on the console, `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
-| Activity logs | `GET /sim/activity` (on `:8085`, Bearer) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `POST /sim/reset` empties all three |
-| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed (`all`) |
+| Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095`.<br>`:9085`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`, default `LISTEN`'s port + 1000), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://banking-circle:9085` |
+| Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
+| Activity logs | `GET /sim/activity` (on the control port) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `POST /sim/reset` empties all three |
+| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`) |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
 
 | Variable | Default | Effect |
@@ -42,6 +42,8 @@ memory.
 | `BC_DELIVERY_CONFIG` | `/config/banking-circle.json` | Retry schedule, email steps, `batch_flush_interval` (2 s), default batch size. A missing file means the documented schedule at real time |
 | `BC_TIME_SCALE` | unset (compose `86400`) | Overrides the file's `time_scale` (3600): every retry delay is divided by it. At 86400 the whole schedule takes about four seconds |
 | `BANK_CREDIT_URL` | empty (compose `http://bank:8081/internal/credit`) | Where a processed payout is credited. Empty turns that hop off |
+| `SIM_CONTROL_LISTEN` | `LISTEN`'s port + 1000 (`:9085`) | The control port's address |
+| `SIM_CONTROL_ALLOW` | unset | Comma-separated addresses or CIDRs the control port takes calls from; anything else is `403`. Unset, anything that can reach it. A malformed list is fatal at start |
 
 ## Vendor surface
 
@@ -485,20 +487,32 @@ safeguarding gate before each payout, and by the lab API's
 
 ## Lab control
 
-Not part of Banking Circle. The `/sim/*` routes and the introspection
-reads are on `:8085` behind the same mTLS and bearer token as the Connect
-API; the test hooks under `/internal/payments/…` are on the bridge `:8095`
-with no auth.
+Not part of Banking Circle. The `/sim/*` routes are on the control port,
+`:9085` ([the control contract](../README.md#the-control-contract)), with
+no vendor auth: Banking Circle's login is for the platform calling its
+API, not for the lab steering its simulation. The same `/sim/*` paths
+still answer on `:8085`, behind the mTLS and bearer token they had, until
+phase 4 of [the plan](../../lab-api/plan.md) retires them; there, without
+a valid token, every one is `401`. The introspection reads (`GET /accounts`,
+`/payments`, `/reconciliation`) stay on `:8085` behind the bearer, and the
+test hooks under `/internal/payments/…` on the bridge `:8095`, with no
+auth.
+
+Where a control route stands in for a vendor or bridge route, it is that
+route's handler: the same status codes and the same body.
 
 ### `GET /health`
 
-On `:8085` only (the bridge has none). No bearer token, but the TLS
-handshake still wants a client certificate under `BC_MTLS=require`.
-Answers `200` `{"status": "ok", "service": "banking-circle"}`.
+Liveness, on `:8085` and on the control port (the bridge has none). `:8085`
+takes no bearer token, but the TLS handshake still wants a client
+certificate under `BC_MTLS=require`, and answers `{"status": "ok",
+"service": "banking-circle"}`. The control port answers `{"status": "ok",
+"service": "banking-circle", "surface": "control"}`, and that is the one
+the lab API's monitor probes.
 
 ### `GET /sim/activity`
 
-The three logs described under *At a glance*, Bearer.
+The three logs described under *At a glance*.
 
 - Query: `limit` (default 100; each ring keeps 256).
 - Answers `200` `{"logs": [{"name": "payments", …}, {"name": "notifications", …}, {"name": "reports", …}]}`,
@@ -507,24 +521,23 @@ The three logs described under *At a glance*, Bearer.
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
-([the control contract](../README.md#the-control-contract)), Bearer:
+([the control contract](../README.md#the-control-contract)):
 `"service": "banking-circle"`, `"kind": "vendor"`,
 `"simulates": "Banking Circle Connect"`,
 `"vendor_listeners": [":8085", ":8095"]` (`LISTEN` and `INTERNAL_LISTEN`),
-`"reset_scopes": ["flow", "all"]`.
+`"control_listener": ":9085"`, `"reset_scopes": ["flow", "all"]`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
-([the control contract](../README.md#the-control-contract)), Bearer:
-every request, every delivery attempt and how it ended, pauses, forced
-outcomes, credits at the beneficiary's bank, and the line marking each
-reset.
+([the control contract](../README.md#the-control-contract)): every
+request to `:8085`, the bridge and the control port,
+every delivery attempt and how it ended, pauses, forced outcomes, credits
+at the beneficiary's bank, and the line marking each reset.
 
 ### `POST /sim/reset`
 
-Puts the bank back to a known state, Bearer. Synchronous, and never
-refused.
+Puts the bank back to a known state. Synchronous, and never refused.
 
 - **`flow`** (the default) **clears**: every payment (outgoing, incoming,
   returns); every balance, back to `0.00`; the forced outcomes still
@@ -538,9 +551,9 @@ refused.
   twice.
 - **`all`** also puts back what start-up seeded: the seeded subscription
   alone, as it was at start (same id and `rowVersion`); the two
-  safeguarding accounts alone; no tokens, the one the reset came with
-  included, so a caller authorizes again; references from
-  `010F100000000001`.
+  safeguarding accounts alone; references from `010F100000000001`.
+- **Tokens survive both scopes.** A lab reset never logs the platform's
+  Banking Circle client out, and nothing the lab does needs one.
 - Work in flight is dropped, not raced. A payment still sleeping out
   `PROCESSING_DELAY` never moves money, changes state, is notified or is
   credited at the beneficiary's bank. A batch on its flush timer or
@@ -557,8 +570,8 @@ refused.
 
 `balances` counts accounts that held anything but their seed;
 `notifications`, every one not yet delivered. `all` adds `subscriptions`
-(removed, or put back to the seed), `accounts` (opened by payouts) and
-`tokens` (still live) to `cleared`, and `kept` is `[]`.
+(removed, or put back to the seed) and `accounts` (opened by payouts) to
+`cleared`, and `kept` is `["tokens"]`.
 
 ### `GET /sim/emails`
 
@@ -624,14 +637,74 @@ Releases a paused subscription.
 
 ### `POST /sim/payments/{id}/return`
 
-The same handler as `POST /internal/payments/{id}/return`, on `:8085`
-behind the bearer token, because that is the surface the lab API holds a
-token for.
+The same handler as `POST /internal/payments/{id}/return`.
 
 ### `POST /sim/payments/{id}/reverse`
 
-The same handler as `POST /internal/payments/{id}/reverse`, on `:8085`
-behind the bearer token.
+The same handler as `POST /internal/payments/{id}/reverse`.
+
+### `GET /sim/accounts`
+
+The same handler as `GET /accounts` on `:8085`: `200`
+`{"accounts": [{…}]}`, unordered.
+
+### `GET /sim/accounts/{accountId}/balances`
+
+The same handler as `GET /internal/accounts/{accountId}/balances` on the
+bridge: `200` `{"accountId": "…", "balances": [{…}]}`, `400` for a
+non-UUID, `404` for an unknown account.
+
+### `GET /sim/payments`
+
+The same handler as `GET /payments` on `:8085`: `200`
+`{"payments": [{…}]}`, unordered.
+
+### `POST /sim/incoming-payments`
+
+The same handler as `POST /internal/incoming-payments` on the bridge,
+body, answers and side effects included: `202` with the incoming payment,
+and a `payment.incoming` event in the `payments` log.
+
+### `GET /sim/payments/outcomes`
+
+The same handler as `GET /internal/payments/outcomes`: `200`
+`{"queued": [...]}`.
+
+### `POST /sim/payments/outcomes`
+
+The same handler as `POST /internal/payments/outcomes`; the two share one
+queue.
+
+### `GET /sim/subscriptions`
+
+Every subscription: the vendor's list, `GET
+…/notificationselfservice/subscription`, in the same envelope,
+`{"result": [{…}], "pageInfo": {…}, "totalItems": 1}`. `PageSize` defaults
+to 1000 rather than 50, so one page holds every subscription a lab will
+have; `PageNumber` and `PageSize` are honoured as the vendor's are.
+
+### `POST /sim/subscription/{subscriptionId}/test`
+
+The same handler as `POST
+…/notificationselfservice/clienttest/{subscriptionId}`: `200`
+`{"status": "sent", "subscriptionId": "…", "eventType": "PaymentStatus"}`,
+`404` for an unknown subscription.
+
+### `POST /sim/subscription/{subscriptionId}/activate`
+
+`PUT …/subscription/{id}/activate` without `If-Match`: the lab overrides
+the concurrency check. Answers as the vendor's does, `200`
+`{"subscription": {…}, "redeliveredNotifications": 0}`, and `404`
+`{"error": "subscription not found", "status": 404}`; never `412`.
+
+- Side effects: the vendor's, retained notifications redelivered
+  included. The `rowVersion`s still move, so a client holding the old one
+  gets `412` on its next write.
+
+### `POST /sim/subscription/{subscriptionId}/deactivate`
+
+`PUT …/subscription/{id}/deactivate` without `If-Match`. Answers `200`
+with the subscription, as the vendor's does; `404`; never `412`.
 
 ### `GET /accounts`
 
@@ -751,27 +824,29 @@ order, after anything already queued.
   reconciliation sweep's `intraday-reconciliation-paged-report`, with
   `payments/singles/{paymentId}/status` as the fallback. It receives the
   encrypted webhooks.
-- **The lab API** (`cmd/labapi`), on `:8085` as `BC_USER` with the client
-  certificate: `GET /health` (health monitor, `GET /v1/lab`,
-  `POST /v1/services/{id}/probe`); authorize and `GET /accounts`
-  (`GET /v1/banks`); `GET …/notificationselfservice/subscription?PageSize=50`
-  and `GET /sim/subscription/{subscriptionId}/pending`
-  (`GET /v1/banking-circle/subscriptions`); `POST …/clienttest/{subscriptionId}`
+- **The lab API** (`cmd/labapi`), on the control port only, with no
+  Banking Circle credentials: `GET /health` (health monitor,
+  `GET /v1/lab`, `POST /v1/services/{id}/probe`); `GET /sim/accounts`
+  (`GET /v1/banks`); `GET /sim/subscriptions` and
+  `GET /sim/subscription/{subscriptionId}/pending`
+  (`GET /v1/banking-circle/subscriptions`);
+  `POST /sim/subscription/{subscriptionId}/test`
   (`POST /v1/banking-circle/subscriptions/{id}/test`);
   `POST /sim/subscription/{subscriptionId}/pause` and `/resume`
   (`POST /v1/banking-circle/subscriptions/{id}/pause`, `/resume`);
-  `GET /payments` (`GET /v1/banking-circle/payouts`);
+  `GET /sim/payments` (`GET /v1/banking-circle/payouts`);
   `POST /sim/payments/{id}/return` and `/reverse`
   (`POST /v1/banking-circle/payouts/{id}/return`, `/reverse`);
   `GET /sim/activity` (`GET /v1/services/{id}/activity`, `GET /v1/flow`,
   `GET /v1/flow/hops/{id}`); `GET /sim/delivery-config` (`GET /v1/config`);
   `POST /sim/reset` (`POST /v1/lab/reset`, `POST /v1/services/{id}/reset`);
   `GET /sim/logs` (`GET /v1/logs`, `GET /v1/services/{id}/logs`);
-  the subscription list and `PUT …/subscription/{id}/activate` or
-  `/deactivate` with `If-Match` on every subscription pointing at the
-  receiver (`GET /v1/stand-ins`, `POST /v1/stand-ins/{id}`). On the
-  bridge: `GET /internal/accounts/{accountId}/balances` and
-  `POST /internal/incoming-payments` (`POST /v1/actions/fund-sga`).
+  `GET /sim/subscriptions` and `POST /sim/subscription/{subscriptionId}/activate`
+  or `/deactivate` on every subscription pointing at the receiver
+  (`GET /v1/stand-ins`, `POST /v1/stand-ins/{id}`);
+  `GET /sim/accounts/{accountId}/balances` and
+  `POST /sim/incoming-payments` (`POST /v1/actions/fund-sga`); and any
+  `/sim/*` path through `/v1/services/{id}/sim/…`.
 - **The harness**: `banking-circle-payout`
   (`internal/harness/scenario_bankingcircle.go`) authorizes, reads
   `GET /accounts/{id}`, funds with `POST :8095/internal/incoming-payments`
@@ -786,7 +861,8 @@ order, after anything already queued.
   `PUT …/activate` to see the two retained notifications redelivered.
   `b4b-oversight-gates` reaches `POST /internal/payments` through b4b.
 - **Agents and operators** (agent.runbooks.md): `POST`/`GET :8095/internal/payments/outcomes`
-  and `POST :8095/internal/payments/{id}/return` and `/reverse`.
+  and `POST :8095/internal/payments/{id}/return` and `/reverse`, or the
+  same on the control port under `/sim/payments/…`.
 - **Banking Circle calls out** to every subscription endpoint (the
   receiver's `/raw-events`, or the platform's listener) and to the business
   bank's `POST /internal/credit`.

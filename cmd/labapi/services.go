@@ -63,7 +63,7 @@ const passthroughMaxBody = 32 << 20
 
 // passthroughHeaders are the request headers a passthrough call carries on.
 // Authorization is not among them: the lab API's own token is for the lab
-// API, and the service's credentials are added here, per service.
+// API, and a control port asks for none.
 var passthroughHeaders = []string{"Content-Type", "Accept", "If-Match", "If-None-Match"}
 
 // simPassthrough forwards /v1/services/{id}/sim/{path...} to the service's
@@ -94,22 +94,24 @@ func (a *app) serviceReset(w http.ResponseWriter, r *http.Request) {
 	a.toSim(w, r, r.PathValue("id"), "reset")
 }
 
-// labService is a lab service by id — not a plugin: a platform's own hooks
-// are its declared actions, not the lab's control surface.
+// labService is a lab service by id, with a control port — not a plugin: a
+// platform's own hooks are its declared actions, not the lab's control
+// surface.
 func (a *app) labService(id string) (console.Service, bool) {
 	svc, ok := a.cat.Get(id)
-	return svc, ok && svc.Plugin == nil
+	return svc, ok && svc.Plugin == nil && svc.Control != ""
 }
 
-// toSim forwards r to the service's /sim/{rest}: method, query and body as
-// sent, the service's credentials added, and its answer as it gave it.
+// toSim forwards r to /sim/{rest} on the service's control port: method,
+// query and body as sent, and its answer as it gave it. The control port
+// asks for no vendor credentials, and the caller's own are not passed on.
 func (a *app) toSim(w http.ResponseWriter, r *http.Request, id, rest string) {
 	svc, ok := a.labService(id)
 	if !ok {
 		httputilx.Error(w, 404, "no lab service "+id)
 		return
 	}
-	target := svc.BaseURL + "/sim/" + rest
+	target := svc.Control + "/sim/" + rest
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
@@ -127,22 +129,12 @@ func (a *app) toSim(w http.ResponseWriter, r *http.Request, id, rest string) {
 			req.Header.Set(h, v)
 		}
 	}
-	if err := a.serviceCredentials(svc, req); err != nil {
-		httputilx.Error(w, 502, fmt.Sprintf("%s: credentials for its /sim hooks: %v", id, err))
-		return
-	}
-
-	resp, err := a.clientFor(svc).Do(req)
+	resp, err := a.client.Do(req)
 	if err != nil {
 		httputilx.Error(w, 502, fmt.Sprintf("%s %s: %v", r.Method, target, err))
 		return
 	}
 	defer resp.Body.Close()
-	if svc.ID == "banking-circle" && (resp.StatusCode == http.StatusUnauthorized || rest == "reset") {
-		// Its tokens do not survive an "all" reset or a restart; the next
-		// call asks for a fresh one rather than failing until expiry.
-		a.bc.Forget()
-	}
 	for _, h := range []string{"Content-Type", "Content-Disposition", "ETag", "Location"} {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
@@ -150,25 +142,6 @@ func (a *app) toSim(w http.ResponseWriter, r *http.Request, id, rest string) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
-}
-
-// serviceCredentials adds what a service's /sim hooks ask of a caller.
-func (a *app) serviceCredentials(svc console.Service, req *http.Request) error {
-	switch svc.ID {
-	case "banking-circle":
-		tok, err := a.bc.Bearer(req.Context())
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", "Bearer "+tok)
-	case "b4b":
-		hdr, err := a.prov.AuthHeader()
-		if err != nil {
-			return err
-		}
-		req.Header.Set("Authorization", hdr.Get("Authorization"))
-	}
-	return nil
 }
 
 // --- clock holds --------------------------------------------------------

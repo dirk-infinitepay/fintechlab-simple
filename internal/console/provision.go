@@ -2,67 +2,36 @@ package console
 
 import (
 	"context"
-	"crypto/rsa"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
-
-	"github.com/webduvet/fintechlab-simple/internal/b4b"
 )
 
 // Provisioning is what makes the Merchants view more than a form: a
 // merchant only exists to the money flow once its outlets are known to the
 // payout rail and the acquirer has traded on them.
 //
-// Both steps go through the vendors' own public surfaces -- B4B's
-// beneficiary registration and Worldline's transaction seeding -- so
-// anything the console can do here, a shell script can do too. That is
-// deliberate: a control panel that is the only way to reach a state makes
-// that state untestable.
+// Both steps go through the simulations' control ports (internal/simctl):
+// B4B's beneficiary registration, which answers exactly what its Oversight
+// API answers, and Worldline's transaction seeding. The lab seeds its own
+// simulations there with no vendor login — the vendor's credentials are the
+// platform's — and anything the lab API does here, a shell script on the
+// lab's network can do too.
 
 // Provisioner registers outlets with B4B and seeds acquired transactions
 // at Worldline.
 type Provisioner struct {
-	Client       *http.Client
+	Client *http.Client
+	// B4BURL and WorldlineURL are the two simulations' control addresses.
 	B4BURL       string
-	B4BKey       *rsa.PrivateKey
-	B4BKeyID     string
 	WorldlineURL string
 	Registry     *Registry
 }
 
-// NewProvisioner loads B4B's keypair so the console can sign the RS512
-// bearer token B4B verifies. A missing key is not fatal: the rest of the
-// console works without it, and the Merchants view reports the reason
-// rather than failing a click with a bare 500.
-func NewProvisioner(client *http.Client, reg *Registry, b4bURL, keyPath, keyID, worldlineURL string) (*Provisioner, error) {
-	p := &Provisioner{Client: client, Registry: reg, B4BURL: b4bURL, B4BKeyID: keyID, WorldlineURL: worldlineURL}
-	key, err := b4b.LoadPrivateKey(keyPath)
-	if err != nil {
-		return p, err
-	}
-	p.B4BKey = key
-	return p, nil
-}
-
-// Ready reports whether payout-rail provisioning is available.
-func (p *Provisioner) Ready() bool { return p != nil && p.B4BKey != nil }
-
-// AuthHeader is the RS512 bearer B4B's API asks for, signed with the key
-// b4b generated, for a caller that builds its own request (the lab API's
-// passthrough to the /sim/* hooks).
-func (p *Provisioner) AuthHeader() (http.Header, error) { return p.authHeader() }
-
-func (p *Provisioner) authHeader() (http.Header, error) {
-	if p.B4BKey == nil {
-		return nil, fmt.Errorf("%w: b4b signing key unavailable, set B4B_JWT_PRIVATE_KEY_PATH to the key b4b generated", ErrInvalid)
-	}
-	tok, err := b4b.SignBearerToken(p.B4BKey, p.B4BKeyID)
-	if err != nil {
-		return nil, err
-	}
-	return http.Header{"Authorization": []string{"Bearer " + tok}}, nil
-}
+// Ready reports whether payout-rail provisioning is available. It needs
+// nothing but B4B's control address, so it always is once one is set.
+func (p *Provisioner) Ready() bool { return p != nil && p.B4BURL != "" }
 
 // OutletProvision is the per-outlet result, reported whether or not it
 // worked -- a partial provisioning run is a normal outcome and the UI has
@@ -82,10 +51,6 @@ func (p *Provisioner) ProvisionMerchant(ctx context.Context, merchantID string) 
 	if err != nil {
 		return nil, err
 	}
-	hdr, err := p.authHeader()
-	if err != nil {
-		return nil, err
-	}
 	out := make([]OutletProvision, 0, len(m.Outlets))
 	for _, o := range m.Outlets {
 		res := OutletProvision{OutletID: o.ID, MID: o.MID}
@@ -100,7 +65,7 @@ func (p *Provisioner) ProvisionMerchant(ctx context.Context, merchantID string) 
 			ID              string `json:"id"`
 			SanctionsStatus string `json:"sanctions_status"`
 		}
-		if err := postJSON(ctx, p.Client, p.B4BURL+"/oversight/v1/beneficiaries", hdr, req, &ben); err != nil {
+		if err := postJSON(ctx, p.Client, p.B4BURL+"/sim/beneficiaries", nil, req, &ben); err != nil {
 			res.Error = err.Error()
 			out = append(out, res)
 			continue
@@ -118,15 +83,11 @@ func (p *Provisioner) ProvisionMerchant(ctx context.Context, merchantID string) 
 // through B4B's lab-only endpoint, so an operator can watch the gate stop
 // a payout instead of reading that it would.
 func (p *Provisioner) SetSanctions(ctx context.Context, mid, status string) error {
-	hdr, err := p.authHeader()
-	if err != nil {
-		return err
-	}
 	var ben struct {
 		ID              string `json:"id"`
 		SanctionsStatus string `json:"sanctions_status"`
 	}
-	if err := putJSON(ctx, p.Client, p.B4BURL+"/sim/beneficiaries/"+mid+"/sanctions", hdr,
+	if err := putJSON(ctx, p.Client, p.B4BURL+"/sim/beneficiaries/"+url.PathEscape(mid)+"/sanctions", nil,
 		map[string]string{"sanctions_status": status}, &ben); err != nil {
 		return err
 	}

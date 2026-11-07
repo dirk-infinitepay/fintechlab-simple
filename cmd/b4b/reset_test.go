@@ -1,13 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -292,52 +290,5 @@ func TestACallbackRetryingWhenTheResetLandsStops(t *testing.T) {
 	}
 	if n := len(a.cbLog.Recent(0)); n != 0 {
 		t.Fatalf("a dropped callback was recorded as refused: %d event(s)", n)
-	}
-}
-
-// The control routes sit behind the bearer JWT, like b4b's other /sim
-// hooks.
-func TestTheControlRoutesWantTheBearerToken(t *testing.T) {
-	key, err := b4b.LoadOrGenerateKeyPair(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	cb, bc := newPeer(t), newPeer(t)
-	a := testApp(t, cb, bc, "", 0)
-	a.pubKey = &key.PublicKey
-	srv := httptest.NewServer(a.routes(":8086"))
-	defer srv.Close()
-	tok, err := b4b.SignBearerToken(key, a.kid)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	call := func(method, path, body string, signed bool) (int, map[string]any) {
-		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(body))
-		if signed {
-			req.Header.Set("Authorization", "Bearer "+tok)
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer resp.Body.Close()
-		var out map[string]any
-		_ = json.NewDecoder(resp.Body).Decode(&out)
-		return resp.StatusCode, out
-	}
-
-	for _, r := range [][2]string{{"GET", "/sim/info"}, {"GET", "/sim/logs"}, {"POST", "/sim/reset"}} {
-		if st, _ := call(r[0], r[1], "", false); st != 401 {
-			t.Errorf("%s %s without a token = %d, want 401", r[0], r[1], st)
-		}
-	}
-	st, info := call("GET", "/sim/info", "", true)
-	if st != 200 || info["service"] != "b4b" || info["kind"] != "vendor" {
-		t.Errorf("GET /sim/info = %d %v", st, info)
-	}
-	st, res := call("POST", "/sim/reset", `{"scope": "all"}`, true)
-	if st != 200 || res["scope"] != "all" || res["service"] != "b4b" {
-		t.Errorf("POST /sim/reset = %d %v", st, res)
 	}
 }

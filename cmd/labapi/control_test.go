@@ -64,7 +64,7 @@ func newFakeSims(t *testing.T, a *app, ids ...string) *fakeSims {
 		})
 		srv := httptest.NewServer(mux)
 		t.Cleanup(srv.Close)
-		svcs = append(svcs, console.Service{ID: id, Name: id, BaseURL: srv.URL})
+		svcs = append(svcs, console.Service{ID: id, Name: id, BaseURL: srv.URL, Control: srv.URL})
 	}
 	a.cat = &console.Catalogue{Services: svcs}
 	return f
@@ -240,7 +240,7 @@ func TestLogsSayWhichServiceDidNotAnswer(t *testing.T) {
 	fmt.Fprintln(f.rings["bank"], "still here")
 	down := httptest.NewServer(http.NotFoundHandler())
 	down.Close()
-	a.cat.Services[0].BaseURL = down.URL
+	a.cat.Services[0].Control = down.URL
 	var got labLogsAnswer
 	w := call(t, a, "GET", "/v1/logs?q=still", "")
 	decode(t, w, &got)

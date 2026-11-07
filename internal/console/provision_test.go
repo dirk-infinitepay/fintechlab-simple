@@ -2,8 +2,6 @@ package console
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,22 +12,12 @@ import (
 
 func nowDate() string { return time.Now().UTC().Format("2006-01-02") }
 
-func testKey(t *testing.T) *rsa.PrivateKey {
-	t.Helper()
-	// 1024 is fine here: this key never leaves the test and generating a
-	// 2048-bit one per test is a visible chunk of the suite's runtime.
-	k, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return k
-}
-
 func TestProvisionRegistersEveryOutletAndRecordsTheResult(t *testing.T) {
 	var seen []map[string]string
 	b4bSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
-			http.Error(w, "unauthorized", 401)
+		// B4B's control port: no JWT, the vendor's login is the platform's.
+		if r.URL.Path != "/sim/beneficiaries" || r.Header.Get("Authorization") != "" {
+			http.Error(w, "want POST /sim/beneficiaries with no credentials", 400)
 			return
 		}
 		var req map[string]string
@@ -44,7 +32,7 @@ func TestProvisionRegistersEveryOutletAndRecordsTheResult(t *testing.T) {
 
 	reg, _ := NewRegistry("")
 	m, _ := reg.AddMerchant(NewMerchantParams{LegalName: "Provisioned Ltd", Outlets: 2})
-	p := &Provisioner{Client: b4bSrv.Client(), Registry: reg, B4BURL: b4bSrv.URL, B4BKey: testKey(t), B4BKeyID: "kid"}
+	p := &Provisioner{Client: b4bSrv.Client(), Registry: reg, B4BURL: b4bSrv.URL}
 
 	res, err := p.ProvisionMerchant(context.Background(), m.ID)
 	if err != nil {
@@ -89,7 +77,7 @@ func TestProvisionReportsAPerOutletFailureWithoutAbandoningTheRest(t *testing.T)
 
 	reg, _ := NewRegistry("")
 	m, _ := reg.AddMerchant(NewMerchantParams{LegalName: "Partly Ltd", Outlets: 3})
-	p := &Provisioner{Client: b4bSrv.Client(), Registry: reg, B4BURL: b4bSrv.URL, B4BKey: testKey(t), B4BKeyID: "kid"}
+	p := &Provisioner{Client: b4bSrv.Client(), Registry: reg, B4BURL: b4bSrv.URL}
 	res, err := p.ProvisionMerchant(context.Background(), m.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -104,16 +92,18 @@ func TestProvisionReportsAPerOutletFailureWithoutAbandoningTheRest(t *testing.T)
 	}
 }
 
-func TestProvisionWithoutASigningKeyExplainsItself(t *testing.T) {
+// Provisioning needs no key of B4B's: only its control port, and when that
+// does not answer, each outlet says so rather than the merchant failing.
+func TestProvisionWithB4BUnreachableSaysSoPerOutlet(t *testing.T) {
 	reg, _ := NewRegistry("")
-	m, _ := reg.AddMerchant(NewMerchantParams{LegalName: "Keyless Ltd"})
+	m, _ := reg.AddMerchant(NewMerchantParams{LegalName: "Offline Ltd", Outlets: 2})
 	p := &Provisioner{Client: http.DefaultClient, Registry: reg, B4BURL: "http://127.0.0.1:1"}
-	if p.Ready() {
-		t.Fatal("Ready() with no key")
+	if !p.Ready() {
+		t.Fatal("not ready with a control address and nothing else")
 	}
-	_, err := p.ProvisionMerchant(context.Background(), m.ID)
-	if err == nil || !strings.Contains(err.Error(), "B4B_JWT_PRIVATE_KEY_PATH") {
-		t.Fatalf("err = %v, want it to name the variable to set", err)
+	res, err := p.ProvisionMerchant(context.Background(), m.ID)
+	if err != nil || len(res) != 2 || res[0].Error == "" || res[1].Error == "" {
+		t.Fatalf("results = %+v, %v", res, err)
 	}
 }
 

@@ -11,18 +11,33 @@ was supposed to be *receiving*. Everything below is labelled, and the rule
 is: **a vendor simulation is the deliverable; scaffolding exists only so
 the harness can prove each vendor hop is really connected.**
 
+Every simulated service is one of two kinds, and `GET /sim/info` says
+which (`kind`):
+
+- **vendor** — a third party's service, simulated: something the platform
+  will talk to in production and that someone else runs (Worldline, B4B,
+  Banking Circle, ACI, the verification vendors, the merchants' bank).
+- **stand-in** — a service the platform team would provide itself, simulated
+  because a test does not need the real one or it does not exist yet (the
+  settlement path, the webhook listener, the verification-service, the
+  demo payment API and notifier).
+
+The rest is the lab itself (`lab`: the clock, the lab API, the console),
+not a simulation of anything.
+
 | Service | Side | Swap for the real thing by |
 | --- | --- | --- |
 | **worldline** | vendor | pointing `WORLDLINE_SFTP_HOST` and the credentials at real Worldline |
 | **b4b** | vendor | pointing `B4B_URL` at the real Oversight API |
 | **banking-circle** | vendor | pointing at the real Connect API |
 | **aci** | vendor | — it is a *sender*; point `ACI_WEBHOOK_TARGET_URL` at your listener |
-| **settlement** | scaffolding | replacing it with your own platform |
-| **receiver** | scaffolding | pointing the vendors' webhook URLs at your own listener |
-| **bank** (*business bank*) | the far end | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
-| **payment-api**, **notifier** | scaffolding (demo stand-ins) | — generic shapes, not vendor-specific; only `make demo-payment` and the harness call them |
-| **verify**, **verification** | verification | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
-| **clock** | platform | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
+| **settlement** | stand-in | replacing it with your own platform |
+| **receiver** | stand-in | pointing the vendors' webhook URLs at your own listener |
+| **bank** (*business bank*) | vendor (the far end) | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
+| **payment-api**, **notifier** | stand-in (demo) | — generic shapes, not vendor-specific; only `make demo-payment` and the harness call them |
+| **verification** | vendor | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
+| **verify** | stand-in | your own verification-service: pointing the platform's verification-service URL at it replaces that service |
+| **clock** | lab | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
 | *a registered platform* | platform (plugin) | nothing — it *is* the platform; it registers its own card ([plugins.md](plugins.md)) |
 | **ca** | supporting | a real PKI |
 | **lab-api** | lab | nothing — the one API over the lab (`/v1`), a client of the others; see [api/lab-api.md](api/lab-api.md) |

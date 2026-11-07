@@ -11,15 +11,18 @@ There is one API over the lab: the **lab API**, `cmd/labapi`, on `:8097`
 under `/v1` ([lab-api.md](lab-api.md)). The console page, scripts, test
 suites and agents all call it the same way, for everything lab-level:
 merchants, the clock, settlement runs, what happened, each service's record
-and health, and each service's `/sim/*` hooks through one passthrough that
-adds the credentials a service asks for.
+and health, and each service's `/sim/*` hooks through one passthrough.
 
 - **The console** (`cmd/console`, `:8090`) is a page. Its server serves the
   page and forwards `/v1` to the lab API, so the page calls its own origin;
   it keeps no state and holds no credential.
-- **Each service's own API** is behind the lab API. Your platform calls the
-  vendor surfaces directly, exactly as it would call the real vendors; that
-  traffic never goes through the lab API.
+- **Each service has two ports.** Its vendor port carries the vendor's
+  own API, behind the vendor's own login; your platform calls it directly,
+  exactly as it would call the real vendor, and that traffic never goes
+  through the lab API. Its **control port** (the vendor port plus 1000)
+  carries the lab's hooks, `/sim/*`, with no vendor login; only the lab
+  API calls it. The lab API holds no vendor credentials: those are the
+  platform's.
 - **The harness** (`make harness`) calls the services directly. It needs
   neither the lab API nor the console, and neither being down stops it.
 
@@ -29,8 +32,16 @@ endpoint behind it or is the lab API's own state (the merchant registry and
 the plugin registrations).
 
 What the lab API is still to gain — traps that make a vendor answer a
-future request the way a test needs, and a control port per service — is
-the rest of phase 1 in [docs/lab-api/plan.md](../lab-api/plan.md).
+future request the way a test needs — is the rest of phase 1 in
+[docs/lab-api/plan.md](../lab-api/plan.md).
+
+**Where authentication is.** Between a person, an agent or the console and
+the lab API: `LAB_API_TOKEN`, a bearer token, when set. Between your
+platform and a vendor simulation: that vendor's own login, as with the real
+vendor. Between the lab API and a simulation's control port: none — the
+control port is trusted by where it is. Compose does not publish it, so
+only the lab's own network reaches it, and `SIM_CONTROL_ALLOW` on a service
+narrows that to the addresses listed.
 
 ## Who calls what
 
@@ -46,13 +57,14 @@ the rest of phase 1 in [docs/lab-api/plan.md](../lab-api/plan.md).
                                             │                    service's hooks│                (a plugin)
                                             │   own state: merchants, plugins  │                       │
                                             └────────────────┬─────────────────┘                       │
-                                                             │ calls the services' own APIs            │
+                                                             │ control ports only, no vendor login     │
                                                              ▼                                         │
                                             ┌──────────────────────────────────┐                       │
   harness ─────────────────────────────────▶│ services, one process each       │◀── vendor traffic ────┤
-  (make harness)                            │   vendor surface   :808x, :2222  │─── webhooks ────────▶ │
-                                            │   /internal/*      plumbing      │                       │
-                                            │   /sim/*           lab control   │                       │
+  (make harness)                            │   vendor port :808x, :2222       │─── webhooks ────────▶ │
+                                            │     the vendor's API, its login  │                       │
+                                            │     /internal/*      plumbing    │                       │
+                                            │   control port :908x  /sim/*     │                       │
                                             │ clock :8096        GET /clock    │◀── follows the clock ─┘
                                             └──────────────────────────────────┘
 ```
@@ -62,7 +74,7 @@ the rest of phase 1 in [docs/lab-api/plan.md](../lab-api/plan.md).
 | Console page | the lab API's `/v1`, through the console's origin | a service directly |
 | Console server | the lab API, forwarding what the page sends | anything else |
 | Scripts and agents | the lab API for everything lab-level; a vendor surface when testing an integration with that vendor | — |
-| Lab API | each service's vendor surface, `/internal/*` and `/sim/*`; a plugin's `base_url` | — |
+| Lab API | each service's control port; the clock's `GET /clock`; a plugin's `base_url` | a vendor surface: it holds no vendor credentials |
 | Harness | services' vendor surfaces and `/sim/*` | the lab API, the console |
 | Your platform | vendor surfaces; the lab API's `POST /v1/plugins`; the clock's `GET /clock` | `/sim/*` or `/internal/*` from production code: the real vendor has neither. Its test harness may use the lab API, like any script |
 | One service, of another | `/internal/*` plumbing (B4B → Banking Circle's bridge, Worldline's wire → Banking Circle, Banking Circle → the business bank), webhooks and callbacks | — |
@@ -73,13 +85,21 @@ the rest of phase 1 in [docs/lab-api/plan.md](../lab-api/plan.md).
 | --- | --- | --- | --- |
 | **Vendor surface** | the API the vendor publishes: Worldline's SFTP and SFT channel, B4B's Oversight API, Banking Circle's Connect API, ACI's webhooks, the verification vendors | the vendor's own: SFTP keys, RS512 JWT, mTLS + Basic→Bearer, API keys | yes, and the shape matches it |
 | **Lab plumbing** (`/internal/*`) | stand-ins for something with no API: money arriving by wire, a payout passed to the beneficiary's bank, B4B's bridge into Banking Circle | none, as a rule | no |
-| **Lab control** (`/sim/*`) | what the lab uses to drive and observe a simulation: activity logs, seeding, running a cycle now, forcing an outcome, pausing a delivery | mixed today; the lab API's passthrough adds what each needs | no |
+| **Lab control** (`/sim/*`) | what the lab uses to drive and observe a simulation: activity logs, seeding, running a cycle now, forcing an outcome, pausing a delivery. On the service's **control port**, the vendor port plus 1000, plain HTTP | none: trusted by network placement, optionally `SIM_CONTROL_ALLOW` | no |
 
 The swap rule follows from the table: pointing a platform at the real
 vendor replaces the vendor surface. Nothing the platform calls may be
 `/internal/*` or `/sim/*`.
 
 ## The control contract
+
+Every service serves its lab hooks on a **control port** of its own:
+`SIM_CONTROL_LISTEN`, by default the vendor port plus 1000 (`:9085` for
+Banking Circle's `:8085`), plain HTTP even where the vendor port is HTTPS,
+with no vendor login. It answers `GET /health` (`"surface": "control"`) and
+every `/sim/*` route, and logs each call as a request line. The old `/sim`
+paths still answer on the vendor port, behind whatever login they had,
+until phase 4 of [the plan](../lab-api/plan.md) retires them.
 
 Three `/sim` routes every service answers the same way
 (`internal/simctl`, designed in
@@ -91,14 +111,18 @@ reference says what its reset clears; the shapes are here.
 ```json
 {"service": "banking-circle", "kind": "vendor", "simulates": "Banking Circle Connect",
  "build": "3f2a91c0d4e1", "started_at": "2026-11-07T08:00:01Z",
- "vendor_listeners": [":8085", ":8095"],
+ "vendor_listeners": [":8085", ":8095"], "control_listener": ":9085",
  "clock": {"follows": "http://clock:8096/clock", "offset_ms": -225000000},
  "reset_scopes": ["flow", "all"], "hooks": [],
  "logs": {"held": 412, "capacity": 2000}}
 ```
 
-`build` is there when the binary recorded its VCS revision; `clock` when
-the service follows the lab clock. `hooks` lists the trap hooks it offers
+`kind` is `vendor` (a third party's service, simulated), `stand-in` (a
+service the platform team would provide, simulated because a test does not
+need the real one or it does not exist yet) or `lab` (the clock;
+[catalogue.md](../catalogue.md#which-half-is-which)). `build` is there when
+the binary recorded its VCS revision; `clock` when the service follows the
+lab clock. `hooks` lists the trap hooks it offers
 (none yet).
 
 **`GET /sim/logs?since=&limit=&q=`** — the process's own log lines, what
@@ -156,7 +180,7 @@ merged with `GET /v1/logs` ([lab-api.md](lab-api.md)).
 | To | Call | How |
 | --- | --- | --- |
 | Drive the lab from a script or an agent: merchants, the clock, a run, what happened | the lab API | `GET /v1` first, then `/v1/*` |
-| Make a vendor misbehave, or read what it saw | the lab API's passthrough | `/v1/services/{id}/sim/*`; the credentials are added for you |
+| Make a vendor misbehave, or read what it saw | the lab API's passthrough | `/v1/services/{id}/sim/*`, on the service's control port |
 | Test your integration with one vendor | that vendor's surface | exactly the calls your platform makes to the real one |
 | Put your platform's card in the console | the lab API | `POST /v1/plugins` ([plugins.md](../plugins.md)) |
 | Keep your platform's business dates on the lab's | the clock | `GET /clock` every second ([plugins.md](../plugins.md#the-clock)) |
@@ -227,9 +251,9 @@ example, is Banking Circle's.
 | [services/b4b.md](services/b4b.md) | B4B Payments | vendor | `:8086` |
 | [services/banking-circle.md](services/banking-circle.md) | Banking Circle | vendor | `:8085` Connect API, `:8095` bridge |
 | [services/aci.md](services/aci.md) | ACI | vendor | `:8087` |
-| [services/bank.md](services/bank.md) | business bank | the far end | `:8081` |
-| [services/verify.md](services/verify.md) | AML decision | verification | `:8088` |
-| [services/verification.md](services/verification.md) | verification vendors | verification | `:8089` |
+| [services/bank.md](services/bank.md) | business bank | vendor (the far end) | `:8081` |
+| [services/verify.md](services/verify.md) | AML decision | stand-in | `:8088` |
+| [services/verification.md](services/verification.md) | verification vendors | vendor | `:8089` |
 | [services/clock.md](services/clock.md) | lab clock | lab | `:8096` |
 | [services/settlement.md](services/settlement.md) | settlement | platform stand-in | `:8083` |
 | [services/receiver.md](services/receiver.md) | webhook receiver | platform stand-in | `:8443` HTTPS |

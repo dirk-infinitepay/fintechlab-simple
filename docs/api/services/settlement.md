@@ -18,9 +18,9 @@ the same outlets.
 
 | | |
 | --- | --- |
-| Listens | `:8083`, plain HTTP. Compose service `settlement` (`http://settlement:8083`); host `http://127.0.0.1:8083`. Outbound it speaks SFTP to `worldline:2222` and HTTP to b4b, verify, banking-circle's bridge (`:8095`) and the bank |
-| Auth | None on its own routes. Outbound: an RS512 JWT for B4B signed with B4B's private key, `x-internal-api-key` for verify, SFTP password or key for Worldline, nothing for Banking Circle's bridge or the bank |
-| Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the harness.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` on the console |
+| Listens | `:8083`, plain HTTP. Compose service `settlement` (`http://settlement:8083`); host `http://127.0.0.1:8083`. Outbound it speaks SFTP to `worldline:2222` and HTTP to b4b, verify, banking-circle's bridge (`:8095`) and the bank.<br>`:9083`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://settlement:9083` |
+| Auth | None on its own routes. Outbound: an RS512 JWT for B4B signed with B4B's private key, `x-internal-api-key` for verify, SFTP password or key for Worldline, nothing for Banking Circle's bridge or the bank.<br>The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the harness.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` (`http://settlement:8083`) on the lab API, which takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_SETTLEMENT` names it |
 | Activity logs | None. There is no `GET /sim/activity`, the lab's catalogue declares no activity path, and `GET /v1/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout, and kept for `GET /sim/logs` |
 | Configuration | The variables that change behaviour most: `SETTLEMENT_CONNECTED` (`true`), `WORLDLINE_SFTP_HOST` (unset: no pull at all), `CUTOFF_TIME` (`00:00`), `BC_SAFEGUARDING_ACCOUNT_ID_EUR`/`_GBP`. Everything below |
 | Design record | [ARCHITECTURE-reconciliation-api.md](../../ARCHITECTURE-reconciliation-api.md), [ARCHITECTURE-settlement-state-machine.md](../../ARCHITECTURE-settlement-state-machine.md), [ARCHITECTURE-settlement-report.md](../../ARCHITECTURE-settlement-report.md), [ARCHITECTURE-sftp-staging.md](../../ARCHITECTURE-sftp-staging.md), [ARCHITECTURE-phase3-corrections.md §5](../../ARCHITECTURE-phase3-corrections.md#5-settlement-wire-in-verification-and-the-sga-balance-gate), [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md), [structure/worldline.md](../../structure/worldline.md), [scenarios/settlement-to-payout.md](../../scenarios/settlement-to-payout.md), [plugins.md](../../plugins.md#stand-ins) (stand-ins) |
@@ -30,9 +30,11 @@ Configuration in full (default, then compose where it differs):
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `LISTEN` | `:8083` | |
+| `SIM_CONTROL_LISTEN` | `:9083` (`LISTEN`'s port plus 1000) | the control port |
+| `SIM_CONTROL_ALLOW` | unset | addresses or CIDRs, comma-separated, that may call the control port; unset, anyone who can reach it |
 | `LAB_CLOCK_URL` | unset; compose `http://clock:8096/clock` | record timestamps, `pulled_at`, default dates, `requestedExecutionDate` and the cutoff follow the [lab clock](clock.md) |
 | `SETTLEMENT_CONNECTED` | `true` | `false`, `0`, `off` or `no` starts the stand-in disconnected (`/sim/connected`) |
-| `WORLDLINE_SFTP_HOST` | unset; compose `worldline` | unset: no puller, and `GET /worldline/files` and `POST /worldline/pull` are not registered (`404`) |
+| `WORLDLINE_SFTP_HOST` | unset; compose `worldline` | unset: no puller, and `GET /worldline/files`, `POST /worldline/pull` and `POST /sim/pull` are not registered (`404`) |
 | `WORLDLINE_SFTP_PORT`, `_USER`, `_PASSWORD` | `2222`, `infinitepay`, empty; compose password `sim-sftp-dev-only` | the SFTP login |
 | `WORLDLINE_SFTP_PRIVATE_KEY_PATH` | empty | a client key, offered before the password |
 | `WORLDLINE_SFTP_KNOWN_HOST_PATH` | empty; compose `/keys/wlsftp-keys/host_key.pub` | pins Worldline's host key |
@@ -308,24 +310,33 @@ else addressed here.
 
 ## Lab control
 
+The `/sim/*` routes are on the control port, `:9083` ([the control
+contract](../README.md#the-control-contract)). The same `/sim/*` paths
+still answer on `:8083` until phase 4 of
+[the plan](../../lab-api/plan.md) retires them. `GET /worldline/files`,
+`POST /worldline/pull` and the two payout routes stay on `:8083`, where the
+harness and a person call them.
+
 ### `GET /health`
 
-Liveness. The lab API's monitor probes it.
-
-Answers `200` with `{"status": "ok", "service": "settlement"}`.
+Liveness, on both ports. `:8083` answers `{"status": "ok", "service":
+"settlement"}`; the control port answers `{"status": "ok", "service":
+"settlement", "surface": "control"}`, and that is the one the lab API's
+monitor probes.
 
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "settlement"`, `"kind": "stand-in"`,
-`"vendor_listeners": [":8083"]`, `"reset_scopes": ["flow", "all"]`.
+`"vendor_listeners": [":8083"]`, `"control_listener": ":9083"`,
+`"reset_scopes": ["flow", "all"]`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
 ([the control contract](../README.md#the-control-contract)): every pull,
-record, payout gate and request is a line here.
+record, payout gate and request, on either port, is a line here.
 
 ### `POST /sim/reset`
 
@@ -417,9 +428,16 @@ Answers `200` with the new state, as `GET`.
 
 Side effects: disconnected, the background Worldline pull stops and the
 daily cutoff batch is skipped. Anything asked for explicitly still works:
-`POST /worldline/pull` and the payouts it makes, `generate`, `transition`,
-`retry-payout` and B4B's callbacks. In memory: a restart is back on
-`SETTLEMENT_CONNECTED`; a reset keeps it as it is.
+`POST /worldline/pull` or `POST /sim/pull` and the payouts it makes,
+`generate`, `transition`, `retry-payout` and B4B's callbacks. In memory: a
+restart is back on `SETTLEMENT_CONNECTED`; a reset keeps it as it is.
+
+### `POST /sim/pull`
+
+[`POST /worldline/pull`](#post-worldlinepull) on the control port: the same
+handler, answering the same, so the lab forces a pull without calling the
+stand-in's own routes. Registered only when `WORLDLINE_SFTP_HOST` is set.
+Works while disconnected.
 
 ### `GET /worldline/files`
 
@@ -511,14 +529,16 @@ again.
   settlement submitted (`callback_url` from `B4B_CALLBACK_URL`), and of
   the harness's own gate-test payments, which name this URL too and are
   answered `ignored`.
-- **lab API**: `POST /v1/actions/settlement-pull` calls
-  `POST /worldline/pull` and passes its answer through;
+- **lab API**, on the control port only (`http://settlement:9083`), never
+  the stand-in's own routes: `POST /v1/actions/settlement-pull` calls
+  `POST /sim/pull` and passes its answer through;
   `POST /v1/lab/reset` and `POST /v1/services/settlement/reset` call
   `POST /sim/reset`; `GET /v1/logs` and `GET /v1/services/settlement/logs`
   read `GET /sim/logs`; `GET /v1/stand-ins`
   reads `GET /sim/connected` and `POST /v1/stand-ins/settlement` sets it
   with `POST /sim/connected`; `GET /v1/lab` and
-  `POST /v1/services/settlement/probe` probe `GET /health`.
+  `POST /v1/services/settlement/probe` probe the control port's
+  `GET /health`.
   `GET /v1/services/settlement/activity` answers `501` without calling
   it.
 - **harness**: `worldline-settlement-to-sftp` posts `/worldline/pull` until

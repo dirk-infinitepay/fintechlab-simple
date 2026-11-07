@@ -620,8 +620,9 @@ agent reads before calling anything.
 - **Each service is a card** (the Card component, open state keyed
   `docs:api:<id>`). The head has the health dot, the name, the kind pill,
   and as its desc the address a script on the operator's machine reaches it
-  at (`browse_url`). The body has a `.kv` of ports, transport and auth, the
-  service's endpoints from the catalogue, and the path of its full
+  at (`browse_url`). The body has a `.kv` of ports, transport and auth, its
+  control port (`control_url`, where the lab steers it with no vendor
+  login), the service's endpoints from the catalogue, and the path of its full
   reference in the repo (`docs/api/services/<id>.md`). A registered plugin
   is a card too, with the endpoints it declared and no reference path: its
   documentation is its own.

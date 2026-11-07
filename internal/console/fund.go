@@ -43,11 +43,11 @@ type FundResult struct {
 }
 
 // FundSafeguarding credits amount to every safeguarding account that is
-// empty, through Banking Circle's internal bridge at internalURL. An account
-// already holding money is left alone, so pressing twice is not twice the
-// money.
-func FundSafeguarding(ctx context.Context, client *http.Client, internalURL, amount string) []FundResult {
-	base := strings.TrimRight(internalURL, "/")
+// empty, through Banking Circle's control port at controlURL: the same
+// money landing as Worldline's wire on the bridge. An account already
+// holding money is left alone, so pressing twice is not twice the money.
+func FundSafeguarding(ctx context.Context, client *http.Client, controlURL, amount string) []FundResult {
+	base := strings.TrimRight(controlURL, "/")
 	out := make([]FundResult, 0, len(SafeguardingAccounts))
 	for _, sga := range SafeguardingAccounts {
 		res := FundResult{Currency: sga.Currency, Account: sga.Account}
@@ -72,7 +72,7 @@ func FundSafeguarding(ctx context.Context, client *http.Client, internalURL, amo
 }
 
 func intraDayBalance(ctx context.Context, client *http.Client, base, account string) (float64, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/internal/accounts/"+account+"/balances", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/sim/accounts/"+account+"/balances", nil)
 	if err != nil {
 		return 0, err
 	}
@@ -113,7 +113,7 @@ func credit(ctx context.Context, client *http.Client, base, currency, amount str
 	body, _ := json.Marshal(map[string]string{
 		"currency": currency, "amount": amount, "reference": "lab API: safeguarding top-up",
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/internal/incoming-payments", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/sim/incoming-payments", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

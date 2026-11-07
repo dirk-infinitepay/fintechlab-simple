@@ -23,16 +23,16 @@ func testApp(t *testing.T, peers *httptest.Server) *app {
 		client = peers.Client()
 	}
 	cat := &console.Catalogue{Services: []console.Service{
-		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: base, HealthPath: "/health", Ports: []string{"8084/http"}},
-		{ID: "settlement", Name: "Settlement", Kind: console.KindPlatform, BaseURL: base, HealthPath: "/health", Ports: []string{"8083/http"}},
-		{ID: "bank", Name: "Core ledger", Kind: console.KindPlatform, BaseURL: base, HealthPath: "/health", Ports: []string{"8081/http"}},
+		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: base, Control: base, HealthPath: "/health", Ports: []string{"8084/http"}},
+		{ID: "settlement", Name: "Settlement", Kind: console.KindPlatform, BaseURL: base, Control: base, HealthPath: "/health", Ports: []string{"8083/http"}},
+		{ID: "bank", Name: "Core ledger", Kind: console.KindPlatform, BaseURL: base, Control: base, HealthPath: "/health", Ports: []string{"8081/http"}},
 	}}
 	reg, err := console.NewRegistry("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := &app{
-		cat: cat, reg: reg, client: client, secure: client,
+		cat: cat, reg: reg, client: client,
 		bcCfg: "../../config/banking-circle.json",
 		prov:  &console.Provisioner{Client: client, Registry: reg, B4BURL: base, WorldlineURL: base},
 	}
@@ -162,7 +162,7 @@ func TestActionsPassThroughThePeersOwnStatusAndBody(t *testing.T) {
 			// not round that up to 200 -- the operator needs to see it.
 			w.WriteHeader(207)
 			_ = json.NewEncoder(w).Encode(map[string]any{"slot": r.URL.Query().Get("slot"), "errors": []string{"boom"}})
-		case "/worldline/pull":
+		case "/sim/pull":
 			_ = json.NewEncoder(w).Encode(map[string]any{"files": []any{}})
 		default:
 			http.Error(w, "no", 404)
@@ -186,6 +186,7 @@ func TestActionsPassThroughThePeersOwnStatusAndBody(t *testing.T) {
 func TestActionsReportAnUnreachablePeerRatherThanHanging(t *testing.T) {
 	a := testApp(t, nil)
 	a.cat.Services[0].BaseURL = "http://127.0.0.1:1"
+	a.cat.Services[0].Control = "http://127.0.0.1:1"
 	w := call(t, a, "POST", "/v1/actions/worldline-cycle?slot=morning", "")
 	if w.Code != 502 {
 		t.Fatalf("code = %d, want 502", w.Code)
@@ -296,6 +297,7 @@ func TestActivityReportsAnUnreachableServiceRatherThanAnEmptyList(t *testing.T) 
 	a := testApp(t, nil)
 	a.cat.Services[0].Activity = "/sim/activity"
 	a.cat.Services[0].BaseURL = "http://127.0.0.1:1" // nothing listens here
+	a.cat.Services[0].Control = "http://127.0.0.1:1"
 
 	w := call(t, a, http.MethodGet, "/v1/services/worldline/activity", "")
 	if w.Code != 502 {
@@ -350,10 +352,6 @@ func flowPeers(t *testing.T) *httptest.Server {
 			          {"stage":"DAILY_SETTLEMENT_REPORT","status":"FAILED"}]}}`,
 	}
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
-			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
-			return
-		}
 		body, ok := logs[r.URL.Path]
 		if !ok {
 			w.WriteHeader(404)
@@ -368,11 +366,11 @@ func flowApp(t *testing.T, peers *httptest.Server) *app {
 	t.Helper()
 	a := testApp(t, peers)
 	a.cat.Services = []console.Service{
-		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: peers.URL + "/worldline", Activity: "/sim/activity", HealthPath: "/health"},
-		{ID: "b4b", Name: "B4B Payments", Kind: console.KindVendor, BaseURL: peers.URL + "/b4b", Activity: "/sim/activity", HealthPath: "/health"},
-		{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, BaseURL: peers.URL + "/bc", Activity: "/sim/activity", HealthPath: "/health"},
-		{ID: "bank", Name: "Business bank", Kind: console.KindVendor, BaseURL: peers.URL + "/bank", Activity: "/sim/activity", HealthPath: "/health"},
-		{ID: "receiver", Name: "Webhook receiver", Kind: console.KindPlatform, BaseURL: peers.URL, HealthPath: "/health"},
+		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: peers.URL + "/worldline", Control: peers.URL + "/worldline", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "b4b", Name: "B4B Payments", Kind: console.KindVendor, BaseURL: peers.URL + "/b4b", Control: peers.URL + "/b4b", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, BaseURL: peers.URL + "/bc", Control: peers.URL + "/bc", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "bank", Name: "Business bank", Kind: console.KindVendor, BaseURL: peers.URL + "/bank", Control: peers.URL + "/bank", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "receiver", Name: "Webhook receiver", Kind: console.KindPlatform, BaseURL: peers.URL, Control: peers.URL, HealthPath: "/health"},
 	}
 	a.bc.BaseURL = peers.URL + "/bc"
 	register(t, a, testPlugin(peers.URL+"/runner"))
@@ -645,6 +643,7 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 	for i := range a.cat.Services {
 		if a.cat.Services[i].ID == "b4b" {
 			a.cat.Services[i].BaseURL = "http://127.0.0.1:1"
+			a.cat.Services[i].Control = "http://127.0.0.1:1"
 		}
 	}
 
@@ -682,9 +681,7 @@ func (f *bcFake) server(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/authorizations/authorize"):
-			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
-		case strings.HasSuffix(r.URL.Path, "/notificationselfservice/subscription"):
+		case r.URL.Path == "/sim/subscriptions":
 			_, _ = w.Write([]byte(`{"result":[{
 				"id":"sub_1","endpoint":"https://receiver:8443/raw-events","isActive":true,
 				"status":2,"statusMessage":"Subscription successfully created","version":1,
@@ -706,7 +703,7 @@ func (f *bcFake) server(t *testing.T) *httptest.Server {
 				return
 			}
 			_, _ = w.Write([]byte(`{"subscriptionId":"sub_1","endpoint":"https://receiver:8443/raw-events","paused":false,"released":7,"queued":0}`))
-		case strings.Contains(r.URL.Path, "/clienttest/"):
+		case strings.HasPrefix(r.URL.Path, "/sim/subscription/") && strings.HasSuffix(r.URL.Path, "/test"):
 			f.sent++
 			_, _ = w.Write([]byte(`{"status":"sent"}`))
 		case strings.HasPrefix(r.URL.Path, "/sim/activity"):
@@ -814,10 +811,6 @@ func TestProbeReportsWhatTheEndpointDidNotThatItWasSent(t *testing.T) {
 // "nothing is subscribed" and rows by counting, and null renders neither.
 func TestSubscriptionListIsAnArrayWhenEmpty(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
-			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
-			return
-		}
 		_, _ = w.Write([]byte(`{"result":[]}`))
 	}))
 	defer srv.Close()
@@ -898,10 +891,6 @@ func TestPauseAndResumeAreTheVendorsOwnSwitch(t *testing.T) {
 // become a console-shaped success.
 func TestPauseSurfacesTheVendorsRefusal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
-			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
-			return
-		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(404)
 		_, _ = w.Write([]byte(`{"error":"bankingcircle: subscription not found"}`))
@@ -928,9 +917,7 @@ func TestPayoutsOfferOnlyWhatTheVendorWouldDo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/authorizations/authorize"):
-			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/payments":
+		case r.Method == http.MethodGet && r.URL.Path == "/sim/payments":
 			_, _ = w.Write([]byte(`{"payments":[
 				{"id":"bcp_old","state":"OutgoingPaymentProcessed","amount":"1.00","currency":"EUR","createdAt":"2026-09-23T09:00:00Z","paymentReferenceNumber":"010F100000000001","settlementId":"sttl_v1:a"},
 				{"id":"bcp_new","state":"OutgoingPaymentBooked","amount":"2.00","currency":"EUR","createdAt":"2026-09-23T10:00:00Z"},
@@ -1185,7 +1172,7 @@ func TestTheClockDoesNotMoveUnderAWallClockPlatform(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := testApp(t, srv)
-	a.cat.Services = append(a.cat.Services, console.Service{ID: "clock", Name: "Lab clock", Kind: console.KindPlatform, BaseURL: srv.URL})
+	a.cat.Services = append(a.cat.Services, console.Service{ID: "clock", Name: "Lab clock", Kind: console.KindPlatform, BaseURL: srv.URL, Control: srv.URL})
 
 	w := call(t, a, http.MethodPost, "/v1/clock", `{"advance":"1h"}`)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "settlement in flight") || moves != 1 {

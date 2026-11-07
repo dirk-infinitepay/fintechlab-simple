@@ -1,4 +1,5 @@
 // Receiver accepts TLS webhooks from the local CA, verifies HMAC, stores events.
+// The lab steers it on a control port of its own, plain HTTP (internal/simctl).
 package main
 
 import (
@@ -78,13 +79,35 @@ func main() {
 	if err := waitfor.Files(30*time.Second, cert, key); err != nil {
 		log.Fatalf("receiver: %v", err)
 	}
+	mux, ctl, err := s.routes(secret, addr)
+	if err != nil {
+		log.Fatalf("receiver: %v", err)
+	}
+	ctl.Start()
 	log.Printf("receiver listening https %s", addr)
-	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(s.routes(secret, addr))))
+	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(mux)))
 }
 
-// routes is the receiver's HTTP surface: the HMAC-checked listener, the
-// raw capture sink, what each stored, and the sim control contract.
-func (s *store) routes(secret []byte, addr string) *http.ServeMux {
+// routes is the receiver's two surfaces. On addr, HTTPS: the HMAC-checked
+// listener, the raw capture sink and what each stored. On a control port
+// of its own, plain HTTP even though addr is HTTPS (internal/simctl): the
+// sim control contract and its own GET /health. addr still answers the
+// /sim paths until phase 4 of docs/lab-api/plan.md retires them.
+func (s *store) routes(secret []byte, addr string) (*http.ServeMux, *simctl.Control, error) {
+	// Both scopes do the same: everything here is what a run delivered.
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "receiver", Kind: "stand-in", Simulates: "the platform's webhook listener",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			events, raw := s.reset()
+			return simctl.ResetResult{Cleared: map[string]int{"events": events, "raw_events": raw}}, nil
+		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+
 	const skew = 10 * time.Minute
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -176,17 +199,9 @@ func (s *store) routes(secret []byte, addr string) *http.ServeMux {
 		httputilx.WriteJSON(w, 200, map[string]any{"raw_events": s.rawEvents})
 	})
 
-	// Both scopes do the same: everything here is what a run delivered.
-	simctl.Mount(mux, simctl.Config{
-		Service: "receiver", Kind: "stand-in", Simulates: "the platform's webhook listener",
-		Listeners: []string{addr},
-		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
-			events, raw := s.reset()
-			return simctl.ResetResult{Cleared: map[string]int{"events": events, "raw_events": raw}}, nil
-		},
-	})
-	return mux
+	// The old /sim paths over HTTPS on addr, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
 }
 
 // reset empties both stores and says how many each held. GET /events and

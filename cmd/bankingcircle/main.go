@@ -7,23 +7,26 @@
 // lifecycle/auth/HTTP-surface model — that doc's ledger/VIBAN seed shape is
 // the only part of it still in effect.
 //
-// Two listeners run in one process (Addendum section C): mTLS applies to an
-// entire http.Server, not per-route, so the real-shaped, credentialed API
-// and the lab-only B4B bridge cannot share a listener.
+// Three listeners run in one process. mTLS applies to an entire
+// http.Server, not per-route, so the real-shaped, credentialed API and the
+// lab's plain-HTTP surfaces cannot share a listener (Addendum section C).
 //   - LISTEN (default :8085, mTLS + bearer): every real-shaped endpoint,
 //     plus a few read-only debug endpoints (accounts/payments/reconciliation
 //     listings) this lab keeps for harness introspection — not part of the
 //     real contract, but still behind the same credentials as everything
-//     else on this listener.
+//     else on this listener. The old /sim paths answer here too, behind the
+//     bearer, until phase 4 of docs/lab-api/plan.md retires them.
 //   - INTERNAL_LISTEN (default :8095, plain HTTP, no auth): the B4B bridge
 //     (POST /internal/payments), the manual reversal and return test hooks
 //     (POST /internal/payments/{id}/reverse, .../return), the "Worldline
 //     lump sum landed" trigger (POST /internal/incoming-payments), and a
 //     no-auth balance proxy (GET /internal/accounts/{accountId}/balances) —
-//     lab-only, same-network trust.
-//
-// The sim control contract (internal/simctl: /sim/info, /sim/logs,
-// /sim/reset) is on LISTEN with the other /sim routes, behind the bearer.
+//     lab-only, same-network trust. b4b, worldline and settlement call it.
+//   - The control port (SIM_CONTROL_LISTEN, default LISTEN's port + 1000,
+//     :9085; plain HTTP, no vendor auth): every /sim route, the sim control
+//     contract (internal/simctl: /sim/info, /sim/logs, /sim/reset), and the
+//     lab's reads of what the vendor and bridge routes answer. The lab API
+//     calls only this, and holds no Banking Circle credentials.
 package main
 
 import (
@@ -218,9 +221,17 @@ func main() {
 	log.Printf("banking-circle: seeded subscription %s -> %s (batch=%d, retries=%d, time_scale=%g)",
 		seeded.ID, dest, seeded.MaxNotificationsPerMessage,
 		deliveryCfg.DeactivateAfterRetries, deliveryCfg.TimeScale)
-	// Taken after the seed, before either listener: the subscriptions as
+	// Taken after the seed, before any listener: the subscriptions as
 	// they stand now are what a reset of scope all puts back.
 	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+
+	// The control surface: the lab's /sim hooks on a port of their own,
+	// apart from the vendor's login (internal/simctl).
+	ctl, err := a.control(simctl.ControlAddr(addr))
+	if err != nil {
+		log.Fatalf("banking-circle: %v", err)
+	}
+	ctl.Start()
 
 	go func() {
 		log.Printf("banking-circle internal listening on %s (plain, no auth) — B4B bridge only", internalAddr)
@@ -241,7 +252,7 @@ func main() {
 		log.Fatalf("tls listener: %v", err)
 	}
 	log.Printf("banking-circle listening on %s mtls=%s dest=%s allowlist=%s delay=%s", addr, mode, dest, spec, delay)
-	log.Fatal(http.Serve(ln, logReq(a.mux())))
+	log.Fatal(http.Serve(ln, logReq(a.mux(ctl.Mux))))
 }
 
 // tlsListener builds the credentialed API's TLS listener. mode selects how
@@ -284,8 +295,9 @@ func tlsListener(addr, certFile, keyFile, caFile, mode string) (net.Listener, er
 	return tls.Listen("tcp", addr, cfg)
 }
 
-// mux is the real-shaped, mTLS + bearer credentialed API (LISTEN).
-func (a *app) mux() *http.ServeMux {
+// mux is the real-shaped, mTLS + bearer credentialed API (LISTEN). ctl is
+// the control surface's mux, whose /sim routes answer here too.
+func (a *app) mux(ctl http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "banking-circle"})
@@ -303,28 +315,10 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("PUT /api/v1/notificationselfservice/subscriptionEvent/{id}/targets", a.requireBearer(a.replaceSubscriptionEventTargets))
 	mux.HandleFunc("DELETE /api/v1/notificationselfservice/subscriptionEvent/{id}", a.requireBearer(a.deleteSubscriptionEvent))
 	mux.HandleFunc("POST /api/v1/notificationselfservice/clienttest/{subscriptionId}", a.requireBearer(a.clientTest))
-	// Lab-only: the warning and deactivation emails the retry schedule
-	// emits, so a failing subscription is observable rather than just
-	// eventually silent.
-	mux.HandleFunc("GET /sim/emails", a.requireBearer(a.listEmails))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/notifications", a.requireBearer(a.enqueueSyntheticNotifications))
-	mux.HandleFunc("GET /sim/subscription/{subscriptionId}/pending", a.requireBearer(a.pendingNotifications))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/pause", a.requireBearer(a.pauseNotifications))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/resume", a.requireBearer(a.resumeNotifications))
-	// The delivery table this process is actually running, which is the
-	// file's plus whatever BC_TIME_SCALE overrode. Reading the file alone
-	// reports a schedule nobody is on.
-	mux.HandleFunc("GET /sim/delivery-config", a.requireBearer(a.deliveryConfig))
-	// The return and reversal test hooks again, for the console: the same
-	// handlers as on the internal listener, here because this is the
-	// surface the console holds a token for.
-	mux.HandleFunc("POST /sim/payments/{id}/return", a.requireBearer(a.returnInternalPayment))
-	mux.HandleFunc("POST /sim/payments/{id}/reverse", a.requireBearer(a.reverseInternalPayment))
-	// The console reads this one. It sits on the credentialed API
-	// rather than the bridge because that is the surface the console
-	// already holds a token for, and an observability endpoint is not
-	// a reason to open a second unauthenticated door.
-	mux.HandleFunc("GET /sim/activity", a.requireBearer(activity.Handler(a.payLog, a.notifLog, a.reportLog)))
+	// The old /sim paths, behind the bearer they always had, until phase 4
+	// of docs/lab-api/plan.md retires them. They are the control surface's
+	// own routes, so they answer exactly what it answers.
+	mux.Handle("/sim/", a.requireBearer(ctl.ServeHTTP))
 	// Debug/introspection endpoints kept from the old surface — not part of
 	// the real Banking Circle contract, but useful for the harness and kept
 	// behind the same credentials as everything else on this listener.
@@ -333,18 +327,6 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("GET /payments", a.requireBearer(a.listPayments))
 	mux.HandleFunc("GET /payments/{id}", a.requireBearer(a.getPayment))
 	mux.HandleFunc("GET /reconciliation", a.requireBearer(a.reconcile))
-	// The sim control contract (internal/simctl): who this is, its own log
-	// lines, and the reset. Behind the bearer like every other /sim route
-	// here, because this is the listener the lab API holds a token for.
-	ctl := http.NewServeMux()
-	simctl.Mount(ctl, simctl.Config{
-		Service: "banking-circle", Kind: "vendor", Simulates: "Banking Circle Connect",
-		Listeners: a.listeners,
-		Reset:     a.reset,
-	})
-	for _, route := range []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"} {
-		mux.HandleFunc(route, a.requireBearer(ctl.ServeHTTP))
-	}
 
 	// The Connect reports surface. These are what a reconciliation sweep
 	// reads, so they carry the vendor's own paths and body shapes rather
@@ -362,26 +344,92 @@ func (a *app) deliveryConfig(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, a.delivery)
 }
 
+// control builds the control surface (internal/simctl) for a listener of
+// its own, at SIM_CONTROL_LISTEN or else defaultAddr: the sim control
+// contract, GET /health, and every route in simRoutes.
+//
+// It carries none of Banking Circle's authentication. mTLS and the
+// Basic→Bearer exchange are for the platform calling the bank's API;
+// reversing a payout, reading a log or resetting is the lab steering its
+// own simulation, and the lab API that does it holds no Banking Circle
+// credentials. The port is trusted by where it is: compose does not
+// publish it, and SIM_CONTROL_ALLOW narrows it further.
+func (a *app) control(defaultAddr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "banking-circle", Kind: "vendor", Simulates: "Banking Circle Connect",
+		Listeners: a.listeners,
+		Reset:     a.reset,
+	}, defaultAddr)
+	if err != nil {
+		return nil, err
+	}
+	for pattern, h := range a.simRoutes() {
+		ctl.Mux.HandleFunc(pattern, h)
+	}
+	return ctl, nil
+}
+
+// simRoutes are the lab's own routes on the control surface, by pattern.
+// None is Banking Circle's. Where one answers what a vendor or bridge
+// route answers, it is that route's handler, so the two cannot drift.
+func (a *app) simRoutes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		// Everything this vendor has done, as the console's activity view
+		// and the lab API's flow read it.
+		"GET /sim/activity": activity.Handler(a.payLog, a.notifLog, a.reportLog),
+		// The warning and deactivation emails the retry schedule emits, so
+		// a failing subscription is observable rather than just eventually
+		// silent.
+		"GET /sim/emails": a.listEmails,
+		// The delivery table this process is actually running, which is
+		// the file's plus whatever BC_TIME_SCALE overrode. Reading the file
+		// alone reports a schedule nobody is on.
+		"GET /sim/delivery-config": a.deliveryConfig,
+
+		// Subscriptions: the vendor's list, its clienttest and its
+		// activate/deactivate (here without If-Match), and the lab's tap on
+		// the notification pipe.
+		"GET /sim/subscriptions":                                a.simListSubscriptions,
+		"POST /sim/subscription/{subscriptionId}/test":          a.clientTest,
+		"POST /sim/subscription/{subscriptionId}/activate":      a.simActivateSubscription,
+		"POST /sim/subscription/{subscriptionId}/deactivate":    a.simDeactivateSubscription,
+		"POST /sim/subscription/{subscriptionId}/notifications": a.enqueueSyntheticNotifications,
+		"GET /sim/subscription/{subscriptionId}/pending":        a.pendingNotifications,
+		"POST /sim/subscription/{subscriptionId}/pause":         a.pauseNotifications,
+		"POST /sim/subscription/{subscriptionId}/resume":        a.resumeNotifications,
+
+		// The ledger and the payments, as GET /accounts and GET /payments
+		// on LISTEN and the bridge's balance read answer them.
+		"GET /sim/accounts":                      a.listAccounts,
+		"GET /sim/accounts/{accountId}/balances": a.internalAccountBalances,
+		"GET /sim/payments":                      a.listPayments,
+		"POST /sim/incoming-payments":            a.incomingPayments(),
+		"GET /sim/payments/outcomes":             a.forcedOutcomes,
+		"POST /sim/payments/outcomes":            a.forceOutcomes,
+		"POST /sim/payments/{id}/return":         a.returnInternalPayment,
+		"POST /sim/payments/{id}/reverse":        a.reverseInternalPayment,
+	}
+}
+
 // reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow clears
 // what a run makes -- payments, balances, notifications not yet delivered,
 // pauses, emails, forced outcomes, activity -- and keeps what a platform set
-// up once: its subscriptions, the accounts its payouts opened, its bearer
-// tokens. all puts the bank back as it was on first start: the seeded
-// subscription only, the safeguarding accounts only, and no tokens --
-// including the one this request came with. Work in flight is dropped, not
-// raced (bankingcircle.Bank.Reset). Never refused: nothing here is unsafe
-// to cut short.
+// up once: its subscriptions and the accounts its payouts opened. all also
+// puts the bank back as it was on first start: the seeded subscription
+// only, the safeguarding accounts only, references from the first.
+//
+// Issued bearer tokens survive both. A lab reset must never log the
+// platform's Banking Circle client out, and nothing the lab does needs one.
+// Work in flight is dropped, not raced (bankingcircle.Bank.Reset). Never
+// refused: nothing here is unsafe to cut short.
 func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 	all := req.Scope == simctl.ScopeAll
 	cleared := a.bank.Reset(all, func(cleared map[string]int) {
 		cleared["activity"] = int(a.payLog.Clear() + a.notifLog.Clear() + a.reportLog.Clear())
-		if all {
-			cleared["tokens"] = a.tokens.clear()
-		}
 	})
 	kept := []string{"subscriptions", "accounts", "tokens"}
 	if all {
-		kept = nil
+		kept = []string{"tokens"}
 	}
 	return simctl.ResetResult{Cleared: cleared, Kept: kept}, nil
 }
@@ -395,9 +443,16 @@ func (a *app) internalMux() *http.ServeMux {
 	mux.HandleFunc("POST /internal/payments/{id}/return", a.returnInternalPayment)
 	mux.HandleFunc("GET /internal/payments/outcomes", a.forcedOutcomes)
 	mux.HandleFunc("POST /internal/payments/outcomes", a.forceOutcomes)
-	mux.HandleFunc("POST /internal/incoming-payments", a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment))
+	mux.HandleFunc("POST /internal/incoming-payments", a.incomingPayments())
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
+}
+
+// incomingPayments is money landing on a safeguarding account, logged as
+// payment.incoming: the bridge's POST /internal/incoming-payments and the
+// control surface's POST /sim/incoming-payments.
+func (a *app) incomingPayments() http.HandlerFunc {
+	return a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment)
 }
 
 // --- auth ---------------------------------------------------------------
@@ -417,22 +472,6 @@ func (s *tokenStore) issue(ttl time.Duration) string {
 	s.tokens[tok] = time.Now().Add(ttl)
 	s.mu.Unlock()
 	return tok
-}
-
-// clear forgets every token issued, for a reset of scope all, and says how
-// many were still live.
-func (s *tokenStore) clear() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	live := 0
-	now := time.Now()
-	for _, exp := range s.tokens {
-		if now.Before(exp) {
-			live++
-		}
-	}
-	s.tokens = map[string]time.Time{}
-	return live
 }
 
 func (s *tokenStore) valid(tok string) bool {

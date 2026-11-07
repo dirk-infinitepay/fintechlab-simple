@@ -9,9 +9,10 @@ of [phase 1](plan.md#phase-1--the-control-contract-lab-api-first-traps).
 `cmd/labapi` serves `/v1` on `:8097` with everything the console's server
 did, plus `/v1/services`, the passthrough to every sim's `/sim/*`, the
 clock holds, a reset of the whole lab and every service's logs in one
-read; `LAB_API_TOKEN`; every sim serves `/sim/info`, `/sim/logs` and
-`/sim/reset`; the console is a page that forwards `/v1` to it, and the page
-already calls `/v1`. The reference for what answers today
+read; `LAB_API_TOKEN`; every sim serves its `/sim/*` routes, `/sim/info`,
+`/sim/logs` and `/sim/reset` among them, on a control port of its own with
+no vendor login, and the lab API reaches sims only there; the console is a
+page that forwards `/v1` to it, and the page already calls `/v1`. The reference for what answers today
 is [../api/lab-api.md](../api/lab-api.md); this directory stays the design
 for the rest.
 
@@ -67,6 +68,11 @@ All 2026-10-20.
   Parallel, isolated environments (each with its own copy of the platform
   and its settle DB) are in the plan and deferred
   ([plan.md, phase 5](plan.md#phase-5--parallel-environments-deferred)).
+- **The back link has no vendor auth, and no token** (2026-11-07). Each sim's
+  `/sim/*` is on a control port of its own, trusted by network placement
+  (`SIM_CONTROL_ALLOW` to narrow it). Authentication is only between a
+  person, an agent or the console and `lab-api`, which holds no vendor
+  credentials ([architecture.md §4](architecture.md#4-the-control-listener)).
 - **Lab-level operations for now: read logs, reset.** No container control:
   the lab API holds no Docker/Podman socket.
 - **Traps.** A sim can be told in advance how to treat a future event that

@@ -19,12 +19,13 @@ checkout.
 | --- | --- | --- |
 | **lab API** | 8097 | `/v1/*` — the one API over the lab, and the headless surface: `GET /v1` lists every route |
 | console | 8090 | the UI; forwards `/v1` (and the old `/api/*`) to the lab API |
-| banking-circle | 8085 | Connect API: mTLS + Basic→Bearer. Use the lab API (its passthrough adds both) or the bridge rather than curling it |
+| banking-circle | 8085 | Connect API: mTLS + Basic→Bearer — the platform's. To steer or read the bank, use the lab API |
 | banking-circle bridge | 8095 | plain HTTP, no auth: `/internal/*` lab hooks |
 | worldline | 8084, 2222 | SFT channel over HTTP; SFTP+PGP on 2222 |
 | b4b | 8086 | Oversight API (RS512 JWT) |
 | aci / verify / verification | 8087 / 8088 / 8089 | |
-| bank / settlement / receiver | 8081 / 8083 / 8443 | scaffolding |
+| bank / settlement / receiver | 8081 / 8083 / 8443 | the bank is a vendor; settlement and receiver are stand-ins |
+| *every service's control port* | its port + 1000 (9081–9096, 9443) | `/sim/*` and `GET /health`, plain HTTP, no vendor login; not published by compose — reach it through the lab API's `/v1/services/<id>/sim/…` |
 | **clock** | 8096 | the lab's business clock: `GET/POST /clock`, `/clock/holds` |
 | **runner** control API (host) | 3109 | `/status`, `/sim/files`, `/sim/run`, `/sim/sweep`, `/sim/clock` (read-only), `/sim/fund-sga` |
 | buddy `apps/banking-circle` (host) | 3114 | webhook receiver; internal API under `/api/v1/internal/...` |
@@ -314,21 +315,24 @@ Where the lab shows it:
 
 ## Make Banking Circle misbehave on purpose
 
-Bridge (`:8095`, no auth) or the lab API (`:8097`) — both are one call:
+All through the lab API; each is one call to Banking Circle's control port,
+with no vendor login. (The old bridge paths on `:8095/internal/…` still
+answer until phase 4.)
 
 ```sh
+BC=localhost:8097/v1/services/banking-circle/sim
 # the next payouts end Rejected / stay Pending, one each, in order
-curl -s -X POST localhost:8095/internal/payments/outcomes -d '{"outcomes":["Rejected","Pending"]}'
-curl -s localhost:8095/internal/payments/outcomes                  # what is still queued
+curl -s -X POST $BC/payments/outcomes -d '{"outcomes":["Rejected","Pending"]}'
+curl -s $BC/payments/outcomes                                       # what is still queued
 
 # hold one subscription's webhooks, then release them
 curl -s -X POST localhost:8097/v1/banking-circle/subscriptions/<sub_id>/pause
 curl -s -X POST localhost:8097/v1/banking-circle/subscriptions/<sub_id>/resume
 
 # after a payout processed: the recipient's bank sends it back, or the scheme reverses it
-curl -s -X POST localhost:8095/internal/payments/<bcPaymentId>/return \
+curl -s -X POST $BC/payments/<bcPaymentId>/return \
      -d '{"reasonCode":"AC04","reasonDescription":"Closed account number"}'
-curl -s -X POST localhost:8095/internal/payments/<bcPaymentId>/reverse -d '{"reason":"scheme"}'
+curl -s -X POST $BC/payments/<bcPaymentId>/reverse -d '{"reason":"scheme"}'
 curl -s localhost:8097/v1/banking-circle/payouts                  # the payouts, and which can be returned/reversed
 ```
 

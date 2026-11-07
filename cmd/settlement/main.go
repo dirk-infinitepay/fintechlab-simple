@@ -153,6 +153,22 @@ func main() {
 		go puller.run()
 	}
 
+	mux, ctl, err := a.surfaces(addr, puller)
+	if err != nil {
+		log.Fatalf("settlement: %v", err)
+	}
+	ctl.Start()
+	log.Printf("settlement listening on %s bank=%s b4b=%s verify=%s banking_circle=%s sftp_out=%s sftp_outbound=%s",
+		addr, bankURL, b4bURL, verifyURL, bcInternalURL, sftpOutDir, sftpOutboundDir)
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// surfaces builds the stand-in's two listeners: its own, on addr, and the
+// control surface on addr's port plus 1000 (internal/simctl), with every
+// /sim route. The old /sim paths still answer on addr, passed through to
+// the control surface, until phase 4 of docs/lab-api/plan.md retires them.
+// puller is nil when no Worldline host is configured.
+func (a *app) surfaces(addr string, puller *worldlinePuller) (*http.ServeMux, *simctl.Control, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "settlement"})
@@ -168,20 +184,31 @@ func main() {
 	mux.HandleFunc("GET /sftp/out/{merchant_id}/{filename}", a.readOut)
 	mux.HandleFunc("GET /sftp/staging", a.listStaging)
 	mux.HandleFunc("POST /internal/b4b-webhook", a.b4bWebhook)
-	a.wiring.Routes(mux, "/sim/connected")
 	if puller != nil {
 		puller.routes(mux)
 	}
-	// GET /sim/info, GET /sim/logs and POST /sim/reset: the control
-	// contract every sim serves (internal/simctl).
-	simctl.Mount(mux, simctl.Config{
+	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "settlement", Kind: "stand-in", Simulates: "the platform's settle path (scaffolding)",
 		Listeners: []string{addr},
 		Reset:     a.reset(puller),
-	})
-	log.Printf("settlement listening on %s bank=%s b4b=%s verify=%s banking_circle=%s sftp_out=%s sftp_outbound=%s",
-		addr, bankURL, b4bURL, verifyURL, bcInternalURL, sftpOutDir, sftpOutboundDir)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	a.controlRoutes(ctl.Mux, puller)
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
+// controlRoutes registers the lab's hooks on the control surface, beside
+// the contract simctl mounts there: the stand-in's switch, and a pull from
+// Worldline now. POST /sim/pull is POST /worldline/pull, the same handler
+// answering the same, so the lab never has to call the stand-in's own API.
+func (a *app) controlRoutes(mux *http.ServeMux, puller *worldlinePuller) {
+	a.wiring.Routes(mux, "/sim/connected")
+	if puller != nil {
+		mux.HandleFunc("POST /sim/pull", puller.pull)
+	}
 }
 
 // parseDateRange applies ARCHITECTURE-reconciliation-api.md's defaults:

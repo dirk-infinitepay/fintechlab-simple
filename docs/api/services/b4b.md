@@ -12,19 +12,19 @@ payment gates and the `B4BAccepted`→…→`B4BTMApproved`/`B4BFailed` lifecycl
 with a callback on every transition. The judgement is not real: every
 company, person and beneficiary screens `pass` at creation, documents are
 measured and discarded, statuses move only through the lab-only
-`PUT /sim/...` hooks, and an approved payout reaches Banking Circle through a
-lab bridge rather than a real banking relationship. Everything it is told is
-persisted to one state file.
+`PUT /sim/...` hooks on its control port, and an approved payout reaches
+Banking Circle through a lab bridge rather than a real banking relationship.
+Everything it is told is persisted to one state file.
 
 ## At a glance
 
 | | |
 | --- | --- |
-| Listens | `:8086`, plain HTTP (no TLS). Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086` |
-| Auth | Every `/oversight/v1/*` route and every `/sim/*` route but `GET /sim/activity`: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt). `GET /health` and `GET /sim/activity`: none |
+| Listens | `:8086`, plain HTTP (no TLS): the Oversight API. Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086`.<br>`:9086`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://b4b:9086` |
+| Auth | Every `/oversight/v1/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt). `GET /health`: none. The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The old `/sim/*` paths on `:8086` keep the JWT until phase 4, but for `GET /sim/activity` |
 | A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names |
 | Activity logs | `GET /sim/activity` keeps two in-memory rings of 256 events. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. Boarding, beneficiary and `/sim` calls are not logged |
-| Configuration | `LISTEN` (`:8086`).<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
+| Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-b4b-oversight.md](../../ARCHITECTURE-b4b-oversight.md) (boarding), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §4 and Addendum §A/D/F (payout half), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §4 (wire-shape fixes), [structure/b4b.md](../../structure/b4b.md) (file by file) |
 
 ## Vendor surface
@@ -55,10 +55,11 @@ too. Timestamps are RFC 3339 UTC on the lab clock.
 
 ### Authentication: the RS512 bearer JWT
 
-Every `/oversight/v1/*` and `PUT /sim/*` call carries
-`Authorization: Bearer <token>` (prefix exactly `Bearer `). The token is
-parsed by hand (`internal/b4b/jwt.go`, `VerifyBearerToken`), with no JWT
-library:
+Every `/oversight/v1/*` call carries `Authorization: Bearer <token>`
+(prefix exactly `Bearer `), and so does every old `/sim/*` path on `:8086`
+but `GET /sim/activity` until phase 4. The control port asks for none. The
+token is parsed by hand (`internal/b4b/jwt.go`, `VerifyBearerToken`), with
+no JWT library:
 
 - **Format.** Compact JWS: three base64url segments **without padding**. A
   padded segment fails to decode and is refused.
@@ -77,11 +78,12 @@ library:
   public half; if the file does not exist it generates an RSA-2048 pair,
   writes `private.pem` (PKCS#1) and `public.pem` (PKIX), both mode 0644, and
   prints the public key to stdout. Compose mounts
-  `${LAB_KEYS_DIR:-./keys}/b4b-keys` read-write here; settlement and the
-  lab API mount it read-only and sign with `private.pem`. This is inverted
-  from a real vendor (the lab owns the private key and hands it to the
-  client); the lab API serves it at `GET :8097/v1/connect/env/b4b` and
-  `GET :8097/v1/connect/files/b4b/b4b-jwt-private.pem`.
+  `${LAB_KEYS_DIR:-./keys}/b4b-keys` read-write here; settlement mounts it
+  read-only and signs with `private.pem`. This is inverted from a real
+  vendor (the lab owns the private key and hands it to the client); the lab
+  API serves it at `GET :8097/v1/connect/env/b4b` and
+  `GET :8097/v1/connect/files/b4b/b4b-jwt-private.pem`, and signs nothing
+  with it.
 
 The token a Go client needs is exactly what `b4b.SignBearerToken(key, kid)`
 produces:
@@ -387,6 +389,10 @@ the background, every time. Registering the same `external_ref` again mints
 a new id; lookups by `external_ref` then resolve to the newest record, while
 the old id still reads the old one. Persisted.
 
+The lab registers payees through
+[`POST /sim/beneficiaries`](#post-simbeneficiaries) on the control port,
+which is this route without the JWT.
+
 ### `GET /oversight/v1/beneficiaries/{id}`
 
 One payee, by B4B id or `external_ref`. Also the documented recovery read
@@ -598,17 +604,25 @@ travels as `iban` when the creditor account is IBAN-shaped, otherwise as
 ## Lab control
 
 Hooks a test, an agent or the lab API uses to drive or watch b4b. They do not
-exist at the real vendor. Every `/sim/*` hook but `GET /sim/activity` needs
-the bearer JWT; the lab API's passthrough signs one.
+exist at the real vendor. They are on the control port, `:9086`, with no
+vendor auth ([the control
+contract](../README.md#the-control-contract)): the JWT is for a platform
+calling B4B, not for the lab steering its simulation. The same `/sim/*`
+paths still answer on `:8086` until phase 4 of
+[the plan](../../lab-api/plan.md) retires them, behind the bearer JWT as
+they were, but for `GET /sim/activity`, which never needed it.
 
 ### `GET /health`
 
-Liveness. No auth. Answers `200` with `{"status": "ok", "service": "b4b"}`.
+Liveness, on both ports, no auth. `:8086` answers `{"status": "ok",
+"service": "b4b"}`; the control port answers `{"status": "ok", "service":
+"b4b", "surface": "control"}`, and that is the one the lab API's monitor
+probes.
 
 ### `GET /sim/activity`
 
-The two activity logs, newest event first. No auth. Query: `limit`
-(positive integer, default 100).
+The two activity logs, newest event first. No auth on either port. Query:
+`limit` (positive integer, default 100).
 
 Answers `200`:
 
@@ -630,6 +644,15 @@ Event `status` is `ok`, `warn` (a 4xx answer, or a callback with nowhere to
 go) or `bad` (a 5xx answer, or a callback refused after every attempt). A
 refused payout's summary ends with b4b's own error message. `at` is wall
 time, not the lab clock.
+
+### `POST /sim/beneficiaries`
+
+Registers a payee exactly as
+[`POST /oversight/v1/beneficiaries`](#post-oversightv1beneficiaries) does,
+without the JWT: the same handler, so the same body and validation, the
+same answer (`201` with the beneficiary; `400`, `404` as there), the same
+beneficiary callback and the same state file. The lab API registers
+merchants' outlets through it, with `external_ref` set to the MID.
 
 ### `PUT /sim/beneficiaries/{id}/sanctions`
 
@@ -681,20 +704,20 @@ if either status changed. Persisted.
 
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
-`"service": "b4b"`, `"kind": "vendor"`, `"reset_scopes": ["flow", "all"]`.
-Needs the bearer JWT.
+`"service": "b4b"`, `"kind": "vendor"`, `"vendor_listeners": [":8086"]`,
+`"control_listener": ":9086"`, `"reset_scopes": ["flow", "all"]`.
 
 ### `GET /sim/logs`
 
 The process's own log lines, as every service answers it
-([the control contract](../README.md#the-control-contract)). Needs the
-bearer JWT. Every request but these reads is a line, and so is every
-callback attempt, every bridge call and every piece of work a reset
-dropped.
+([the control contract](../README.md#the-control-contract)). Every
+request on either port but these reads and the health probes is a line, and
+so is every callback attempt, every bridge call and every piece of work a
+reset dropped.
 
 ### `POST /sim/reset`
 
-Puts b4b back to a known state. Needs the bearer JWT.
+Puts b4b back to a known state.
 
 - **`flow`** clears every payment (`payments`; `payments_in_flight` of them
   were still walking their phases), the callbacks and bridge calls in
@@ -731,23 +754,24 @@ Puts b4b back to a known state. Needs the bearer JWT.
   that record and `callback_url` set to its own `B4B_CALLBACK_URL`
   (`http://settlement:8083/internal/b4b-webhook`). Signs with
   `b4b.SignBearerToken` and the shared `private.pem`.
-- **lab API** (`cmd/labapi`):
+- **lab API** (`cmd/labapi`), on the control port only (`http://b4b:9086`),
+  with no token:
   `POST /v1/merchants/{id}/provision` and `POST /v1/merchants/batches/{id}/provision`
-  call `POST /oversight/v1/beneficiaries` once per outlet, with
-  `external_ref` set to the MID;
+  call `POST /sim/beneficiaries` once per outlet, with `external_ref` set
+  to the MID;
   `POST /v1/outlets/{mid}/sanctions` calls `PUT /sim/beneficiaries/{mid}/sanctions`;
   `GET /v1/lab` and `POST /v1/services/b4b/probe` probe `GET /health`;
   `GET /v1/services/b4b/activity`, `GET /v1/flow` and `GET /v1/flow/hops/{id}`
   read `GET /sim/activity`; `POST /v1/lab/reset` and
   `POST /v1/services/b4b/reset` call `POST /sim/reset`, and `GET /v1/logs`
-  and `GET /v1/services/b4b/logs` read `GET /sim/logs`, each with a signed
-  token. `GET /v1/connect/env/b4b` and
-  `GET /v1/connect/files/b4b/{name}` hand out the signing key without
-  calling b4b.
+  and `GET /v1/services/b4b/logs` read `GET /sim/logs`.
+  `GET /v1/connect/env/b4b` and `GET /v1/connect/files/b4b/{name}` hand
+  out the signing key without calling b4b; the lab API signs nothing.
 - **harness** (`internal/harness`): `b4b-oversight-gates`
   (`scenario_b4b.go`) registers a beneficiary, sends mismatched and matching
   payments, polls `GET /oversight/v1/payments/{id}`, blocks the payee with
-  `PUT /sim/beneficiaries/{id}/sanctions` and re-reads it;
+  `PUT /sim/beneficiaries/{id}/sanctions` on `:8086`, signed (the old path,
+  until phase 4), and re-reads it;
   `b4b-company-boarding` (`scenario_b4b_boarding.go`) walks companies,
   addresses, people, uploads, the extended profile (and its read), vIBANs
   and beneficiaries, asserting each refusal; `banking-circle-payout`

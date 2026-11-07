@@ -13,11 +13,11 @@ Nothing on the settle path calls it, and nothing should depend on it.
 
 | | |
 | --- | --- |
-| Listens | `:8082`, plain HTTP. Compose service `notifier` (`http://notifier:8082`); host `http://127.0.0.1:8082`. Delivers out over HTTPS to its subscription URL |
-| Auth | None inbound. Outbound, each delivery carries the lab HMAC (`X-Sim-Signature`) keyed with `HMAC_SECRET`, and TLS is verified against `CA_FILE` |
+| Listens | `:8082`, plain HTTP: the notifier's own routes. Compose service `notifier` (`http://notifier:8082`); host `http://127.0.0.1:8082`. Delivers out over HTTPS to its subscription URL.<br>`:9082`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://notifier:9082` |
+| Auth | None inbound. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. Outbound, each delivery carries the lab HMAC (`X-Sim-Signature`) keyed with `HMAC_SECRET`, and TLS is verified against `CA_FILE` |
 | Found with | `NOTIFIER_URL` (`http://notifier:8082`) on payment-api; the harness sets it too but no scenario uses it.<br>`CONSOLE_URL_NOTIFIER` on the console |
 | Activity logs | `deliveries` (*Webhooks delivered*): one event per delivery attempt, op `delivery`, `ok` on a `2xx` and `warn` on a failed attempt; then `delivery.failed` (`bad`) when the retries run out and the subscription is marked failed. Enqueues are not logged, only the attempts |
-| Configuration | `WEBHOOK_URL` (`https://receiver:8443/webhooks`): the default subscription. It must pass the allowlist or the service does not start.<br>`WEBHOOK_ALLOWLIST` (`receiver,receiver:8443,localhost,127.0.0.1`): hostnames, `host:port` pairs or CIDRs; `http` and `https` only, no userinfo; empty denies everything.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the receiver's.<br>`CA_FILE` (`/keys/certs/ca.pem`): trusted for HTTPS; waited for 30 s, then system roots.<br>`RETRY_BACKOFF` (`1s,2s,4s`): the wait before attempts 2, 3, 4…, the last value repeating.<br>`MAX_ATTEMPTS` (`4`).<br>`LISTEN` (`:8082`).<br>Everything is in memory. It does not follow the lab clock: `createdAt` and the signing timestamp are wall-clock time |
+| Configuration | `WEBHOOK_URL` (`https://receiver:8443/webhooks`): the default subscription. It must pass the allowlist or the service does not start.<br>`WEBHOOK_ALLOWLIST` (`receiver,receiver:8443,localhost,127.0.0.1`): hostnames, `host:port` pairs or CIDRs; `http` and `https` only, no userinfo; empty denies everything.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the receiver's.<br>`CA_FILE` (`/keys/certs/ca.pem`): trusted for HTTPS; waited for 30 s, then system roots.<br>`RETRY_BACKOFF` (`1s,2s,4s`): the wait before attempts 2, 3, 4…, the last value repeating.<br>`MAX_ATTEMPTS` (`4`).<br>`LISTEN` (`:8082`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9082`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Everything is in memory. It does not follow the lab clock: `createdAt` and the signing timestamp are wall-clock time |
 | Design record | [services/webhooks.md](../../services/webhooks.md), [security/allowlists.md](../../security/allowlists.md), [scenarios/payment-to-webhook.md](../../scenarios/payment-to-webhook.md) |
 
 ## Service surface
@@ -118,11 +118,17 @@ answer came back; `lastError` is omitted when empty.
 
 ## Lab control
 
+On the control port, `:9082` ([the control
+contract](../README.md#the-control-contract)). The same `/sim/*` paths
+still answer on `:8082` until phase 4 of [the plan](../../lab-api/plan.md)
+retires them.
+
 ### `GET /health`
 
-Liveness. The lab API's monitor probes it.
-
-Answers `200` with `{"status": "ok", "service": "notifier"}`.
+Liveness, on both ports. `:8082` answers `{"status": "ok", "service":
+"notifier"}`; the control port answers `{"status": "ok", "service":
+"notifier", "surface": "control"}`, and that is the one the lab API's
+monitor probes.
 
 ### `GET /sim/activity`
 
@@ -188,9 +194,13 @@ active again) and, with `all`, `subscription` (1 when one set with
 ## Called by
 
 - **payment-api**: `POST /enqueue` after each payment the bank accepted.
-- **lab API**: `GET /v1/services/notifier/activity` proxies
-  `GET /sim/activity`; `GET /v1/lab` and
-  `POST /v1/services/notifier/probe` probe `GET /health`.
+- **lab API**: only the control port, `http://notifier:9082`.
+  `GET /v1/services/notifier/activity` proxies `GET /sim/activity`;
+  `GET /v1/lab` and `POST /v1/services/notifier/probe` probe its
+  `GET /health`; `POST /v1/lab/reset` and
+  `POST /v1/services/notifier/reset` call `POST /sim/reset`;
+  `GET /v1/logs` and `GET /v1/services/notifier/logs` read
+  `GET /sim/logs`.
 - **harness**: nothing directly. `payment-api-to-webhook` goes through it
   (payment-api → notifier → receiver) and checks the receiver.
 - **by hand**: `make demo-payment`, through payment-api. Nothing in the repo

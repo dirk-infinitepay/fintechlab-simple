@@ -81,15 +81,31 @@ A simulation is a 1:1 drop-in for the vendor it simulates, and stays one.
 
 ## 4. The control listener
 
-**[PROPOSED]**
-
-Every sim serves its control surface (`/sim/*`,
-[sim-control.md](sim-control.md)) on a listener of its own:
+**[DECIDED 2026-11-07, built]** Every sim serves its control surface
+(`/sim/*`, [sim-control.md](sim-control.md)) on a listener of its own, with
+**no authentication**: the vendor's login is for the platform calling the
+vendor's API, and the lab steering its simulation (reversing a payout,
+reading a log, resetting) must not go through it. The control port is
+trusted by where it is — compose does not publish it, so only the lab's
+network reaches it — and `SIM_CONTROL_ALLOW` narrows that to the addresses
+or CIDRs listed. There is no `SIM_CONTROL_TOKEN`: authentication belongs
+between a person, an agent or the console and `lab-api` (§8). The
+`lab-api` reaches every sim only here and holds no vendor credentials.
 
 ```text
-SIM_CONTROL_LISTEN=:9085        # unset: /sim/* is served on the main listener, as today
-SIM_CONTROL_TOKEN=…             # unset: no auth on the control listener
+SIM_CONTROL_LISTEN=:9085        # unset: the vendor port + 1000
+SIM_CONTROL_ALLOW=10.89.0.0/16  # unset: anything that can reach the port
 ```
+
+Where `lab-api` used to read or steer a sim through its vendor API, the
+sim answers the same on its control port: Banking Circle's
+`/sim/accounts`, `/sim/payments`, `/sim/subscriptions`,
+`/sim/subscription/{id}/test|activate|deactivate`,
+`/sim/accounts/{id}/balances`, `/sim/incoming-payments`; B4B's
+`/sim/beneficiaries`; Worldline's `/sim/config`; settlement's `/sim/pull`;
+the bank's `/sim/accounts`.
+
+The text below is the original proposal, kept for its reasoning.
 
 Why a separate listener:
 
@@ -173,14 +189,15 @@ then carries UI assets. See [OPEN 3](open.md).
 
 ## 8. Auth
 
-**[PROPOSED]**
+**[DECIDED 2026-11-07, built]**
 
-| Surface | Today | Proposed |
-| --- | --- | --- |
-| Vendor surfaces | vendor-shaped (mTLS + Bearer, RS512 JWT, SFTP password/key, API keys) | unchanged (§3) |
-| Control listeners | mixed (§4) | `Authorization: Bearer $SIM_CONTROL_TOKEN` when set; open when unset |
-| `lab-api` | (the console has none) | `Authorization: Bearer $LAB_API_TOKEN` when set; open when unset |
-| Plugin registration | none | the same `LAB_API_TOKEN` |
+| Surface | Auth |
+| --- | --- |
+| Vendor surfaces | vendor-shaped (mTLS + Bearer, RS512 JWT, SFTP password/key, API keys), unchanged (§3) |
+| Control listeners | none: network placement, optionally `SIM_CONTROL_ALLOW` (§4) |
+| `lab-api` | `Authorization: Bearer $LAB_API_TOKEN` when set; open when unset |
+| Plugin registration | the same `LAB_API_TOKEN` |
+| `console` → `lab-api` | the console adds `LAB_API_TOKEN` to what it forwards |
 
 Unset is the local default, so `make up` stays one command. A lab deployed
 somewhere reachable sets both. How a person's browser gets through to the

@@ -13,11 +13,11 @@ Nothing on the settle path does, and nothing should depend on it.
 
 | | |
 | --- | --- |
-| Listens | `:8080`, plain HTTP. Compose service `payment-api` (`http://payment-api:8080`); host `http://127.0.0.1:8080` |
-| Auth | None |
+| Listens | `:8080`, plain HTTP: the payment routes. Compose service `payment-api` (`http://payment-api:8080`); host `http://127.0.0.1:8080`.<br>`:9080`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://payment-api:9080` |
+| Auth | None. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | Found with | `PAYMENT_API_URL` (`http://127.0.0.1:8080`) in the harness and `scripts/demo-payment.sh`.<br>`CONSOLE_URL_PAYMENT_API` on the console |
 | Activity logs | `payments` (*Payments received*): every `POST /payments`, op `payment.create`. The summary gives amount, debtor and creditor, then the outcome: accepted with the webhook's state, replayed for a seen key, or the refusal's own error. Detail: `payment`, `idempotency_key` |
-| Configuration | `BANK_URL` (`http://bank:8081`): where the ledger move goes.<br>`NOTIFIER_URL` (`http://notifier:8082`): where the webhook is enqueued.<br>`LISTEN` (`:8080`).<br>Payments are in memory. It does not follow the lab clock: `createdAt` is wall-clock time |
+| Configuration | `BANK_URL` (`http://bank:8081`): where the ledger move goes.<br>`NOTIFIER_URL` (`http://notifier:8082`): where the webhook is enqueued.<br>`LISTEN` (`:8080`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9080`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Payments are in memory. It does not follow the lab clock: `createdAt` is wall-clock time |
 | Design record | [scenarios/payment-to-webhook.md](../../scenarios/payment-to-webhook.md), [services/webhooks.md](../../services/webhooks.md), [services/fake-bank.md](../../services/fake-bank.md) |
 
 ## Service surface
@@ -100,11 +100,17 @@ Answers `200` with `{"payments": [...]}`, `[]` when there are none.
 
 ## Lab control
 
+On the control port, `:9080` ([the control
+contract](../README.md#the-control-contract)). The same `/sim/*` paths
+still answer on `:8080` until phase 4 of [the plan](../../lab-api/plan.md)
+retires them.
+
 ### `GET /health`
 
-Liveness. The lab API's monitor probes it.
-
-Answers `200` with `{"status": "ok", "service": "payment-api"}`.
+Liveness, on both ports. `:8080` answers `{"status": "ok", "service":
+"payment-api"}`; the control port answers `{"status": "ok", "service":
+"payment-api", "surface": "control"}`, and that is the one the lab API's
+monitor probes.
 
 ### `GET /sim/activity`
 
@@ -163,9 +169,13 @@ once.
 - **harness**: `payment-api-to-webhook` posts `POST /payments` twice with
   one key, expecting `201` then `200` with the same id, and checks one
   debit, one credit and the webhook at the receiver.
-- **lab API**: `GET /v1/services/payment-api/activity` proxies
-  `GET /sim/activity`; `GET /v1/lab` and
-  `POST /v1/services/payment-api/probe` probe `GET /health`.
+- **lab API**: only the control port, `http://payment-api:9080`.
+  `GET /v1/services/payment-api/activity` proxies `GET /sim/activity`;
+  `GET /v1/lab` and `POST /v1/services/payment-api/probe` probe its
+  `GET /health`; `POST /v1/lab/reset` and
+  `POST /v1/services/payment-api/reset` call `POST /sim/reset`;
+  `GET /v1/logs` and `GET /v1/services/payment-api/logs` read
+  `GET /sim/logs`.
 - **the platform**: never. No vendor calls it either.
 
 Routes checked against the source at commit db5e695.

@@ -57,32 +57,30 @@ func main() {
 	bankURL := strings.TrimRight(env("BANK_URL", "http://bank:8081"), "/")
 	notifierURL := strings.TrimRight(env("NOTIFIER_URL", "http://notifier:8082"), "/")
 	client := &http.Client{Timeout: 10 * time.Second}
-	mux := routes(newStore(), client, bankURL, notifierURL, addr)
+	mux, ctl, err := routes(newStore(), client, bankURL, notifierURL, addr)
+	if err != nil {
+		log.Fatalf("payment-api: %v", err)
+	}
+	ctl.Start()
 	log.Printf("payment-api listening on %s bank=%s notifier=%s", addr, bankURL, notifierURL)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
 
-// routes is payment-api's HTTP surface and its sim control contract.
-func routes(s *store, client *http.Client, bankURL, notifierURL, addr string) *http.ServeMux {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "payment-api"})
-	})
+// routes is payment-api's two surfaces: the payment routes on addr, and
+// the lab's control surface on a port of its own (internal/simctl) — the
+// activity log, the sim control contract and its own GET /health. addr
+// still answers the /sim paths until phase 4 of docs/lab-api/plan.md
+// retires them.
+func routes(s *store, client *http.Client, bankURL, notifierURL, addr string) (*http.ServeMux, *simctl.Control, error) {
 	// What reached it, for the console: nothing in the settle path calls
 	// this service, so an empty log is the normal state and a row here is
 	// make demo-payment, the harness or somebody's curl.
 	payLog := activity.New("payments", "Payments received",
 		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the harness call this.")
-	mux.HandleFunc("POST /payments", payLog.Watch("payment.create", summarizePayment, func(w http.ResponseWriter, r *http.Request) {
-		s.create(w, r, client, bankURL, notifierURL)
-	}))
-	mux.HandleFunc("GET /payments/{id}", s.get)
-	mux.HandleFunc("GET /payments", s.list)
-	mux.HandleFunc("GET /sim/activity", activity.Handler(payLog))
 
 	// Both scopes do the same: a payment and its idempotency key are what a
 	// run made, and nothing here is set up once.
-	simctl.Mount(mux, simctl.Config{
+	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "payment-api", Kind: "stand-in", Simulates: "a payment API of the platform's own (demo)",
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
@@ -91,8 +89,24 @@ func routes(s *store, client *http.Client, bankURL, notifierURL, addr string) *h
 			cleared["activity"] = int(payLog.Clear())
 			return simctl.ResetResult{Cleared: cleared}, nil
 		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(payLog))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "payment-api"})
 	})
-	return mux
+	mux.HandleFunc("POST /payments", payLog.Watch("payment.create", summarizePayment, func(w http.ResponseWriter, r *http.Request) {
+		s.create(w, r, client, bankURL, notifierURL)
+	}))
+	mux.HandleFunc("GET /payments/{id}", s.get)
+	mux.HandleFunc("GET /payments", s.list)
+	// The old /sim paths on the service port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
 }
 
 // reset forgets every payment and every Idempotency-Key, so a key seen

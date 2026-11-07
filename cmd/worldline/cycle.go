@@ -273,8 +273,9 @@ func (s *settlementApp) schedule() {
 //
 // Everything under /sim is this lab's, not Worldline's. It is how a test
 // says "a card payment happened" or "it is tomorrow morning now" without
-// waiting for a real clock. Kept under one prefix so the real-shaped
-// surface stays recognizable as the part you can point at a real host.
+// waiting for a real clock. It is served on the control port, apart from
+// the vendor's own (main.go, surfaces), so the real-shaped surface stays
+// recognizable as the part you can point at a real host.
 
 func (s *settlementApp) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sim/transactions", s.addTransactions)

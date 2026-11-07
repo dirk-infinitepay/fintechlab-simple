@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,9 +40,9 @@ var (
 	// A Go 1.22 mux pattern as a string literal: "POST /sim/outcome".
 	routeLiteral = regexp.MustCompile(`"((?:GET|POST|PUT|PATCH|DELETE|HEAD) /[^"]*)"`)
 	// internal/labswitch mounts GET and POST on the path it is given.
-	switchRoutes = regexp.MustCompile(`\.Routes\(mux,\s*"(/[^"]*)"\)`)
+	switchRoutes = regexp.MustCompile(`\.Routes\([\w.]+,\s*"(/[^"]*)"\)`)
 	// internal/simctl mounts the control contract every sim serves.
-	simctlMount  = regexp.MustCompile(`simctl\.Mount\(`)
+	simctlMount  = regexp.MustCompile(`simctl\.(Mount|NewControl)\(`)
 	simctlRoutes = []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"}
 	// The reference's route headings.
 	docHeading = regexp.MustCompile("(?m)^### `([A-Z]+ /[^`]*)`\\s*$")
@@ -207,6 +208,10 @@ func registeredRoutes(t *testing.T, dirs []string) map[string]bool {
 				for _, r := range simctlRoutes {
 					out[r] = true
 				}
+			}
+			if bytes.Contains(b, []byte("simctl.NewControl(")) {
+				// The control port's own health check.
+				out["GET /health"] = true
 			}
 		}
 	}

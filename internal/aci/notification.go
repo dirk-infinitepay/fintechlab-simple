@@ -8,7 +8,7 @@
 // (AciWebhookNotificationPayload). This lab models only the fields that
 // section 2 lists as in scope — ACI's real interface carries several more
 // risk/card sub-fields buddy's decoder tolerates via an index signature, but
-// this harness's own trigger (POST /internal/simulate-payment) never
+// this lab's own trigger (POST /sim/payments) never
 // produces them, so they are not modeled here.
 package aci
 
