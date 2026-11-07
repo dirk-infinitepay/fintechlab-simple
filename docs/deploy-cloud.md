@@ -217,6 +217,40 @@ front of `:8085` has to pass TCP through.
   after a redeploy or a stop, the platform subscribes again when it
   restarts.
 
+## A runner on your machine
+
+The cloud profile is for a deployed platform. A platform run from a laptop
+— a local runner that follows the lab's clock — can drive the cloud lab
+too, as it drives a local one:
+
+1. **The lab, with its clock.** `LAB_PROFILE=local` in `lab.env`, then
+   `make aws-deploy`. Moving time works again; set it back to the cloud
+   profile (and redeploy) before a deployed platform points at the lab.
+2. **Its callbacks.** The lab calls the platform back — Banking Circle's
+   webhooks, B4B's callbacks, the plugin card's buttons — and a laptop has
+   no address the lab can reach. `deploy/aws/lab.sh tunnel 3000 3114 3109`
+   (the platform's ports; leave it running) makes each one
+   `host.containers.internal:<port+10000>` inside the lab, over SSH within
+   an SSM session: no port opened, no third party. Those are the addresses
+   the platform registers, and the lab's webhook allowlists already accept
+   that host.
+3. **Its configuration.** Every vendor address becomes the lab's public
+   host; the keys come from the lab's *Connect your platform* files (the
+   `.env` from `make aws-env`, or `/v1/connect/files/…` into a keys
+   directory laid out like `keys/`); the lab itself is
+   `FINTECH_SIM_LAB_URL=http://<PublicHost>:8097` with the token from
+   `make aws-token`. Nothing reaches Banking Circle's bridge (`:8095`): the
+   platform asks its own Banking Circle app, as it does deployed.
+
+The platform's own callback addresses become
+`http://host.containers.internal:<port+10000>/…`; its card's `base_url`
+the same for its control port.
+
+**A callback through the tunnel arrives from loopback.** ssh hands it to
+`localhost`, so a platform that checks where a callback comes from (an IP
+allowlist on B4B's callback, say) sees `::1` or `127.0.0.1`, not the lab's
+address, and has to allow those for as long as it runs on the tunnel.
+
 ## Day to day
 
 | | |
@@ -226,6 +260,7 @@ front of `:8085` has to pass TCP through.
 | `ROTATE_TOKEN=true deploy/aws/lab.sh deploy` | a new lab API token; every caller holding the old one is refused |
 | `make aws-e2e` | the e2e suite inside the pod; `E2E_ONLY=a,b deploy/aws/lab.sh e2e` for some |
 | `make aws-token` | the lab API's token |
+| `deploy/aws/lab.sh tunnel <port>…` | this machine's ports, reachable from the lab as `host.containers.internal:<port+10000>`, until Ctrl-C |
 | `make aws-allow` / `make aws-allowed` | add your address to the allowlist / list it; `deploy/aws/lab.sh deny <cidr>` takes one off |
 | `make aws-status` | the stack's outputs, the host, the revision it runs, each container |
 | `deploy/aws/lab.sh logs banking-circle` | the last 200 lines (`LAB_TAIL`) of one container |

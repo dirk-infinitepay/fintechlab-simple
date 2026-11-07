@@ -13,6 +13,8 @@
 #   deploy/aws/lab.sh token      print the lab API's token (FINTECH_SIM_LAB_TOKEN)
 #   deploy/aws/lab.sh e2e        run the e2e suite inside the deployed pod
 #   deploy/aws/lab.sh console    forward the console to 127.0.0.1:8090 over SSM
+#   deploy/aws/lab.sh tunnel <port>...  this machine's ports, reachable from the lab
+#                                as host.containers.internal:<port+10000>
 #   deploy/aws/lab.sh shell      a root-capable shell on the host, over SSM
 #   deploy/aws/lab.sh logs <svc> the last lines of one container's log
 #   deploy/aws/lab.sh stop|start the host (state in memory goes with a stop)
@@ -301,8 +303,11 @@ cmd_deploy() {
   bucket="$(output ReleaseBucket)" vol="$(output DataVolumeId)"
   sans="IP:$ip"
 
-  say "building the cloud bundle for $host"
-  make --no-print-directory cloud-bundle LAB_PROFILE=cloud \
+  # cloud (no lab clock) unless lab.env asks for local: a lab driven by a
+  # runner that follows its clock (docs/deploy-cloud.md, A runner on your
+  # machine).
+  say "building the ${LAB_PROFILE:-cloud} bundle for $host"
+  make --no-print-directory cloud-bundle LAB_PROFILE="${LAB_PROFILE:-cloud}" \
     LAB_PUBLIC_HOST="$host" LAB_SANS="$sans" \
     LAB_WEBHOOK_ALLOW="${LAB_WEBHOOK_ALLOW:-}" LAB_SET="${LAB_SET:-}"
   rev="$(head -1 dist/cloud/REVISION | cut -d' ' -f1)"
@@ -411,6 +416,54 @@ cmd_console() {
     --parameters "portNumber=8090,localPortNumber=$port"
 }
 
+# tunnel <port>...: a platform on this machine, called back by the lab. Each
+# local port becomes host.containers.internal:<port+10000> inside the lab --
+# a host the lab's webhook allowlists already name -- through SSH inside an
+# SSM session: no port opened, no third party. A throwaway key per
+# connection (EC2 Instance Connect, valid a minute), and a new connection
+# whenever one drops, until Ctrl-C.
+cmd_tunnel() {
+  [ $# -gt 0 ] || die "which ports? e.g. lab.sh tunnel 3000 3114 3109"
+  need_stack
+  command -v session-manager-plugin >/dev/null || die "needs the AWS Session Manager plugin"
+  local id dir p fwd=() map=()
+  id="$(output InstanceId)"
+  for p in "$@"; do
+    [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1 ] && [ "$p" -le 55535 ] || die "$p is not a port"
+    fwd+=(-R "0.0.0.0:$((p + 10000)):localhost:$p")
+    map+=("localhost:$p <- host.containers.internal:$((p + 10000))")
+  done
+  wait_ssm "$id"
+  # The pod reaches its host on the pod network's gateway, not on the
+  # host's loopback, so a forward has to listen beyond it (GatewayPorts);
+  # the security group keeps those ports inside the host. A session that
+  # dies quietly frees its ports within a minute and a half (ClientAlive).
+  run_remote "$id" "fintechlab tunnel: sshd" "set -e
+f=/etc/ssh/sshd_config.d/fintechlab-tunnel.conf
+if [ ! -f \$f ]; then
+  printf 'GatewayPorts clientspecified\nClientAliveInterval 30\nClientAliveCountMax 3\n' > \$f
+  systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true
+fi" >/dev/null
+  dir="$(mktemp -d)"
+  trap 'rm -rf "$dir"' EXIT
+  ssh-keygen -q -t ed25519 -N '' -C fintechlab-tunnel -f "$dir/key"
+  printf '%s\n' "${map[@]}" | sed 's/^/  /'
+  while :; do
+    aws ec2-instance-connect send-ssh-public-key --instance-id "$id" --instance-os-user ubuntu \
+      --ssh-public-key "file://$dir/key.pub" >/dev/null
+    # The transport is the SSM session, authenticated by AWS; the host key
+    # is taken on first use, per run.
+    ssh -F /dev/null -N -i "$dir/key" -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$dir/known_hosts" \
+      -o ProxyCommand="aws ssm start-session --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p" \
+      "${fwd[@]}" "ubuntu@$id" || true
+    [ "${LAB_TUNNEL_ONCE:-}" = 1 ] && break
+    say "tunnel closed at $(date -u +%H:%M:%SZ); again in 5s (Ctrl-C to stop)"
+    sleep 5
+  done
+}
+
 cmd_shell() {
   need_stack
   command -v session-manager-plugin >/dev/null || die "needs the AWS Session Manager plugin"
@@ -480,6 +533,7 @@ case "$cmd" in
   allowed) cmd_allowed ;;
   e2e) cmd_e2e ;;
   console) cmd_console ;;
+  tunnel) cmd_tunnel "$@" ;;
   shell) cmd_shell ;;
   logs) cmd_logs "$@" ;;
   stop) cmd_stop ;;
