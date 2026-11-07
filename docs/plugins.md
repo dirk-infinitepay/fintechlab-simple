@@ -373,6 +373,8 @@ Anyone who can reach it — or the console, which forwards to it — can
 register a plugin, and the lab API will then call that plugin's
 `base_url` — only on the declared paths, only with the methods above.
 `LAB_API_TOKEN` on the lab API makes it ask every caller for a bearer
-token; the console adds the token for whoever reaches the console, so
-that is the address to keep private. Run the lab where only the people using it can reach it
+token (`LAB_API_TOKEN=… make up`, or `make pod-up`); the console adds the
+token for whoever reaches the console, so that is the address to keep
+private. A platform registering through the console, as the runner does,
+needs no token of its own. Run the lab where only the people using it can reach it
 ([deploy-pod.md](deploy-pod.md)).

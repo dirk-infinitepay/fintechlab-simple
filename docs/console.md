@@ -705,6 +705,10 @@ The console takes two variables:
 | `LAB_API_URL` | `http://127.0.0.1:8097` | the lab API it forwards `/v1` (and the old `/api`) to |
 | `LAB_API_TOKEN` | unset | when the lab API asks for a token, the console adds it to everything it forwards |
 
+Compose and the pod give the console and the lab API the same
+`LAB_API_TOKEN`: from the host's environment (`LAB_API_TOKEN=… make up`),
+or from a ConfigMap in the pod ([deploy-pod.md](deploy-pod.md#asking-for-a-token)).
+
 Everything else is the lab API's. The names keep their `CONSOLE_` prefix
 from when the console's server did this work, so an existing setup keeps
 working:

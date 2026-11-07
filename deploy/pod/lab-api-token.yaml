@@ -1,0 +1,16 @@
+# Pass this to a play to have the lab API ask every caller (but GET
+# /health) for `Authorization: Bearer <token>`. Put a token in first:
+#
+#   podman kube play --replace --configmap lab-api-token.yaml fintechlab.yaml
+#   make pod-up LAB_API_TOKEN=…                     # the same, from a checkout
+#
+# It applies to that play: a play without it runs an open lab API. The
+# console gets the same token and adds it to what it forwards, so its page
+# needs none -- and whoever reaches :8090 drives the lab. Agents, scripts
+# and the e2e suite send it themselves (LAB_API_TOKEN).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fintechlab-lab-api-token
+data:
+  lab-api-token: ""

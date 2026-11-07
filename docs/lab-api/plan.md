@@ -81,7 +81,9 @@ could do it for every sim.
 the lab API alone (`LAB_API_URL`, `LAB_API_TOKEN`) and plays the platform
 on the vendor surfaces; it calls no old `/sim` path, no control port and
 no `/internal/*`, so nothing in it stands in phase 4's way. The control
-ports stay unpublished ([OPEN 2](open.md), decided).
+ports stay unpublished ([OPEN 2](open.md), decided). Compose and the pod
+hand `LAB_API_TOKEN` to `lab-api` and `console` alike: from the host's
+environment, and in the pod from an optional ConfigMap given at play time.
 
 Shared packages, generic infra like `internal/activity`:
 

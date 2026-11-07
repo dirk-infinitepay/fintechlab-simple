@@ -171,7 +171,7 @@ up: certs sftp-dirs key-dirs console-dir b4b-dir
 	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088  clock :8096"
 	@echo ""
 	@echo "control panel: http://127.0.0.1:8090   (make console)"
-	@echo "lab API:       http://127.0.0.1:8097/v1 (docs/api/lab-api.md)"
+	@echo "lab API:       http://127.0.0.1:8097/v1 (docs/api/lab-api.md)$(if $(LAB_API_TOKEN), -- asks for LAB_API_TOKEN)"
 	@echo "next: make demo-payment  (or: make e2e)"
 
 
@@ -263,11 +263,21 @@ pod-images:
 REGENERATE_KEYS ?= false
 POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml)
 
+# LAB_API_TOKEN=… has the lab API ask every caller for it, as under compose.
+# The pod reads it from the ConfigMap deploy/pod/lab-api-token.yaml
+# defines; pod-up appends one, holding the token, to the manifest it pipes
+# to the play, so the token is never written to a file. YAML single quotes:
+# a ' in the token doubles.
+POD_TOKEN_CONFIGMAP = if [ -n "$$LAB_API_TOKEN" ]; then \
+	printf '%s\n' '---' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: fintechlab-lab-api-token' 'data:'; \
+	printf "  lab-api-token: '%s'\n" "$$(printf '%s' "$$LAB_API_TOKEN" | sed "s/'/''/g")"; \
+	fi
+
 pod-up:
-	$(POD_RENDER) | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
+	@{ $(POD_RENDER); $(POD_TOKEN_CONFIGMAP); } | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
 	@echo ""
 	@echo "lab is up as pod 'fintechlab'. control panel: http://127.0.0.1:8090"
-	@echo "lab API: http://127.0.0.1:8097/v1"
+	@echo "lab API: http://127.0.0.1:8097/v1$(if $(LAB_API_TOKEN), (asks for LAB_API_TOKEN))"
 	@echo "platform env + keys: Configuration -> Connect your platform"
 
 # Keeps the volumes, keys included. New keys are `make pod-up
@@ -278,12 +288,13 @@ pod-down:
 # Everything a machine without this checkout needs, in dist/:
 #   podman load -i fintechlab-$(LAB_VERSION)-images.tar
 #   podman kube play --replace fintechlab-$(LAB_VERSION).yaml
-#   (add --configmap regenerate-keys.yaml to issue new keys)
+#   (add --configmap regenerate-keys.yaml to issue new keys, and
+#    --configmap lab-api-token.yaml, with a token in it, to ask for one)
 pod-bundle: pod-images
 	@mkdir -p dist
 	podman save -m -o dist/fintechlab-$(LAB_VERSION)-images.tar $(foreach s,$(POD_SERVICES),$(IMAGE_PREFIX)/$(s):$(LAB_VERSION))
 	@$(POD_RENDER) > dist/fintechlab-$(LAB_VERSION).yaml
-	@cp deploy/pod/regenerate-keys.yaml dist/
+	@cp deploy/pod/regenerate-keys.yaml deploy/pod/lab-api-token.yaml dist/
 	@echo "dist/fintechlab-$(LAB_VERSION)-images.tar + dist/fintechlab-$(LAB_VERSION).yaml -- see docs/deploy-pod.md"
 
 e2e:

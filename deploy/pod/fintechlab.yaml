@@ -424,6 +424,17 @@ spec:
       env:
         - name: LISTEN
           value: ":8097"
+        # Asked of every caller but GET /health when set. Not set here: it
+        # comes from a ConfigMap passed at play time, so the default is an
+        # open lab and asking for a token is a flag, not an edit --
+        #   podman kube play --replace --configmap lab-api-token.yaml fintechlab.yaml
+        # (make pod-up LAB_API_TOKEN=… does the same).
+        - name: LAB_API_TOKEN
+          valueFrom:
+            configMapKeyRef:
+              name: fintechlab-lab-api-token
+              key: lab-api-token
+              optional: true
         - name: CONSOLE_URL_WORLDLINE
           value: "http://worldline:8084"
         - name: CONSOLE_URL_B4B
@@ -474,6 +485,13 @@ spec:
           value: ":8090"
         - name: LAB_API_URL
           value: "http://lab-api:8097"
+        # The same token, added to everything the console forwards.
+        - name: LAB_API_TOKEN
+          valueFrom:
+            configMapKeyRef:
+              name: fintechlab-lab-api-token
+              key: lab-api-token
+              optional: true
   volumes:
     - name: keys
       persistentVolumeClaim:

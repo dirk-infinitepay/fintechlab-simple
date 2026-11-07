@@ -99,6 +99,32 @@ not on a pod restart, so the new keys are not quietly replaced again the
 next time the machine reboots. Every copy of the old keys a platform holds
 stops working: download its `.env` again.
 
+## Asking for a token
+
+The lab API is open by default. Give the play a token and it asks every
+caller but `GET /health` for `Authorization: Bearer <token>`:
+
+```sh
+make pod-up LAB_API_TOKEN=$(openssl rand -hex 32)   # from a checkout
+podman kube play --replace --configmap lab-api-token.yaml fintechlab-v1.yaml
+```
+
+`lab-api-token.yaml` (in `deploy/pod/`, and copied into `dist/` by
+`make pod-bundle`) is the ConfigMap the lab API and the console read
+`LAB_API_TOKEN` from. It ships empty — an open lab — so put the token in
+before playing it. `make pod-up` writes no file: it appends that ConfigMap,
+with the token, to the manifest it pipes to the play. A token with a `$` in
+it goes through the environment (`LAB_API_TOKEN=… make pod-up`), not the
+make command line, where make would expand it.
+
+Like the keys flag, it applies to that play: a play without it runs an open
+lab API. Agents, scripts and the e2e suite send the token themselves
+(`LAB_API_TOKEN` in their environment). The console adds it to everything
+it forwards, so its page needs none — which means `:8090` is as open as
+ever: keep it on a network you trust, or in front of it put an auth proxy
+([lab-api/open.md](lab-api/open.md), question 4). A platform registers
+through the console and follows the clock directly, so it needs no token.
+
 ## How it differs from compose, and why it does not matter
 
 - **One network namespace.** Every container is on the pod's loopback. The
@@ -134,9 +160,11 @@ stops working: download its `.env` again.
   (cloudflared, ngrok, pinggy). A platform deployed where its clock cannot
   move registers with `"clock": "wall"`, and the console then keeps the lab
   on the real time.
-- **No authentication.** Anyone who can reach `:8090` can drive the lab and
-  download its keys. Every one of them is fake, which is the only reason
-  that is acceptable — keep it on a network you trust.
+- **Authentication is one token, on the lab API.** With one set
+  ([Asking for a token](#asking-for-a-token)), `:8097` refuses a caller
+  without it. `:8090` does not: anyone who can reach the console can drive
+  the lab and download its keys. Every one of them is fake, which is the
+  only reason that is acceptable — keep it on a network you trust.
 
 ## The one podman quirk
 

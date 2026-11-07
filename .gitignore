@@ -71,3 +71,6 @@ coverage.out
 
 
 .claude
+
+# compose reads .env from here; a LAB_API_TOKEN put in one stays out of git.
+/.env

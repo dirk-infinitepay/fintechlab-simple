@@ -488,6 +488,10 @@ services:
       - "8097:8097"
     environment:
       LISTEN: ":8097"
+      # Asked of every caller but GET /health when set (docs/api/README.md),
+      # taken from the host: `LAB_API_TOKEN=… make up`. Empty, the lab API
+      # is open, as a local lab usually is.
+      LAB_API_TOKEN: ${LAB_API_TOKEN:-}
       # Reached over the compose network by service name. The lab API steers
       # each one on its control port -- this URL's port plus 1000, plain
       # HTTP, no vendor login (internal/simctl) -- and holds no vendor
@@ -544,6 +548,9 @@ services:
     environment:
       LISTEN: ":8090"
       LAB_API_URL: http://lab-api:8097
+      # The same token: the console adds it to everything it forwards, so
+      # the page needs none -- and whoever reaches :8090 drives the lab.
+      LAB_API_TOKEN: ${LAB_API_TOKEN:-}
     depends_on:
       lab-api:
         condition: service_started

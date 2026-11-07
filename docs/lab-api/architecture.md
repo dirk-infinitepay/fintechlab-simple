@@ -204,8 +204,12 @@ then carries UI assets. See [OPEN 3](open.md).
 | `console` → `lab-api` | the console adds `LAB_API_TOKEN` to what it forwards |
 
 Unset is the local default, so `make up` stays one command. A lab deployed
-somewhere reachable sets both. How a person's browser gets through to the
-console of a deployed lab is [OPEN 4](open.md).
+somewhere reachable sets it, and `lab-api` and `console` get the same one:
+compose takes it from the host (`LAB_API_TOKEN=… make up`), the pod from
+an optional ConfigMap at play time (`make pod-up LAB_API_TOKEN=…`, or
+`--configmap lab-api-token.yaml`; [deploy-pod.md](../deploy-pod.md#asking-for-a-token)).
+`deploy/pod/manifest_test.go` holds the two to that. How a person's browser
+gets through to the console of a deployed lab is [OPEN 4](open.md).
 
 ## 9. Deploying the lab elsewhere: what this does not solve
 

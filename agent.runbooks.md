@@ -47,6 +47,20 @@ make up       # rebuild images and recreate the whole lab — after any code cha
 make start    # restart from the images already built
 ```
 
+- **A token, when the lab should ask for one.** `make up`, `make start` and
+  `make pod-up` hand `LAB_API_TOKEN` from your environment to the lab API
+  and the console; a later one without it opens the lab again. Then every
+  call to `:8097` but `GET /health` carries it — `make e2e` reads it from
+  the environment, curl needs the header:
+
+  ```sh
+  export LAB_API_TOKEN=$(openssl rand -hex 32)
+  make up
+  curl -s -H "Authorization: Bearer $LAB_API_TOKEN" localhost:8097/v1/services
+  ```
+
+  The console (`:8090`) adds it for its page and for a platform
+  registering through it, so neither needs it.
 - **Rebuild the whole lab, not one vendor.** Recreating only banking-circle
   leaves b4b's bridge pointing at its old address and payouts time out. Use
   `make up` / `make start`.

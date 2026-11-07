@@ -40,7 +40,11 @@ What the lab API is still to gain is in
 [docs/lab-api/plan.md](../lab-api/plan.md).
 
 **Where authentication is.** Between a person, an agent or the console and
-the lab API: `LAB_API_TOKEN`, a bearer token, when set. Between your
+the lab API: `LAB_API_TOKEN`, a bearer token, when set — on the lab API and
+the console alike, from the host's environment under compose
+(`LAB_API_TOKEN=… make up`) and from a ConfigMap in the pod
+([deploy-pod.md](../deploy-pod.md#asking-for-a-token)). Unset, the lab API
+is open. Between your
 platform and a vendor simulation: that vendor's own login, as with the real
 vendor. Between the lab API and a simulation's control port: none — the
 control port is trusted by where it is. Compose does not publish it, so
