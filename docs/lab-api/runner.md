@@ -20,7 +20,11 @@ activity logs. This is what changes in it. The contract it implements,
 
 ## 2. One address and a token
 
-**[PROPOSED]**
+**[DECIDED 2026-11-07, built]** As below. `clock_url` stays as an override
+that names the clock to follow (the clock service itself, for a lab
+without the lab API), and the token also falls back to the lab's own
+`LAB_API_TOKEN`, so a shell that started the lab with one can start the
+platform too.
 
 | `fintechlab.json` | Environment | Default | Replaces |
 | --- | --- | --- | --- |
@@ -52,7 +56,11 @@ reset means is the platform's decision.
 
 ## 4. A client for tests and agents
 
-**[PROPOSED]**
+**[PROPOSED]** A first slice is built: `LabClient` with `request`, `get`,
+`post`, `sim(service, path)` (the passthrough) and `reset`, plain `fetch`,
+answers returned with their status. buddy's runner lands its wires and
+runs Worldline's lab day through it. The typed routes, `clock`, `traps` and
+`waitFor` below are still to come.
 
 `LabClient`: a typed `/v1` client, so a platform's tests call the lab
 without hand-writing URLs.
@@ -84,7 +92,11 @@ const lines = await lab.logs({ services: ['banking-circle'], q: trap.id });
 
 ## 5. Compatibility
 
-**[PROPOSED]**
+**[DECIDED 2026-11-07]** No automatic fallback. A runner that has not been
+updated keeps working against a new lab through the console's `/api/*`
+proxy and the clock's own `GET /clock`. An updated runner pointed at an old
+lab is told so explicitly: `clock_url` and `new LabPlugin({ consoleUrl })`.
+What was proposed:
 
 - While the console's `/api/*` proxy exists
   ([phase 4](plan.md#phase-4--retire-the-aliases)), a runner that has not

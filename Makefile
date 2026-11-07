@@ -261,7 +261,12 @@ pod-images:
 # the init container discards the keys volume's contents and the pod starts
 # on a new PKI and new keypairs.
 REGENERATE_KEYS ?= false
-POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml)
+# POD_NETWORK=slirp4netns plays the pod without a bridge network: for a host
+# where podman's bridge fails with "netavark: create veth pair: Operation
+# not supported" (the veth kernel module is not loaded; `sudo modprobe veth`
+# fixes that for good). docs/deploy-pod.md, The podman quirks.
+POD_NETWORK ?=
+POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml) $(if $(POD_NETWORK),--network=$(POD_NETWORK))
 
 # LAB_API_TOKEN=… has the lab API ask every caller for it, as under compose.
 # The pod reads it from the ConfigMap deploy/pod/lab-api-token.yaml

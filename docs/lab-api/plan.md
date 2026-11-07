@@ -145,6 +145,9 @@ them fire.
   on activity rows go into [design-system.md](../design-system.md) first.
 - The runner: `lab_url`, the token, `LabClient`, and `reset_path` /
   `logs_path` if [OPEN 11](open.md) says yes ([runner.md](runner.md)).
+  *Built 2026-11-07:* `lab_url`, the token and a first `LabClient`; buddy's
+  runner registers, follows the clock and lands its wires through the lab
+  API. Phase 4's precondition below is met.
 - The clock's long poll (`GET /clock?wait=`), if a second of lag is shown
   to matter.
 

@@ -7,10 +7,13 @@ against the lab. The design docs say *why*; this says *how*.
 The platform under test is **buddy** (the Infinite monorepo), run locally by
 its `infinite-local-runner` on the host. The lab is this repo, in containers.
 The lab knows no platform by name: the runner **registers itself** with the
-lab as a plugin (docs/plugins.md; it posts to the console's address, which
-forwards to the lab API) and **follows the lab's clock**.
+lab as a plugin (docs/plugins.md), **follows the lab's clock**, and asks the
+lab for what only the lab does (a wire on the safeguarding account,
+Worldline's cycle) — all on the lab API, `:8097`, with the lab's token when
+it has one.
 Paths below: `~/gh/fintechlab-simple` (this repo) and
-`~/infinite/buddy/infinite-local-runner` (the runner) — adjust to your
+`~/infinite/buddy/infinite-local-runner` (the runner; any buddy checkout,
+`~/infinite/lightyear/infinite-local-runner` say) — adjust to your
 checkout.
 
 ## What listens where
@@ -91,7 +94,8 @@ stand-ins on registration, `cp fintechlab.example.json fintechlab.json`.
 # start (long-running: background it, output to a file). apps/banking-circle
 # reads the lab's mTLS certificate from FINTECH_SIM_LAB, default
 # ~/gh/fintechlab-simple/keys; export it only if the lab's LAB_KEYS_DIR differs.
-# FINTECH_SIM_LAB_CONSOLE_URL / FINTECH_SIM_LAB_CLOCK_URL default to this host.
+# FINTECH_SIM_LAB_URL defaults to this host's lab API; a lab started with a
+# token wants FINTECH_SIM_LAB_TOKEN, or the same LAB_API_TOKEN exported here.
 node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
 # stop: SIGINT the up.ts process, it takes its children with it
 kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts$')"

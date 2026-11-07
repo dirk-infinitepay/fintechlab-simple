@@ -166,7 +166,23 @@ through the console and follows the clock directly, so it needs no token.
   the lab and download its keys. Every one of them is fake, which is the
   only reason that is acceptable — keep it on a network you trust.
 
-## The one podman quirk
+## The podman quirks
+
+**A bridge podman cannot make.** `make pod-up` failing with
+`netavark: create veth pair: Netlink error: Operation not supported` means
+the host's `veth` kernel module is not loaded, and rootless podman cannot
+load it — common after a kernel update without a reboot. Either load it
+once (`sudo modprobe veth`), or play the pod without a bridge:
+
+```sh
+make pod-up POD_NETWORK=slirp4netns
+podman kube play --replace --network slirp4netns fintechlab-v1.yaml
+```
+
+The containers share one network namespace either way, so the lab behaves
+the same; only the published ports are forwarded differently.
+
+**Where the play runs.**
 
 `kube play` looks in its working directory for a directory named like each
 image, to build it from — and podman 4.9 does so even with `--build=false`.

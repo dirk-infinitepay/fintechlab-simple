@@ -19,7 +19,7 @@ Two things a platform does with the lab, both outbound from the platform:
 | | Call | Why |
 | --- | --- | --- |
 | Register | `POST {lab}/v1/plugins`, renewed every `renew_seconds` | its card, buttons and diagram |
-| Follow the clock | `GET {clock}/clock`, every second | its business dates agree with the vendors' |
+| Follow the clock | `GET {lab}/v1/clock`, every second | its business dates agree with the vendors' |
 
 Neither needs the lab to reach the platform first, so both work from a
 laptop to a lab on another machine. What does need the lab to reach the
@@ -28,10 +28,12 @@ which the lab API calls at the `base_url` the plugin gave (see *Reaching the
 platform*).
 
 `{lab}` is the lab API, `http://127.0.0.1:8097` from the host
-([api/lab-api.md](api/lab-api.md#plugins)). Every route below also answers
-at the console's old path, `{console}/api/plugins…` on `:8090`, which the
-console forwards to the lab API: a runner that knows only the console's
-address keeps working, until phase 4 of
+([api/lab-api.md](api/lab-api.md#plugins)): one address, and, when the lab
+asks for one, one token (`Authorization: Bearer …`). Every route below also
+answers at the console's old path, `{console}/api/plugins…` on `:8090`,
+which the console forwards to the lab API with the token added, and the
+clock service still answers `GET /clock` on `:8096`: a runner that knows
+only those addresses keeps working, until phase 4 of
 [the lab API plan](lab-api/plan.md) retires the old paths.
 
 ## Register
@@ -312,7 +314,8 @@ The lab owns one business clock: the `clock` service, `:8096`. Every
 vendor follows its offset, so a payout booked "on Monday" by the platform
 books on Monday at the bank.
 
-- **`"clock": "follows"`** — the platform polls `GET /clock` and applies
+- **`"clock": "follows"`** — the platform polls `GET {lab}/v1/clock` (the
+  clock service's `GET /clock`, through the lab API) and applies
   `offset_ms` (always whole milliseconds, so `Date.now()` plus it is still
   an integer) to its own business time (buddy's runner writes it to the
   file its clock shim, `@fintechlab/runner/clock-shim`, watches). Only the offset changes hands, so a
@@ -325,15 +328,15 @@ A platform that must not have the clock moved under it — a settlement run
 in flight — **holds** it:
 
 ```http
-POST /clock/holds   {"holder": "infinite-local-runner", "reason": "settlement in flight: EUR …", "ttl_seconds": 900}
-DELETE /clock/holds/infinite-local-runner
+POST {lab}/v1/clock/holds   {"holder": "infinite-local-runner", "reason": "settlement in flight: EUR …", "ttl_seconds": 900}
+DELETE {lab}/v1/clock/holds/infinite-local-runner
 ```
 
 Moves are refused with `409` and the holder's reason until it is released
 or the hold lapses (at most an hour), so a platform killed mid-run cannot
 freeze the lab.
 
-`GET /clock`:
+`GET {lab}/v1/clock`:
 
 ```json
 {"offset_ms": -225000000, "offset_hours": -62.5, "now": "2026-09-25T09:00:00Z",
@@ -355,13 +358,12 @@ runner:
 
 | Who dials | Variable (runner) | Default |
 | --- | --- | --- |
-| the platform → the lab API | `FINTECH_SIM_LAB_CONSOLE_URL` (the console's address works: it forwards) | `http://127.0.0.1:8090` |
-| the platform → the clock | `FINTECH_SIM_LAB_CLOCK_URL` | `http://127.0.0.1:8096/clock` |
+| the platform → the lab API: registration, the clock, lab hooks | `FINTECH_SIM_LAB_URL`, and `FINTECH_SIM_LAB_TOKEN` (or `LAB_API_TOKEN`) when the lab asks for one | `http://127.0.0.1:8097` |
 | the lab API → the platform | `RUNNER_ADVERTISED_URL` → `base_url` | `http://host.containers.internal:3109` |
 | a browser → the platform | `RUNNER_BROWSE_URL` → `browse_url` | `http://127.0.0.1:3109` |
 
 `host.containers.internal` is how the containerised lab API reaches the
-host. With the lab on another machine, the first two point at that machine
+host. With the lab on another machine, the first points at that machine
 and `base_url` must be an address it can reach — a tunnel (cloudflared,
 ngrok, pinggy) to the platform's control port does it. Registration and
 the clock need no tunnel; only the card's live parts do.
