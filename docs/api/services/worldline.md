@@ -82,8 +82,8 @@ permissions, so a client can delete a settlement file.
 | `disputes/download/` | Nothing: created at start, never written | — |
 
 `download/` and `to_WLNORDIC/` are the two real path conventions for the
-same content. The server never deletes from either, so a client keeps
-track of what it has already taken.
+same content. The server never deletes from either, except on a lab reset
+(`POST /sim/reset`), so a client keeps track of what it has already taken.
 
 **Settlement files.** Named
 `{YYYYMMDDHHMMSS}_{identifier}_{ER|AR}_{CCY}.csv.pgp`, for example
@@ -133,7 +133,8 @@ always boards to the same MIDs. A submerchant with no `pf_account_id` is
 left out. Lab leniency: a batch that is plain XML (not encrypted) is
 accepted. A batch that does not decrypt or parse, including one signed by
 a key the lab does not hold, gets no receipt; it is logged and counted as
-answered so it is not retried. A batch is answered once per process.
+answered so it is not retried. A batch is answered once per process, or
+again after a reset of everything.
 
 ### `POST /inbound/onboarding/{merchant_id}`
 
@@ -236,10 +237,88 @@ SFTP listener is not checked.
 
 ### `GET /sim/activity`
 
-The `sftp` activity log described under *At a glance*.
+The `sftp` activity log described under *At a glance*. A reset clears it.
 
 - Query: `limit` (default 100; the ring keeps 256).
 - Answers `200` `{"logs": [{"name": "sftp", "title": "File exchange", "note": "…", "total": 9, "kept": 9, "last": {…}, "events": [{"seq": 9, "at": "2026-09-25T09:00:04Z", "op": "sftp.download", "peer": "10.89.0.7", "summary": "infinitepay collected 20260925083412_Worldline_Settlement_ER_EUR.csv.pgp", "status": "ok", "detail": {"user": "infinitepay", "path": "/download/20260925083412_Worldline_Settlement_ER_EUR.csv.pgp"}}]}]}`.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "worldline"`, `"kind": "vendor"`,
+`"vendor_listeners": [":8084", ":2222"]`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): each slot
+planned and run, each lump sum, each enrolment batch answered, and every
+HTTP request.
+
+### `POST /sim/reset`
+
+Puts the acquirer back to a known state. Synchronous; the body is optional
+(`flow`).
+
+- **`flow`** clears what a run makes: acquired transactions, whose ids
+  start again at `wltxn_000001` (`transactions`); the cycle-run history
+  (`cycle_runs`) and the lump sums in it (`lump_sums`; the wires are not
+  recalled, Banking Circle's own reset clears them); the settlement files
+  the cycle published (`settlement_files`); the reports the download route
+  archived (`archived_reports`); armed enrolment rejections
+  (`enrolment_rejections`); and the `sftp` activity log (`activity`). It
+  keeps what a platform set up once: the enrolment receipts and the desk's
+  record of the batches it answered (the MIDs it issued), and the SFT
+  channel's configuration.
+- **`all`** also forgets which batches were answered (`answered_batches`),
+  deletes the receipts (`enrolment_receipts`), rewrites the channel
+  configuration to its seed when it differs (`channel_config`, `1` or `0`)
+  and recreates the SFTP and channel folders. The platform's batches stay
+  in `to_WLNORDIC/`, so the desk answers them again on its next sweep,
+  with the same MIDs.
+- **Keeps**, either way, the platform's own files: its enrolment batches,
+  its inbound documents and correction files, and the PGP and host keys.
+
+```json
+{"service": "worldline", "scope": "flow",
+ "cleared": {"transactions": 2, "cycle_runs": 1, "lump_sums": 1, "settlement_files": 2,
+             "archived_reports": 0, "enrolment_rejections": 0, "activity": 9},
+ "kept": ["enrolment_receipts", "channel_config", "inbound_uploads"], "at": "2026-11-07T12:00:00Z"}
+```
+
+`kept` is `["enrolment_batches", "inbound_uploads", "keys"]` on `all`.
+
+**Files.** The SFTP root and `./sftp` are shared with the platform and the
+host, so a reset deletes only a regular file it can prove it wrote, by its
+name in the folder it writes it to. Never a folder, a symlink, or anything
+else:
+
+- `{WORLDLINE_SFTP_ROOT}/download/` and `{WORLDLINE_SFTP_ROOT}/to_WLNORDIC/`:
+  `{14 digits}_{WORLDLINE_SETTLEMENT_IDENTIFIER}_{ER|AR}_{CCY}.csv.pgp`; in
+  `fixture` mode also `{fixture name}.pgp` for each fixture the cycle
+  serves; and any name the run history says was published.
+- `{SFTP_BASE_DIR}/archive/{YYYY}/{MM}/`:
+  `{merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}`, the WX reports the
+  download route archived. A file of another name there (a financial
+  report put in `outbound/` by hand, then downloaded) is left.
+- On `all`, `{WORLDLINE_SFTP_ROOT}/from_WLNORDIC/`:
+  `INFINITEENROLL_{NN}.{YYYYMMDD}.ack.pgp` and its `.partial`.
+
+It leaves the platform's enrolment batches, the inbound documents and
+correction files, the WX reports in `outbound/` (the settlement
+stand-in's; its own reset deletes them), the fixtures and the keys.
+
+**Work in flight** is dropped, not raced: a slot that is cutting and
+publishing, the lump-sum wire and the desk answering a batch each stop at
+their next step after the reset, so no file is published, no wire sent, no
+receipt written and no run recorded after it. A wire already on its way
+when the reset arrives is waited for, so it lands before the reset, and
+Banking Circle's own reset clears the payment. The schedule keeps running:
+the next slot fires as it would have.
+
+`500` with the reason when a file cannot be deleted; everything else is
+still done, and a second reset finishes the job.
 
 ### `POST /sim/transactions`
 
@@ -262,8 +341,8 @@ Seeds card transactions the acquirer has acquired.
   currency upper-cased. `400` `{"error": "mid is required", "status": 400}`
   (or the failing rule) for an invalid transaction. Transactions earlier in
   the array than the invalid one are already stored.
-- Side effects: in memory only; a restart forgets them. Nothing is settled
-  until a slot runs.
+- Side effects: in memory only; a restart or a reset forgets them. Nothing
+  is settled until a slot runs.
 
 ### `GET /sim/transactions`
 
@@ -296,8 +375,9 @@ Runs one slot now, exactly as the schedule would.
 
   `files`, `lump_sums` and `published` are `null` when empty; with no
   transactions on the day there is no file. `207` with the same body plus
-  `"errors": ["…"]` when the cut or a publish failed. `400` for an unknown
-  `slot` or a malformed `date`.
+  `"errors": ["…"]` when the cut or a publish failed, or a reset landed
+  while it ran (the rest of the run is dropped and it is not kept in the
+  history). `400` for an unknown `slot` or a malformed `date`.
 - Side effects: publishes each file to `download/` and `to_WLNORDIC/`.
   Morning slot only: for each currency with a positive total, posts
   `{"currency": "EUR", "amount": "150.00", "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24"}`
@@ -342,9 +422,9 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
 - Answers `200` `{"pf_account_id": "pf-1002", "reason_code": "09", "reason": "Invalid or not permitted MCC"}`.
   `400` when `pf_account_id` is empty, the code is not one of the thirteen,
   or the body is not JSON.
-- Side effects: the rejection is never cleared. It applies to every later
-  batch naming that `pf_account_id` until the process restarts, not only
-  the next one. It cannot change a receipt already written.
+- Side effects: the rejection applies to every later batch naming that
+  `pf_account_id` until a reset or a restart, not only the next one. It
+  cannot change a receipt already written.
 
 ## Called by
 
@@ -360,7 +440,10 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
   enrolment batches to `to_WLNORDIC/` and collects receipts from
   `from_WLNORDIC/`.
 - **The lab API** (`cmd/labapi`): `GET /health` (its health monitor, behind
-  `GET /v1/lab` and `POST /v1/services/{id}/probe`); `GET /sim/activity`
+  `GET /v1/lab` and `POST /v1/services/{id}/probe`); `POST /sim/reset`
+  (`POST /v1/lab/reset`, first in the order, and
+  `POST /v1/services/{id}/reset`); `GET /sim/logs` (`GET /v1/logs`,
+  `GET /v1/services/{id}/logs`); `GET /sim/activity`
   (`GET /v1/services/{id}/activity`, `GET /v1/flow`,
   `GET /v1/flow/hops/{id}`); `POST /sim/transactions`
   (`POST /v1/merchants/{id}/trading`, `POST /v1/merchants/batches/{id}/trading`);

@@ -28,10 +28,9 @@ the lab can be reached only through it, and every route has a service
 endpoint behind it or is the lab API's own state (the merchant registry and
 the plugin registrations).
 
-What the lab API is still to gain — a reset of the whole lab, every
-service's log lines, traps that make a vendor answer a future request the
-way a test needs, and a control port per service — is the rest of phase 1
-in [docs/lab-api/plan.md](../lab-api/plan.md).
+What the lab API is still to gain — traps that make a vendor answer a
+future request the way a test needs, and a control port per service — is
+the rest of phase 1 in [docs/lab-api/plan.md](../lab-api/plan.md).
 
 ## Who calls what
 
@@ -79,6 +78,78 @@ in [docs/lab-api/plan.md](../lab-api/plan.md).
 The swap rule follows from the table: pointing a platform at the real
 vendor replaces the vendor surface. Nothing the platform calls may be
 `/internal/*` or `/sim/*`.
+
+## The control contract
+
+Three `/sim` routes every service answers the same way
+(`internal/simctl`, designed in
+[lab-api/sim-control.md](../lab-api/sim-control.md)). Each service's
+reference says what its reset clears; the shapes are here.
+
+**`GET /sim/info`** — who this is and what it can do:
+
+```json
+{"service": "banking-circle", "kind": "vendor", "simulates": "Banking Circle Connect",
+ "build": "3f2a91c0d4e1", "started_at": "2026-11-07T08:00:01Z",
+ "vendor_listeners": [":8085", ":8095"],
+ "clock": {"follows": "http://clock:8096/clock", "offset_ms": -225000000},
+ "reset_scopes": ["flow", "all"], "hooks": [],
+ "logs": {"held": 412, "capacity": 2000}}
+```
+
+`build` is there when the binary recorded its VCS revision; `clock` when
+the service follows the lab clock. `hooks` lists the trap hooks it offers
+(none yet).
+
+**`GET /sim/logs?since=&limit=&q=`** — the process's own log lines, what
+`podman logs` shows, kept in a ring of the last `SIM_LOG_RING` lines
+(default 2000). Stdout is unchanged. The ring leaves out the request lines
+for `GET /health` and `GET /sim/logs` — the lab API's probe and the reading
+of the logs themselves — so watching the lab does not fill it.
+
+```json
+{"service": "banking-circle",
+ "lines": [{"seq": 1841, "at": "2026-11-07T09:14:02.114Z", "text": "banking-circle: …"}],
+ "next": 1841, "dropped": 0}
+```
+
+| Parameter | |
+| --- | --- |
+| `since` | lines after this `seq`; omitted, the newest `limit` lines |
+| `limit` | 1–1000, default 200 |
+| `q` | case-insensitive substring filter |
+
+`next` is the cursor for the next read: pass it back as `since`. It moves
+past lines a `q` filter skipped, so a filtered reader never rereads them.
+`dropped` counts lines after `since` the ring no longer holds — the reader
+fell behind, and the gap is said, not silent. The log is a window onto a
+run, not a record of one; a reset does not clear it, it writes a line
+marking the reset.
+
+**`POST /sim/reset`** `{"scope": "flow"|"all", "force": false}` — put the
+service back to a known state. The body is optional (`flow`), and decoded
+strictly: a misspelt field is `400`, never a reset with another scope.
+
+- **`flow`** clears what a run makes — payments, files, callbacks and
+  notifications in flight, activity — and keeps what a platform set up once
+  and would otherwise have to set up again: Banking Circle's
+  subscriptions, B4B's boarding, Worldline's enrolment.
+- **`all`** puts the service back as it was on first start.
+- Work in flight is cancelled, not raced: a payment still sleeping out its
+  processing delay when the reset lands is dropped, never completed.
+- Activity logs are cleared, so the Dashboard's diagram starts from zero.
+
+```json
+{"service": "banking-circle", "scope": "flow",
+ "cleared": {"payments": 42, "notifications": 3}, "kept": ["subscriptions", "accounts"],
+ "at": "2026-11-07T09:20:00Z"}
+```
+
+`409` with the reason when the service cannot reset safely now (the clock
+while a run holds it); `{"force": true}` resets anyway. `400` for a scope
+the service does not honour. The lab API resets the whole lab in one call,
+in order, with `POST /v1/lab/reset`, and reads every service's log lines
+merged with `GET /v1/logs` ([lab-api.md](lab-api.md)).
 
 ## Which to call
 

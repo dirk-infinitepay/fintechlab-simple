@@ -212,13 +212,16 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 // It also persists. A payment's state is the one piece of this service's
 // memory that changes without anybody asking it to, so it is the one that
 // most needs writing down before the process can die.
-func (a *app) onTransition(p *b4b.Payment) {
+//
+// started is the epoch the payment's work began in; the callback and the
+// bridge call carry it, so a reset after this transition drops them.
+func (a *app) onTransition(p *b4b.Payment, started uint64) {
 	a.persist()
 	if p.State == b4b.StateTMApproved {
-		go a.approveAndBridge(p)
+		a.later(started, func(started uint64) { a.approveAndBridge(p, started) })
 		return
 	}
-	go a.deliverPaymentCallback(p, nil)
+	a.later(started, func(started uint64) { a.deliverPaymentCallback(started, p, nil) })
 }
 
 // approveAndBridge generates this payment's Banking Circle paymentId and
@@ -228,22 +231,33 @@ func (a *app) onTransition(p *b4b.Payment) {
 // best-effort and non-fatal to B4B's own webhook: on success or failure it
 // still fires the B4BTMApproved webhook, with
 // banking_circle_api_response.paymentId always set on this one transition.
-func (a *app) approveAndBridge(p *b4b.Payment) {
+//
+// The bridge call goes through the gate with the payment's epoch: after a
+// reset the payment no longer exists, and neither the call nor the
+// callback after it is made.
+func (a *app) approveAndBridge(p *b4b.Payment, started uint64) {
 	bcPaymentID := "bcp_" + shortID()
 	bcResp := map[string]any{"paymentId": bcPaymentID}
+	if !a.engine.Gate().Do(started, func() { a.bridge(p, bcPaymentID, bcResp) }) {
+		log.Printf("b4b: banking circle bridge call for payment %s dropped: b4b was reset", p.ID)
+		return
+	}
+	a.deliverPaymentCallback(started, p, bcResp)
+}
 
+// bridge makes the bridge call and notes in bcResp what went wrong, if
+// anything did.
+func (a *app) bridge(p *b4b.Payment, bcPaymentID string, bcResp map[string]any) {
 	reqBody, err := json.Marshal(a.bridgeBody(p, bcPaymentID))
 	if err != nil {
 		log.Printf("b4b: marshal banking circle bridge request for payment %s: %v", p.ID, err)
 		bcResp["error"] = err.Error()
-		a.deliverPaymentCallback(p, bcResp)
 		return
 	}
 	req, err := http.NewRequest(http.MethodPost, a.bcURL+"/internal/payments", bytes.NewReader(reqBody))
 	if err != nil {
 		log.Printf("b4b: build banking circle bridge request for payment %s: %v", p.ID, err)
 		bcResp["error"] = err.Error()
-		a.deliverPaymentCallback(p, bcResp)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -251,7 +265,6 @@ func (a *app) approveAndBridge(p *b4b.Payment) {
 	if err != nil {
 		log.Printf("b4b: banking circle bridge call failed for payment %s: %v; continuing, own webhook still fires", p.ID, err)
 		bcResp["error"] = err.Error()
-		a.deliverPaymentCallback(p, bcResp)
 		return
 	}
 	defer resp.Body.Close()
@@ -262,11 +275,10 @@ func (a *app) approveAndBridge(p *b4b.Payment) {
 	} else {
 		log.Printf("b4b: banking circle bridge call for payment %s ok, bcPaymentId=%s", p.ID, bcPaymentID)
 	}
-	a.deliverPaymentCallback(p, bcResp)
 }
 
 // deliverPaymentCallback POSTs the lifecycle callback for one transition.
-func (a *app) deliverPaymentCallback(p *b4b.Payment, bcResp map[string]any) {
+func (a *app) deliverPaymentCallback(started uint64, p *b4b.Payment, bcResp map[string]any) {
 	body := map[string]any{
 		"id":      p.ID,
 		"status":  string(p.State),
@@ -275,7 +287,7 @@ func (a *app) deliverPaymentCallback(p *b4b.Payment, bcResp map[string]any) {
 	if bcResp != nil {
 		body["banking_circle_api_response"] = bcResp
 	}
-	a.deliverCallback(fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body)
+	a.deliverCallback(started, fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body)
 }
 
 // summarizePayment writes the one line an operator reads in the console's

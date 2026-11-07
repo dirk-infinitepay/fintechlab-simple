@@ -21,7 +21,7 @@ the same outlets.
 | Listens | `:8083`, plain HTTP. Compose service `settlement` (`http://settlement:8083`); host `http://127.0.0.1:8083`. Outbound it speaks SFTP to `worldline:2222` and HTTP to b4b, verify, banking-circle's bridge (`:8095`) and the bank |
 | Auth | None on its own routes. Outbound: an RS512 JWT for B4B signed with B4B's private key, `x-internal-api-key` for verify, SFTP password or key for Worldline, nothing for Banking Circle's bridge or the bank |
 | Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the harness.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` on the console |
-| Activity logs | None. There is no `GET /sim/activity`, the lab's catalogue declares no activity path, and `GET /v1/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout |
+| Activity logs | None. There is no `GET /sim/activity`, the lab's catalogue declares no activity path, and `GET /v1/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout, and kept for `GET /sim/logs` |
 | Configuration | The variables that change behaviour most: `SETTLEMENT_CONNECTED` (`true`), `WORLDLINE_SFTP_HOST` (unset: no pull at all), `CUTOFF_TIME` (`00:00`), `BC_SAFEGUARDING_ACCOUNT_ID_EUR`/`_GBP`. Everything below |
 | Design record | [ARCHITECTURE-reconciliation-api.md](../../ARCHITECTURE-reconciliation-api.md), [ARCHITECTURE-settlement-state-machine.md](../../ARCHITECTURE-settlement-state-machine.md), [ARCHITECTURE-settlement-report.md](../../ARCHITECTURE-settlement-report.md), [ARCHITECTURE-sftp-staging.md](../../ARCHITECTURE-sftp-staging.md), [ARCHITECTURE-phase3-corrections.md §5](../../ARCHITECTURE-phase3-corrections.md#5-settlement-wire-in-verification-and-the-sga-balance-gate), [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md), [structure/worldline.md](../../structure/worldline.md), [scenarios/settlement-to-payout.md](../../scenarios/settlement-to-payout.md), [plugins.md](../../plugins.md#stand-ins) (stand-ins) |
 
@@ -39,7 +39,7 @@ Configuration in full (default, then compose where it differs):
 | `WORLDLINE_SFTP_DIR` | `download` | the remote directory listed |
 | `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `_PUBLIC_KEY_PATH` | `/keys/wlsftp-keys/worldline_private.asc`, `…_public.asc` | the keypair that decrypts the files; waited for 30 s, after which it generates a pair of its own, which decrypts nothing Worldline sent |
 | `WORLDLINE_PULL_INTERVAL` | `10s` | the background pull's period |
-| `WORLDLINE_ARCHIVE_DIR` | `/data/worldline` | where each decrypted file is kept; a name already there is never pulled again, across restarts |
+| `WORLDLINE_ARCHIVE_DIR` | `/data/worldline` | where each decrypted file is kept; a name already there is never pulled again, across restarts. A reset empties it of what the stand-in archived (`POST /sim/reset`) |
 | `CUTOFF_TIME` | `00:00` | `HH:MM`, UTC on the lab clock: the daily internal-report batch for yesterday. Unparseable disables it |
 | `B4B_URL` | `http://b4b:8086` | the payout rail |
 | `B4B_JWT_PRIVATE_KEY_PATH` | `/keys/b4b-keys/private.pem` | signs the B4B JWT; waited for 30 s, then the service exits |
@@ -49,9 +49,9 @@ Configuration in full (default, then compose where it differs):
 | `BC_INTERNAL_URL` | `http://banking-circle:8095` | Banking Circle's bridge, for the balance gate only |
 | `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `_GBP` | `00000000-0000-4000-8000-000000000978`, `…0826` | the safeguarding account checked per currency; another currency has none and fails its balance check |
 | `BANK_URL` | `http://bank:8081` | the ledger the internal reports are built from |
-| `SETTLEMENT_STATE_FILE` | `/data/settlements.json` | every record, rewritten on each change and loaded at start |
+| `SETTLEMENT_STATE_FILE` | `/data/settlements.json` | every record, rewritten on each change and loaded at start; a reset rewrites it empty |
 | `SFTP_OUT_DIR`, `SFTP_STAGING_DIR`, `SFTP_OUTBOUND_DIR` | `/sftp/out`, `/sftp/staging`, `/sftp/outbound` | where internal reports are written and listed from |
-| `WORLDLINE_SETTLEMENT_IDENTIFIER` | `Worldline_Settlement` | read and never used |
+| `WORLDLINE_SETTLEMENT_IDENTIFIER` | `Worldline_Settlement` | the `{identifier}` in Worldline's file names: how a reset recognises the archived settlement files it deletes |
 
 ## Service surface
 
@@ -314,6 +314,74 @@ Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "settlement"}`.
 
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "settlement"`, `"kind": "stand-in"`,
+`"vendor_listeners": [":8083"]`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): every pull,
+record, payout gate and request is a line here.
+
+### `POST /sim/reset`
+
+Puts the stand-in back to a known state. Synchronous; the body is optional
+(`flow`). Both scopes do the same: the stand-in has nothing a platform set
+up once.
+
+- **Clears**: every settlement record, and the state file, rewritten empty
+  (`settlements`); the internal report files (`report_files`); the archive
+  of Worldline files it took delivery of (`archived_files`); the pull
+  history of `GET /worldline/files` and the names it has seen
+  (`pulled_files`).
+- **Keeps**: the switch (`/sim/connected`): it is live wiring, not run
+  state.
+
+```json
+{"service": "settlement", "scope": "flow",
+ "cleared": {"settlements": 2, "report_files": 6, "archived_files": 1, "pulled_files": 1},
+ "kept": ["connected"], "at": "2026-11-07T12:00:00Z"}
+```
+
+**Files.** The folders are shared with Worldline's SFT channel and the
+host, so a reset deletes only a regular file it can prove it wrote, by its
+name in the folder it writes it to. Never a folder, a symlink, or anything
+else:
+
+- `{SFTP_OUT_DIR}/{merchant_id}/{merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}`.
+- `{SFTP_OUTBOUND_DIR}/{merchant_id}/daily/{merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}`;
+  a report Worldline already archived on download is Worldline's to
+  delete.
+- `{WORLDLINE_ARCHIVE_DIR}/{14 digits}_{WORLDLINE_SETTLEMENT_IDENTIFIER}_{ER|AR}_{CCY}.csv.pgp`,
+  and any other name the pull history says was archived there (a fixture
+  file's name). A fixture archived before the last restart is left.
+
+A report whose name does not follow the pattern (a `generate` with a date
+that is not `YYYY-MM-DD`) is left, and so is anything in
+`SFTP_STAGING_DIR`, which the stand-in never writes.
+
+**Not taken again.** The archive was what said a file had been taken. So
+that a file still on Worldline's server is not taken and paid a second
+time, the puller ignores any file there whose modification time is before
+the reset. A file Worldline publishes after it, even under the same name,
+is taken. Reset Worldline as well (the lab reset does, first) to start
+from no files at all.
+
+**Work in flight** is dropped, not raced: a pull, the daily cutoff batch, a
+payout and a retried payout each stop at their next step after the reset,
+so no file is archived or written, no record made and no payout sent or
+stored after it. A payment already on its way to B4B when the reset
+arrives is waited for, then the reset clears its record. The timers keep
+running.
+
+`500` with the reason when a file cannot be deleted or the state file
+cannot be written; everything else is still done, and a second reset
+finishes the job.
+
 ### `GET /sim/connected`
 
 The stand-in's lab switch (`internal/labswitch`): whether its own timers
@@ -351,7 +419,7 @@ Side effects: disconnected, the background Worldline pull stops and the
 daily cutoff batch is skipped. Anything asked for explicitly still works:
 `POST /worldline/pull` and the payouts it makes, `generate`, `transition`,
 `retry-payout` and B4B's callbacks. In memory: a restart is back on
-`SETTLEMENT_CONNECTED`.
+`SETTLEMENT_CONNECTED`; a reset keeps it as it is.
 
 ### `GET /worldline/files`
 
@@ -377,7 +445,7 @@ Answers `200`:
   `settlement_ids` and `payouts_by_mid` are omitted when empty; `error`
   says why a download, decryption or parse failed.
 - The history is in memory: empty after a restart, although archived files
-  are still never pulled again.
+  are still never pulled again. A reset empties it too.
 
 ### `POST /worldline/pull`
 
@@ -444,7 +512,10 @@ again.
   the harness's own gate-test payments, which name this URL too and are
   answered `ignored`.
 - **lab API**: `POST /v1/actions/settlement-pull` calls
-  `POST /worldline/pull` and passes its answer through; `GET /v1/stand-ins`
+  `POST /worldline/pull` and passes its answer through;
+  `POST /v1/lab/reset` and `POST /v1/services/settlement/reset` call
+  `POST /sim/reset`; `GET /v1/logs` and `GET /v1/services/settlement/logs`
+  read `GET /sim/logs`; `GET /v1/stand-ins`
   reads `GET /sim/connected` and `POST /v1/stand-ins/settlement` sets it
   with `POST /sim/connected`; `GET /v1/lab` and
   `POST /v1/services/settlement/probe` probe `GET /health`.

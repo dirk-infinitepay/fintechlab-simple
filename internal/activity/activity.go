@@ -121,6 +121,21 @@ func (l *Log) Record(e Event) {
 	}
 }
 
+// Clear empties the log and returns how many events it had recorded, so a
+// reset can say what it cleared. Seq keeps counting: a reader that
+// remembered a seq from before never mistakes a new event for an old one.
+func (l *Log) Clear() int64 {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cleared := l.total
+	l.ring = make([]Event, len(l.ring))
+	l.next, l.n, l.total = 0, 0, 0
+	return cleared
+}
+
 // Recent returns up to limit events, newest first.
 func (l *Log) Recent(limit int) []Event {
 	if l == nil {

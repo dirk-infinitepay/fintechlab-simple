@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -139,5 +141,58 @@ func TestBanksLookup(t *testing.T) {
 	}
 	if _, ok := bs.Backend("nope"); ok {
 		t.Fatal("Backend invented a bank")
+	}
+}
+
+// Banking Circle's tokens do not survive a restart or an "all" reset. A
+// client holding one gets 401 until it asks for a new one, which it does
+// once, at once, rather than when its cached token would have expired.
+func TestBankingCircleReauthorizesWhenItsTokenIsNoLongerHonoured(t *testing.T) {
+	var mu sync.Mutex
+	valid := map[string]bool{}
+	issued, authorizes := 0, 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.URL.Path {
+		case "/api/v1/authorizations/authorize":
+			authorizes++
+			issued++
+			tok := fmt.Sprintf("tok%d", issued)
+			valid[tok] = true
+			fmt.Fprintf(w, `{"access_token":%q,"expires_in":3600}`, tok)
+		case "/accounts":
+			if !valid[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")] {
+				w.WriteHeader(401)
+				_, _ = w.Write([]byte(`{"error":"invalid token"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"accounts":[]}`))
+		}
+	}))
+	defer srv.Close()
+	b := &BankingCircleBank{BaseURL: srv.URL, Client: srv.Client()}
+	if _, err := b.Accounts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	valid = map[string]bool{} // the bank was reset
+	mu.Unlock()
+	if _, err := b.Accounts(context.Background()); err != nil {
+		t.Fatalf("after the bank dropped its tokens: %v", err)
+	}
+	if authorizes != 2 {
+		t.Errorf("authorized %d times, want 2: once at first, once after the 401", authorizes)
+	}
+	// A 401 that a fresh token does not cure is reported, not retried forever.
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/accounts" {
+			w.WriteHeader(401)
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"x","expires_in":3600}`))
+	})
+	if _, err := b.Accounts(context.Background()); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Errorf("a lasting 401 = %v, want it reported", err)
 	}
 }

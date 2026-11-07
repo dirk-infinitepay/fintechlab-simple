@@ -127,7 +127,7 @@ func TestSaveStateCreatesItsDirectory(t *testing.T) {
 // and it would wait for one forever.
 func TestEngineResumesUnfinishedPaymentsAfterRestart(t *testing.T) {
 	seen := make(chan PaymentState, 8)
-	engine := NewEngine(time.Millisecond, func(p *Payment) { seen <- p.State })
+	engine := NewEngine(time.Millisecond, func(p *Payment, _ uint64) { seen <- p.State })
 
 	engine.Restore(State{Payments: []*Payment{
 		{ID: "b4bp_midflight", BeneficiaryID: "ben_1", State: StateSanctionsApproved},

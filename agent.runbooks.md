@@ -419,6 +419,36 @@ on a lab started before B4B's bridge carried the creditor account — `make up`.
 `notify` is left out while the receiver's card is hidden; `hidden` in
 `/v1/flow` says how much it still carried.
 
+## Start clean, and read every service's log
+
+Between runs, reset the lab instead of restarting it: a restart loses
+Banking Circle's subscriptions and needs the runner restarted, a `flow`
+reset keeps them (and B4B's boarding, Worldline's enrolment, the merchant
+registry) and clears only what a run made.
+
+```sh
+curl -s -XPOST localhost:8097/v1/lab/reset | python3 -c "
+import json,sys; d=json.load(sys.stdin); print('ok' if d['ok'] else 'FAILED')
+for s in d['services']: print(' ', s['service'], s['status'], s.get('cleared') or s.get('error'))"
+curl -s -XPOST localhost:8097/v1/lab/reset -d '{"scope":"all"}'              # as on first start, registry too
+curl -s -XPOST localhost:8097/v1/lab/reset -d '{"services":["banking-circle"]}' # one service
+```
+
+A `409` names who holds the lab clock: a settlement run is in flight.
+Wait for it, or add `"force": true`.
+
+Every service's own log lines, merged by time — what `podman logs` on each
+container would show, without a shell on the host:
+
+```sh
+curl -s 'localhost:8097/v1/logs?q=bcp_7f3a' | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+for l in d['lines']: print(l['at'][11:23], l['service'].ljust(15), l['text'])
+print('next:', d['next'], 'unreachable:', d['unreachable'])"
+curl -s 'localhost:8097/v1/logs?services=b4b,banking-circle&since=<next>'   # what arrived since
+curl -s 'localhost:8097/v1/services/settlement/logs?limit=50'                # one service
+```
+
 ## Screenshots without a browser window
 
 Playwright is in buddy's `node_modules` and its headless Chromium is cached:

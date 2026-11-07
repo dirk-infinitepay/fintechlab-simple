@@ -105,6 +105,41 @@ always omitted.
 - `404`: `decision not found`, for an id never triggered or one whose
   processing delay has not yet elapsed.
 
+## Lab control
+
+The sim control contract. No `x-internal-api-key`, and not under the
+`/api/v1/verification` prefix: the real service has neither route.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "verify"`, `"kind": "vendor"`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request, and each skipped `VERIFY_FORCE_DECLINE_IDS` entry at start.
+
+### `POST /sim/reset`
+
+Forgets every decision. Both scopes do the same: verify has nothing a
+platform set up once.
+
+- **Clears**: every recorded decision, so a read is `404` again; and every
+  trigger still sleeping out `VERIFY_PROCESSING_DELAY`, which is dropped,
+  never recorded after the reset.
+- **Keeps**: `VERIFY_FORCE_DECLINE_IDS`. It is configuration: a
+  force-declined id still declines after a reset.
+
+`cleared` counts recorded `decisions` and `pending` triggers.
+
+```json
+{"service": "verify", "scope": "flow", "cleared": {"decisions": 3, "pending": 1},
+ "kept": ["force_decline_ids"], "at": "2026-11-07T12:00:00Z"}
+```
+
 ## Called by
 
 - **settlement** (scaffolding, `cmd/settlement`), as its merchant-verification

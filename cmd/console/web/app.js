@@ -2126,10 +2126,9 @@ function renderApiRef() {
         <tbody>${API_INTENTS.map(([to, call, how]) => `<tr>
           <td>${esc(to)}</td><td>${esc(call)}</td><td class="mono">${esc(how)}</td></tr>`).join('')}</tbody>
       </table></div>
-      <div class="note">Still to come in the lab API (docs/lab-api/plan.md): a reset of the whole lab,
-        every service's log lines, and traps that make a vendor answer a future request the way a
-        test needs. Until then, a service's own <span class="mono">/sim/*</span> through the passthrough
-        is how to steer it.</div>
+      <div class="note">Still to come in the lab API (docs/lab-api/plan.md): traps that make a vendor
+        answer a future request the way a test needs. Until then, a service's own
+        <span class="mono">/sim/*</span> through the passthrough is how to steer it.</div>
     </section>
 
     <section data-anchor="lab-api">

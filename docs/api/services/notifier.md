@@ -48,7 +48,8 @@ Answers `202`:
 
 - `400`: malformed JSON or an unknown field.
 - `403`: the allowlist's refusal of the subscription URL.
-- `409`: `subscription is failed`, until `POST /subscriptions` replaces it.
+- `409`: `subscription is failed`, until `POST /subscriptions` replaces it
+  or [`POST /sim/reset`](#post-simreset) makes it active again.
 
 Side effects: delivers to the subscription URL, as it was at enqueue:
 
@@ -81,7 +82,8 @@ Answers `200`:
 
 ### `POST /subscriptions`
 
-Replaces the subscription. This is the only way to clear a failed one.
+Replaces the subscription. The other way to clear a failed one is
+[`POST /sim/reset`](#post-simreset).
 
 Body:
 
@@ -141,6 +143,47 @@ Answers `200`:
 ```
 
 `peer` is the destination, not a caller.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "notifier"`, `"kind": "stand-in"`,
+`"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request and per delivery attempt, and the subscription marked failed.
+
+### `POST /sim/reset`
+
+Forgets every delivery and stops those still running. The subscription is
+what a platform set up once, so `flow` keeps it.
+
+- **`flow` clears**: every delivery and the `deliveries` log. A delivery
+  still running stops at its next step: asleep between attempts, it is
+  woken and makes no further attempt; on the wire, its answer is not
+  recorded. Either way it never marks the subscription failed afterwards.
+  A subscription a run marked `failed` is `active` again, with the same id
+  and URL: failed is what a delivery that ran out of retries made, and that
+  delivery is gone.
+- **`flow` keeps**: the subscription, its id and its URL, whether it is
+  `WEBHOOK_URL`'s or one `POST /subscriptions` set.
+- **`all`** is first start: as `flow`, and the subscription goes back to
+  `sub_default` on `WEBHOOK_URL`.
+
+`cleared` counts `deliveries` (of which `in_flight` were still running),
+`activity` events, `failed_subscription` (1 when a failed subscription is
+active again) and, with `all`, `subscription` (1 when one set with
+`POST /subscriptions` gave way to `WEBHOOK_URL`'s).
+
+```json
+{"service": "notifier", "scope": "flow",
+ "cleared": {"activity": 3, "deliveries": 2, "failed_subscription": 0, "in_flight": 1},
+ "kept": ["subscription"], "at": "2026-11-07T12:00:00Z"}
+```
 
 ## Called by
 

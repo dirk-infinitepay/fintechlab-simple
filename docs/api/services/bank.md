@@ -9,7 +9,8 @@ vendor a platform integrates with, and not scaffolding standing in for one
 (the lab's catalogue gives it the `vendor` kind so it draws as one). A
 platform never calls it; tests, agents and the console (through the lab API) read it to see
 whether money arrived. The IBANs are obviously fake (`GB00SIM…`), and
-everything is in memory: a restart puts every balance back to the seed.
+everything is in memory: a restart, or [`POST /sim/reset`](#post-simreset),
+puts every balance back to the seed.
 
 ## At a glance
 
@@ -223,6 +224,38 @@ Answers `200`:
 `status` is `ok` for a 2xx, `warn` for a 4xx, `bad` for a 5xx; a refused
 call's summary ends with the bank's own error message. `at` is wall-clock
 time, not the lab clock.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "bank"`, `"kind": "stand-in"`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request, method and path.
+
+### `POST /sim/reset`
+
+Puts the bank back as it was on first start. Both scopes do the same: a
+platform never calls the bank, so nothing here was set up once.
+
+- **Clears**: every account that was not seeded, whether a payout or
+  `POST /accounts` opened it; the ledger, so the next credit is `ent_1`
+  again; both activity logs.
+- **Keeps**: the seeded accounts, each back at its seed balance (the table
+  above).
+
+`cleared` counts `accounts` closed, seeded `balances` moved back, ledger
+`credits` and `transfers`, and `activity` events across both logs.
+
+```json
+{"service": "bank", "scope": "flow",
+ "cleared": {"accounts": 2, "activity": 4, "balances": 3, "credits": 2, "transfers": 1},
+ "kept": ["seeded_accounts"], "at": "2026-11-07T12:00:00Z"}
+```
 
 ## Called by
 

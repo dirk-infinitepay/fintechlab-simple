@@ -401,12 +401,27 @@ func testPlugin(base string) console.Plugin {
 	}
 }
 
-// register posts p to the console the way a plugin does.
+// register posts p to the lab API the way a plugin does, and waits for the
+// probe registration starts in the background: it reads the catalogue, and
+// a test that changes the catalogue next would race it.
 func register(t *testing.T, a *app, p console.Plugin) {
 	t.Helper()
 	body, _ := json.Marshal(p)
 	if w := call(t, a, http.MethodPost, "/v1/plugins", string(body)); w.Code != 200 {
 		t.Fatalf("register %s = %d %s", p.ID, w.Code, w.Body.String())
+	}
+	if p.HealthPath == "" {
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, probed := a.mon.Get(p.ID); probed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("register %s: its first probe never finished", p.ID)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

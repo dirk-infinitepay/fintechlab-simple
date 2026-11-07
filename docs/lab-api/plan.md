@@ -5,10 +5,17 @@ the lab working end to end, and `make harness` green.
 
 ## Phase 1 — the control contract, lab-api, first traps
 
-**Status, 2026-11-07.** Built: the `lab-api` block below, apart from
-`/v1/lab/reset`, `/v1/logs`, `/v1/traps` and `openapi.yaml`, which wait for
-the shared packages; and the wiring of `lab-api` into `compose.yml` and the
-pod (not the control ports yet). Two choices made on the way:
+**Status, 2026-11-07.** Built:
+
+- the `lab-api` block below, apart from `/v1/traps` and `openapi.yaml`, and
+  its wiring into `compose.yml` and the pod (not the control ports yet);
+- `internal/logring` and `internal/simctl` (info, logs, reset with scopes,
+  the 409 and `force`, the epoch); every sim serves `/sim/info`,
+  `/sim/logs` and `/sim/reset`, still on its main listener;
+- `POST /v1/lab/reset`, `GET /v1/logs`, `GET /v1/services/{id}/logs` and
+  `POST /v1/services/{id}/reset`.
+
+Choices made on the way:
 
 - **The old `/api` paths are aliases in the lab API's route table**, not a
   path-mapping proxy in the console. The console forwards `/v1` and `/api`
@@ -19,10 +26,30 @@ pod (not the control ports yet). Two choices made on the way:
   console and an agent call the lab the same way. [OPEN 3](open.md) is
   answered by the proposal: a separate `console` container, so `lab-api`
   stays headless.
+- **No control token yet.** On the main listener it would collide with the
+  `Authorization` Banking Circle's and B4B's `/sim` hooks already use; it
+  comes with the control listener. Until then the lab API reaches those
+  hooks with each vendor's own credentials, as it does for the passthrough.
+- **What each reset clears is in each service's reference**
+  (`docs/api/services/<id>.md`, *Lab control*), which follows the table in
+  [sim-control.md §6](sim-control.md#6-post-simreset) with these
+  differences: verification and notifier keep their tokens and their
+  subscription on `flow` (set up once, like Banking Circle's); Worldline's
+  `flow` also clears armed enrolment rejections (a trap in all but name);
+  settlement's `all` is its `flow`, and after a reset its puller skips
+  Worldline files older than the reset, so a settlement reset alone never
+  pays a file twice; the business bank's `flow` also drops accounts opened
+  by hand. [OPEN 1](open.md) and [OPEN 12](open.md) are answered by the
+  proposals; [OPEN 13](open.md) on the lab's side: the lab API re-authorizes
+  with Banking Circle after a `401`.
+- **Log rings leave out `GET /health` and `GET /sim/logs`**, so watching the
+  lab does not fill them.
 
-Not built yet: everything under *Shared packages* and *Every sim*, the
-first traps, the reset/logs/traps routes, `openapi.yaml`, and the harness
-scenarios.
+Not built yet: the control listener and token, moving today's hooks to it,
+`internal/trap` and the first traps, `/v1/traps`, `openapi.yaml`, and the
+harness scenarios for traps and reset. Four services each carry their own
+reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and settlement's
+`runGuard`); one in `internal/simctl` should replace them.
 
 Shared packages, generic infra like `internal/activity`:
 

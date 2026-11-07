@@ -8,7 +8,7 @@ import (
 
 func TestEngineFullProgression(t *testing.T) {
 	events := make(chan Payment, 8)
-	engine := NewEngine(10*time.Millisecond, func(p *Payment) { events <- *p })
+	engine := NewEngine(10*time.Millisecond, func(p *Payment, _ uint64) { events <- *p })
 
 	p := &Payment{
 		ID:                 "b4bp_test1",
@@ -48,7 +48,7 @@ func TestEngineFullProgression(t *testing.T) {
 
 func TestEngineForceFailureDivertsToFailed(t *testing.T) {
 	events := make(chan Payment, 8)
-	engine := NewEngine(10*time.Millisecond, func(p *Payment) { events <- *p })
+	engine := NewEngine(10*time.Millisecond, func(p *Payment, _ uint64) { events <- *p })
 
 	p := &Payment{
 		ID:            "b4bp_test2",

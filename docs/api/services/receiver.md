@@ -18,7 +18,7 @@ should treat a `2xx` from it as proof a message was understood:
 | Auth | TLS server authentication only; no client certificate is asked for. `POST /webhooks` requires the lab HMAC; every other route is open |
 | Found with | notifier `WEBHOOK_URL` (`https://receiver:8443/webhooks`).<br>banking-circle `WEBHOOK_URL` (`https://receiver:8443/raw-events`), its seeded subscription's endpoint.<br>aci `ACI_WEBHOOK_TARGET_URL` (`https://receiver:8443/raw-events`).<br>harness `RECEIVER_URL` (where it reads, `https://127.0.0.1:8443`) and `RECEIVER_DELIVERY_URL` (where it tells a vendor to post; defaults to `https://receiver:8443` when `RECEIVER_URL` is loopback).<br>`scripts/demo-payment.sh` `RECEIVER_URL`; console `CONSOLE_URL_RECEIVER`.<br>Senders allowlist it as `receiver` and `receiver:8443` |
 | Activity logs | None. There is no `GET /sim/activity`, and `GET /v1/services/receiver/activity` on the lab API answers `501`. Its two stores are the record: `GET /events` and `GET /raw-events`. Each request line is logged on stdout |
-| Configuration | `LISTEN` (`:8443`).<br>`TLS_CERT` (`/keys/certs/receiver.pem`), `TLS_KEY` (`/keys/certs/receiver-key.pem`): waited for up to 30 s at start, then the service exits.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the notifier's.<br>The 10-minute timestamp window and the 1 MiB body caps are fixed in code. Both stores are in memory, unbounded and never evicted; a restart empties them.<br>It has no lab switch of its own: it is disconnected at the senders (Banking Circle's subscriptions to it deactivated, aci's `/sim/connected`) |
+| Configuration | `LISTEN` (`:8443`).<br>`TLS_CERT` (`/keys/certs/receiver.pem`), `TLS_KEY` (`/keys/certs/receiver-key.pem`): waited for up to 30 s at start, then the service exits.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the notifier's.<br>The 10-minute timestamp window and the 1 MiB body caps are fixed in code. Both stores are in memory, unbounded and never evicted; a restart or [`POST /sim/reset`](#post-simreset) empties them.<br>It has no lab switch of its own: it is disconnected at the senders (Banking Circle's subscriptions to it deactivated, aci's `/sim/connected`) |
 | Design record | [ARCHITECTURE-phase3-corrections.md §6](../../ARCHITECTURE-phase3-corrections.md#6-receiver-a-raw-capture-endpoint-closes-a-documented-gap) (the raw sink; it predates retained bodies), [services/webhooks.md](../../services/webhooks.md), [security/ca-and-tls.md](../../security/ca-and-tls.md), [plugins.md](../../plugins.md#stand-ins), [console.md](../../console.md#stand-ins-disconnect-and-hide) |
 
 ## Service surface
@@ -128,6 +128,35 @@ Answers `200`:
 
 `raw_events` is `null` before the first. No filter: callers match on
 `path`.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "receiver"`, `"kind": "stand-in"`,
+`"reset_scopes": ["flow", "all"]`. Over HTTPS, like every route here.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request, each stored event and capture, and each HMAC refusal with its
+reason.
+
+### `POST /sim/reset`
+
+Empties both stores. Both scopes do the same: everything here is what a
+run delivered.
+
+- **Clears**: every event `POST /webhooks` stored and every capture
+  `POST /raw-events` took. `GET /events` and `GET /raw-events` answer
+  `null` again.
+- **Keeps**: nothing.
+
+```json
+{"service": "receiver", "scope": "flow", "cleared": {"events": 2, "raw_events": 14},
+ "kept": [], "at": "2026-11-07T12:00:00Z"}
+```
 
 ## Called by
 

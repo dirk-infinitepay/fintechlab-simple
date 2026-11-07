@@ -22,7 +22,7 @@ does not read, which is minimal, fixed or echoed. Nothing is persisted.
 | Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes. `/health` and `/sim/*`: none |
 | A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The lab API hands these out at `GET :8097/v1/connect/env/verification` |
 | Activity logs | None. There is no `GET /sim/activity`, so the console card shows no panels. Each request line is logged on stdout |
-| Configuration | `LISTEN` (`:8089`). Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome` |
+| Configuration | `LISTEN` (`:8089`). Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
 | Design record | [integration/verification-vendor-edge.md](../../integration/verification-vendor-edge.md), the package comment in `cmd/verification/main.go`, [catalogue.md](../../catalogue.md) |
 
 ## Vendor surface
@@ -323,8 +323,8 @@ Answers `200`:
 ### `POST /sim/outcome`
 
 Flips one check. Global: it applies to every later call from anyone until it
-is set back or the process restarts. There is no reset route; set each
-check back explicitly.
+is set back, the service is reset ([`POST /sim/reset`](#post-simreset)), or
+the process restarts.
 
 Body, decoded strictly (an unknown field is a 400):
 `{"check": "screening", "outcome": "hit"}`.
@@ -339,6 +339,41 @@ Body, decoded strictly (an unknown field is a 400):
 Answers `200` with every outcome, as `GET /sim/outcome` does. `400` for an
 unknown check or outcome, which changes nothing:
 `{"error":"check \"bank-account\" cannot be \"maybe\" (want: pass, mismatch, invalid)","status":400}`.
+
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "verification"`, `"kind": "vendor"`,
+`"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request, and every flip of an outcome.
+
+### `POST /sim/reset`
+
+Puts every outcome back to its default. A flipped check is a run's trap;
+a token is something the platform obtained once and caches, so `flow`
+keeps it.
+
+- **`flow` clears**: the outcomes, back to the defaults in the table under
+  [Vendor surface](#vendor-surface).
+- **`flow` keeps**: every bearer token issued, so a platform holding one
+  is not refused mid-session; and the Creditsafe portfolio id counter.
+- **`all`** is first start: the outcomes, every token (a held one is `401`
+  `unknown or expired token` until the client authenticates again), and
+  portfolio ids count from 1 again.
+
+`cleared` counts `outcomes` that were flipped, and with `all`, `tokens`
+and `portfolios` created.
+
+```json
+{"service": "verification", "scope": "flow", "cleared": {"outcomes": 2},
+ "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
+```
 
 ## Called by
 

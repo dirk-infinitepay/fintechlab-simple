@@ -251,6 +251,14 @@ func (m *MailBox) Send(e Email) {
 	}
 }
 
+// clearLocked forgets every email and says how many there were. Caller
+// holds m.mu.
+func (m *MailBox) clearLocked() int {
+	n := len(m.sent)
+	m.sent = nil
+	return n
+}
+
 // All returns every email sent so far.
 func (m *MailBox) All() []Email {
 	m.mu.Lock()

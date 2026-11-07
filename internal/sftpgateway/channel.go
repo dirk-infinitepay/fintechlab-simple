@@ -9,9 +9,11 @@ package sftpgateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
@@ -61,6 +63,21 @@ type Config struct {
 
 func (c *Channel) configPath() string {
 	return filepath.Join(c.BaseDir, "config", "merchant-onboarding.json")
+}
+
+// DefaultConfig is the configuration the channel is seeded with, and what
+// a reset of everything puts back: the same shape as the
+// sftp/config/merchant-onboarding.json tracked at the repo root.
+func DefaultConfig(baseDir, merchantID string) *Config {
+	return &Config{
+		MerchantID:          merchantID,
+		SFTPDirectory:       filepath.Join(baseDir, "outbound", merchantID),
+		ReportTypes:         []string{"WX", "Financial"},
+		ReportFormats:       []string{"CSV", "XML", "ASCII"},
+		CutOffTime:          "00:00 CET",
+		RemittanceFrequency: "daily",
+		SFTPDirectoryCount:  3,
+	}
 }
 
 // validMerchantID rejects empty, ".", "..", and any merchant id containing
@@ -235,6 +252,76 @@ func (c *Channel) UpdateConfig(cfg *Config) error {
 		return err
 	}
 	return os.WriteFile(c.configPath(), data, 0o644)
+}
+
+// archivedReport is the name of a report the download route archives: the
+// WX report the settlement stand-in writes into outbound/{merchant_id}/daily/,
+// {merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}.
+var archivedReport = regexp.MustCompile(`^[^/\\]+_\d{4}-\d{2}-\d{2}_[A-Za-z]{3}_WX\.(csv|xml|json)$`)
+
+// archiveYear and archiveMonth are the folders ArchiveOutbound makes.
+var archiveYear, archiveMonth = regexp.MustCompile(`^\d{4}$`), regexp.MustCompile(`^\d{2}$`)
+
+// ClearArchive deletes what the download route archived: the regular files
+// in archive/{YYYY}/{MM}/ named like a WX report. The archive is a bind
+// mount the host can write to, so anything else there — a file of another
+// name, a folder of another shape — is left, and so are the folders
+// themselves. It returns how many files it deleted; every failure is
+// returned, after the rest are tried.
+func (c *Channel) ClearArchive() (int, error) {
+	root := filepath.Join(c.BaseDir, "archive")
+	years, err := readDirs(root, archiveYear)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	var errs []error
+	for _, year := range years {
+		months, err := readDirs(year, archiveMonth)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, month := range months {
+			entries, err := os.ReadDir(month)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			for _, e := range entries {
+				if !e.Type().IsRegular() || !archivedReport.MatchString(e.Name()) {
+					continue
+				}
+				if err := os.Remove(filepath.Join(month, e.Name())); err != nil {
+					if !os.IsNotExist(err) {
+						errs = append(errs, err)
+					}
+					continue
+				}
+				n++
+			}
+		}
+	}
+	return n, errors.Join(errs...)
+}
+
+// readDirs lists the real directories (not symlinks) in dir whose name
+// matches, as paths. A missing dir has none.
+func readDirs(dir string, name *regexp.Regexp) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() && name.MatchString(e.Name()) {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out, nil
 }
 
 // resolveOutbound joins and validates relativePath against merchantID's

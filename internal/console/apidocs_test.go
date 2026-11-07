@@ -40,6 +40,9 @@ var (
 	routeLiteral = regexp.MustCompile(`"((?:GET|POST|PUT|PATCH|DELETE|HEAD) /[^"]*)"`)
 	// internal/labswitch mounts GET and POST on the path it is given.
 	switchRoutes = regexp.MustCompile(`\.Routes\(mux,\s*"(/[^"]*)"\)`)
+	// internal/simctl mounts the control contract every sim serves.
+	simctlMount  = regexp.MustCompile(`simctl\.Mount\(`)
+	simctlRoutes = []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"}
 	// The reference's route headings.
 	docHeading = regexp.MustCompile("(?m)^### `([A-Z]+ /[^`]*)`\\s*$")
 )
@@ -199,6 +202,11 @@ func registeredRoutes(t *testing.T, dirs []string) map[string]bool {
 			for _, m := range switchRoutes.FindAllStringSubmatch(string(b), -1) {
 				out["GET "+m[1]] = true
 				out["POST "+m[1]] = true
+			}
+			if simctlMount.Match(b) {
+				for _, r := range simctlRoutes {
+					out[r] = true
+				}
 			}
 		}
 	}

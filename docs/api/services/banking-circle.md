@@ -24,8 +24,8 @@ memory.
 | Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095` |
 | Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none |
 | A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` and `CONSOLE_BC_INTERNAL_URL` on the console, `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
-| Activity logs | `GET /sim/activity` (on `:8085`, Bearer) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found |
-| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances |
+| Activity logs | `GET /sim/activity` (on `:8085`, Bearer) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `POST /sim/reset` empties all three |
+| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed (`all`) |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
 
 | Variable | Default | Effect |
@@ -504,6 +504,62 @@ The three logs described under *At a glance*, Bearer.
 - Answers `200` `{"logs": [{"name": "payments", …}, {"name": "notifications", …}, {"name": "reports", …}]}`,
   in that order, each `{"name", "title", "note", "total", "kept", "last", "events": [{"seq", "at", "op", "peer", "summary", "status", "detail"}]}`.
 
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)), Bearer:
+`"service": "banking-circle"`, `"kind": "vendor"`,
+`"simulates": "Banking Circle Connect"`,
+`"vendor_listeners": [":8085", ":8095"]` (`LISTEN` and `INTERNAL_LISTEN`),
+`"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)), Bearer:
+every request, every delivery attempt and how it ended, pauses, forced
+outcomes, credits at the beneficiary's bank, and the line marking each
+reset.
+
+### `POST /sim/reset`
+
+Puts the bank back to a known state, Bearer. Synchronous, and never
+refused.
+
+- **`flow`** (the default) **clears**: every payment (outgoing, incoming,
+  returns); every balance, back to `0.00`; the forced outcomes still
+  queued; every notification not yet delivered, whether batching, parked
+  behind a pause, retained after a deactivation or mid-retry; every pause;
+  the emails; the three activity logs.
+- **`flow` keeps**: the subscriptions as they stand, deactivated ones too,
+  with their events, targets and `rowVersion`; every account, including the
+  creditor accounts payouts opened (at `0.00`); issued bearer tokens.
+  Reference numbers keep counting, so no `010F10…` reference is handed out
+  twice.
+- **`all`** also puts back what start-up seeded: the seeded subscription
+  alone, as it was at start (same id and `rowVersion`); the two
+  safeguarding accounts alone; no tokens, the one the reset came with
+  included, so a caller authorizes again; references from
+  `010F100000000001`.
+- Work in flight is dropped, not raced. A payment still sleeping out
+  `PROCESSING_DELAY` never moves money, changes state, is notified or is
+  credited at the beneficiary's bank. A batch on its flush timer or
+  mid-retry is never sent, mails nothing and deactivates nothing. A webhook
+  or credit already on the wire is aborted, so a hung subscriber does not
+  hold the reset up.
+
+```json
+{"service": "banking-circle", "scope": "flow",
+ "cleared": {"payments": 3, "balances": 2, "outcomes": 0, "notifications": 4,
+             "pauses": 0, "emails": 0, "activity": 11},
+ "kept": ["subscriptions", "accounts", "tokens"], "at": "2026-11-07T12:00:00Z"}
+```
+
+`balances` counts accounts that held anything but their seed;
+`notifications`, every one not yet delivered. `all` adds `subscriptions`
+(removed, or put back to the seed), `accounts` (opened by payouts) and
+`tokens` (still live) to `cleared`, and `kept` is `[]`.
+
 ### `GET /sim/emails`
 
 The warning and deactivation emails the retry schedule would have sent.
@@ -709,6 +765,8 @@ order, after anything already queued.
   (`POST /v1/banking-circle/payouts/{id}/return`, `/reverse`);
   `GET /sim/activity` (`GET /v1/services/{id}/activity`, `GET /v1/flow`,
   `GET /v1/flow/hops/{id}`); `GET /sim/delivery-config` (`GET /v1/config`);
+  `POST /sim/reset` (`POST /v1/lab/reset`, `POST /v1/services/{id}/reset`);
+  `GET /sim/logs` (`GET /v1/logs`, `GET /v1/services/{id}/logs`);
   the subscription list and `PUT …/subscription/{id}/activate` or
   `/deactivate` with `If-Match` on every subscription pointing at the
   receiver (`GET /v1/stand-ins`, `POST /v1/stand-ins/{id}`). On the

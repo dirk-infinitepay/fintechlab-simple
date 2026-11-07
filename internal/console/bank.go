@@ -198,18 +198,40 @@ func (b *BankingCircleBank) bearer(ctx context.Context) (string, error) {
 	return b.token, nil
 }
 
-func (b *BankingCircleBank) Accounts(ctx context.Context) ([]BankAccount, error) {
-	tok, err := b.bearer(ctx)
-	if err != nil {
-		return nil, err
+// Forget drops the cached token, so the next call exchanges credentials
+// again. Banking Circle's tokens do not survive a restart or an "all"
+// reset, and a cached one would otherwise fail every call until it expired.
+func (b *BankingCircleBank) Forget() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.token = ""
+}
+
+// authorized runs call with a bearer token, and once more with a fresh one
+// when Banking Circle answers 401.
+func (b *BankingCircleBank) authorized(ctx context.Context, call func(tok string) error) error {
+	for retried := false; ; retried = true {
+		tok, err := b.bearer(ctx)
+		if err != nil {
+			return err
+		}
+		err = call(tok)
+		var st *statusError
+		if !retried && errors.As(err, &st) && st.code == http.StatusUnauthorized {
+			b.Forget()
+			continue
+		}
+		return err
 	}
+}
+
+func (b *BankingCircleBank) Accounts(ctx context.Context) ([]BankAccount, error) {
 	var body struct {
 		Accounts []struct {
 			ID, VIBAN, Holder, Currency, Balance string
 		} `json:"accounts"`
 	}
-	hdr := http.Header{"Authorization": []string{"Bearer " + tok}}
-	if err := getJSON(ctx, b.Client, b.BaseURL+"/accounts", hdr, &body); err != nil {
+	if err := b.AuthorizedGet(ctx, "/accounts", &body); err != nil {
 		return nil, err
 	}
 	out := make([]BankAccount, 0, len(body.Accounts))
@@ -225,11 +247,9 @@ func (b *BankingCircleBank) Accounts(ctx context.Context) ([]BankAccount, error)
 // credentials, same listener -- the console never gets a privileged
 // side-channel into a vendor.
 func (b *BankingCircleBank) AuthorizedGet(ctx context.Context, path string, out any) error {
-	tok, err := b.bearer(ctx)
-	if err != nil {
-		return err
-	}
-	return getJSON(ctx, b.Client, b.BaseURL+path, http.Header{"Authorization": []string{"Bearer " + tok}}, out)
+	return b.authorized(ctx, func(tok string) error {
+		return getJSON(ctx, b.Client, b.BaseURL+path, http.Header{"Authorization": []string{"Bearer " + tok}}, out)
+	})
 }
 
 // AuthorizedPost is AuthorizedGet's counterpart for the endpoints that do
@@ -243,10 +263,10 @@ func (b *BankingCircleBank) AuthorizedPost(ctx context.Context, path string, out
 // AuthorizedDo is the same for any method and extra headers — the
 // subscription activate and deactivate calls are PUTs carrying If-Match.
 func (b *BankingCircleBank) AuthorizedDo(ctx context.Context, method, path string, hdr http.Header, out any) error {
-	tok, err := b.bearer(ctx)
-	if err != nil {
-		return err
-	}
+	return b.authorized(ctx, func(tok string) error { return b.do(ctx, tok, method, path, hdr, out) })
+}
+
+func (b *BankingCircleBank) do(ctx context.Context, tok, method, path string, hdr http.Header, out any) error {
 	req, err := http.NewRequestWithContext(ctx, method, b.BaseURL+path, nil)
 	if err != nil {
 		return err
@@ -267,9 +287,9 @@ func (b *BankingCircleBank) AuthorizedDo(ctx context.Context, method, path strin
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if body.Error != "" {
-			return fmt.Errorf("banking-circle %s %s: %s", method, path, body.Error)
+			return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle %s %s: %s", method, path, body.Error)}
 		}
-		return fmt.Errorf("banking-circle %s %s: HTTP %d", method, path, resp.StatusCode)
+		return &statusError{resp.StatusCode, fmt.Sprintf("banking-circle %s %s: HTTP %d", method, path, resp.StatusCode)}
 	}
 	if out == nil {
 		return nil
@@ -323,6 +343,15 @@ func newJSONRequest(ctx context.Context, method, url string, hdr http.Header, in
 	return req, nil
 }
 
+// statusError is a peer's non-2xx answer: its message as the UI shows it,
+// and the status kept for whoever has to act on it (a 401 re-authorizes).
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
 func do(c *http.Client, req *http.Request, out any) error {
 	resp, err := c.Do(req)
 	if err != nil {
@@ -331,7 +360,7 @@ func do(c *http.Client, req *http.Request, out any) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body)))
+		return &statusError{resp.StatusCode, fmt.Sprintf("%s %s: HTTP %d: %s", req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
 	if out == nil {
 		return nil

@@ -1,6 +1,8 @@
 // Package aci implements ACI's real card-gateway webhook contract: the
 // AES-256-GCM payload encryption (crypto.go) and the notification wire shape
-// (this file), per docs/ARCHITECTURE-phase3-corrections.md section 2.
+// (this file), per docs/ARCHITECTURE-phase3-corrections.md section 2; plus
+// the mock's own record of what it sent and how a reset cancels deliveries
+// in flight (sent.go).
 // Source of truth: buddy's own
 // apps/settle-aci-webhook/src/webhook/aci-decryption.service.ts:39-101
 // (AciWebhookNotificationPayload). This lab models only the fields that

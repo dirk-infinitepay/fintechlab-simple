@@ -366,6 +366,31 @@ func (s *Server) Take(holder, reason string, ttl time.Duration) (Hold, error) {
 }
 
 // Release drops holder's hold, reporting whether there was one.
+// Reset puts the clock back where it started: holds released, the change
+// log emptied, and start applied as on first start (CLOCK_START, or the
+// real clock). While a hold is live it refuses with ErrHeld unless force:
+// a hold means a settlement run is in flight, and resetting the clock under
+// it would move the run's business day mid-run.
+func (s *Server) Reset(force bool, start Request) (holds int, changes int64, err error) {
+	s.mu.Lock()
+	if live := s.liveHoldsLocked(); len(live) > 0 && !force {
+		h := live[0]
+		s.mu.Unlock()
+		return 0, 0, fmt.Errorf("%w: %s holds the clock: %s (until %s)", ErrHeld, h.Holder, h.Reason, h.Until.UTC().Format("15:04:05Z"))
+	}
+	holds = len(s.holds)
+	s.holds = map[string]Hold{}
+	changes = s.log.Clear()
+	s.mu.Unlock()
+	if start.At == "" && start.Advance == "" && start.Mode == "" {
+		start = Request{Mode: ModeReal, Reason: "reset to the real clock"}
+	}
+	if _, err := s.Move(start); err != nil {
+		return holds, changes, err
+	}
+	return holds, changes, nil
+}
+
 func (s *Server) Release(holder string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -153,6 +153,37 @@ to `POST /internal/simulate-payment` still answers `202` and is recorded
 - Side effects: turning it back on does not send the records held while
   it was off.
 
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "aci"`, `"kind": "vendor"`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): every request
+but these reads, every delivery attempt, and every delivery a reset
+dropped.
+
+### `POST /sim/reset`
+
+Empties the sent log. Both scopes do the same: ACI holds nothing a platform
+set up once.
+
+- **Clears**: every record in `GET /internal/sent` (`sent`), and every
+  delivery in flight, first attempts and retries alike
+  (`deliveries_in_flight`). A delivery waiting out its backoff makes no
+  further attempt; the reset waits for one already on the wire, so when it
+  answers nothing it dropped is still being sent.
+- **Keeps**: the delivery switch (`GET /sim/connected`), on or off as it
+  was. It is live wiring, not something a run made.
+
+```json
+{"service": "aci", "scope": "flow", "cleared": {"sent": 4, "deliveries_in_flight": 1},
+ "kept": ["connected_switch"], "at": "2026-11-07T12:00:00Z"}
+```
+
 ## Called by
 
 - **The harness**: `aci-payment-notification`
@@ -161,7 +192,9 @@ to `POST /internal/simulate-payment` still answers `202` and is recorded
   the delivery settles, and requires `delivered` with non-empty
   ciphertext, IV and tag and the payload fields it sent.
 - **The lab API** (`cmd/labapi`): `GET /health` (health monitor, behind
-  `GET /v1/lab` and `POST /v1/services/{id}/probe`).
+  `GET /v1/lab` and `POST /v1/services/{id}/probe`). `POST /sim/reset`
+  (`POST /v1/lab/reset`, `POST /v1/services/aci/reset`) and
+  `GET /sim/logs` (`GET /v1/logs`, `GET /v1/services/aci/logs`).
   `GET /sim/connected` (`GET /v1/stand-ins`) and `POST /sim/connected`
   (`POST /v1/stand-ins/{id}` for the `receiver` stand-in), which count
   only while the target is the receiver: ACI pointed at a real platform is

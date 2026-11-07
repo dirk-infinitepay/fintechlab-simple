@@ -54,15 +54,19 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		}
 		companyID = c.ID
 	}
-	ben, err := a.beneficiaries.Register(b4b.RegisterParams{
-		CompanyID:            companyID,
-		ExternalRef:          req.ExternalRef,
-		AccountName:          req.AccountName,
-		AccountNumber:        req.AccountNumber,
-		FinancialInstitution: req.FinancialInstitution,
-		Country:              req.Country,
-		CallbackURL:          req.CallbackURL,
-		SanctionsStatus:      req.SanctionsStatus,
+	var ben *b4b.Beneficiary
+	var err error
+	started := a.engine.Gate().Begin(func() {
+		ben, err = a.beneficiaries.Register(b4b.RegisterParams{
+			CompanyID:            companyID,
+			ExternalRef:          req.ExternalRef,
+			AccountName:          req.AccountName,
+			AccountNumber:        req.AccountNumber,
+			FinancialInstitution: req.FinancialInstitution,
+			Country:              req.Country,
+			CallbackURL:          req.CallbackURL,
+			SanctionsStatus:      req.SanctionsStatus,
+		})
 	})
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -71,7 +75,7 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 	// The screening result is reported through the callback, not only in
 	// this response: a client must be built to receive it asynchronously,
 	// because under continuous screening it can change again later.
-	go a.deliverSanctionsCallback(ben)
+	a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
 	httputilx.WriteJSON(w, 201, ben)
 }
 
@@ -94,13 +98,18 @@ func (a *app) setSanctions(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	ben, changed, err := a.beneficiaries.SetSanctions(r.PathValue("id"), req.SanctionsStatus)
+	var ben *b4b.Beneficiary
+	var changed bool
+	var err error
+	started := a.engine.Gate().Begin(func() {
+		ben, changed, err = a.beneficiaries.SetSanctions(r.PathValue("id"), req.SanctionsStatus)
+	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		go a.deliverSanctionsCallback(ben)
+		a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
 	}
 	httputilx.WriteJSON(w, 200, ben)
 }
@@ -119,13 +128,18 @@ func (a *app) setBeneficiaryStatus(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	ben, changed, err := a.beneficiaries.SetStatus(r.PathValue("id"), req.Status)
+	var ben *b4b.Beneficiary
+	var changed bool
+	var err error
+	started := a.engine.Gate().Begin(func() {
+		ben, changed, err = a.beneficiaries.SetStatus(r.PathValue("id"), req.Status)
+	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		go a.deliverSanctionsCallback(ben)
+		a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
 	}
 	httputilx.WriteJSON(w, 200, ben)
 }
@@ -151,8 +165,8 @@ type sanctionsCallback struct {
 // result permanently. The current status is always readable from
 // GET /oversight/v1/beneficiaries/{id}, which is the documented recovery
 // path for a missed callback.
-func (a *app) deliverSanctionsCallback(ben *b4b.Beneficiary) {
-	a.deliverCallback("beneficiary "+ben.ID, a.callbackTarget(ben.CallbackURL), sanctionsCallback{
+func (a *app) deliverSanctionsCallback(started uint64, ben *b4b.Beneficiary) {
+	a.deliverCallback(started, "beneficiary "+ben.ID, a.callbackTarget(ben.CallbackURL), sanctionsCallback{
 		ID:              ben.ID,
 		ExternalRef:     ben.ExternalRef,
 		SanctionsStatus: ben.SanctionsStatus,

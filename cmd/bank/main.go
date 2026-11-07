@@ -16,7 +16,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 type account struct {
@@ -210,12 +212,61 @@ func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8081")
 	labclock.FollowEnv(context.Background(), "bank")
 	credits, ledger := newLogs()
-	mux := routes(newStore(), credits, ledger)
+	s := newStore()
+	mux := routes(s, credits, ledger)
+	simctl.Mount(mux, control(s, credits, ledger, addr))
 	log.Printf("bank listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// control is the bank's part of the sim control contract. Both scopes do
+// the same: nothing here is set up once by a platform — a platform never
+// calls the bank — so "what a run made" is everything that was not seeded.
+func control(s *store, credits, ledger *activity.Log, addr string) simctl.Config {
+	return simctl.Config{
+		Service: "bank", Kind: "stand-in", Simulates: "the merchants' business bank",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			cleared := s.reset()
+			cleared["activity"] = int(credits.Clear() + ledger.Clear())
+			return simctl.ResetResult{Cleared: cleared, Kept: []string{"seeded_accounts"}}, nil
+		},
+	}
+}
+
+// reset puts the ledger back as it was on first start: every account that
+// was not seeded goes (opened by a payout or by hand), the seeded ones are
+// back at their seed balance, and the ledger is empty. It says how many
+// accounts it closed, how many seeded balances it moved back, and how many
+// credits and transfers the ledger held.
+func (s *store) reset() map[string]int {
+	seed := newStore()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opened, balances := 0, 0
+	for id, a := range s.accts {
+		switch sa, seeded := seed.accts[id]; {
+		case !seeded:
+			opened++
+		case a.cents != sa.cents:
+			balances++
+		}
+	}
+	credits, legs := 0, 0
+	for _, e := range s.entries {
+		if strings.HasPrefix(e.ID, "ent_") {
+			credits++
+		} else {
+			legs++
+		}
+	}
+	s.accts, s.byIBAN, s.entries, s.seq = seed.accts, seed.byIBAN, nil, 0
+	return map[string]int{"accounts": opened, "balances": balances, "credits": credits, "transfers": legs / 2}
 }
 
 // summarizeCredit: "credited 733.34 EUR to GB00SIM… (Acme Ltd) — account opened".

@@ -1,6 +1,7 @@
 package bankingcircle
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
@@ -18,7 +19,7 @@ type recorder struct {
 	attempts int
 }
 
-func (r *recorder) send(_ *Subscription, env Envelope) error {
+func (r *recorder) send(_ context.Context, _ *Subscription, env Envelope) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.attempts++

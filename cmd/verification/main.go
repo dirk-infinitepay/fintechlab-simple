@@ -29,6 +29,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -40,6 +41,8 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 // outcomes holds the answer each vendor currently gives. One lock, because
@@ -96,6 +99,22 @@ func (o *outcomes) set(check, value string) error {
 	return fmt.Errorf("check %q cannot be %q (want: %s)", check, value, strings.Join(values, ", "))
 }
 
+// reset puts every check back to its default and says how many had been
+// flipped.
+func (o *outcomes) reset() int {
+	defaults := newOutcomes().m
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	flipped := 0
+	for check, v := range defaults {
+		if o.m[check] != v {
+			flipped++
+		}
+	}
+	o.m = defaults
+	return flipped
+}
+
 func (o *outcomes) snapshot() map[string]string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -118,9 +137,17 @@ type app struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8089")
 	a := &app{out: newOutcomes()}
 
+	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome to change one", addr)
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+}
+
+// routes is the four vendors' surface, the outcome switches, and the sim
+// control contract.
+func (a *app) routes(addr string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]any{"status": "ok", "service": "verification"})
@@ -158,8 +185,35 @@ func main() {
 	mux.HandleFunc("POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
 	mux.HandleFunc("POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
 
-	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome to change one", addr)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	simctl.Mount(mux, simctl.Config{
+		Service: "verification", Kind: "vendor", Simulates: "Creditsafe, iban.com, KYC6 and LexisNexis",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset:     a.reset,
+	})
+	return mux
+}
+
+// reset is POST /sim/reset. Every scope puts the outcomes back to their
+// defaults: a flipped check is a run's trap. flow keeps what a platform
+// obtained once and holds on to — the bearer tokens it was issued, the
+// monitoring portfolios it created — because taking them away mid-session
+// fails its next call with a 401 that no run caused. all is first start:
+// no token is valid and portfolio ids count from 1 again.
+func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+	cleared := map[string]int{"outcomes": a.out.reset()}
+	if req.Scope != simctl.ScopeAll {
+		return simctl.ResetResult{Cleared: cleared, Kept: []string{"tokens", "portfolios"}}, nil
+	}
+	tokens := 0
+	a.tokens.Range(func(k, _ any) bool {
+		a.tokens.Delete(k)
+		tokens++
+		return true
+	})
+	cleared["tokens"] = tokens
+	cleared["portfolios"] = int(a.portfolioIDs.Swap(0))
+	return simctl.ResetResult{Cleared: cleared}, nil
 }
 
 // --- the lab seam -------------------------------------------------------

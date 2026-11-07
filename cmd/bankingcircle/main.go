@@ -21,6 +21,9 @@
 //     lump sum landed" trigger (POST /internal/incoming-payments), and a
 //     no-auth balance proxy (GET /internal/accounts/{accountId}/balances) —
 //     lab-only, same-network trust.
+//
+// The sim control contract (internal/simctl: /sim/info, /sim/logs,
+// /sim/reset) is on LISTEN with the other /sim routes, behind the bearer.
 package main
 
 import (
@@ -48,7 +51,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -80,9 +85,15 @@ type app struct {
 	// reportLog is every reconciliation read: the two reports and a
 	// payment's status. See recordRead.
 	reportLog *activity.Log
+	// bank is the ledger, engine, dispatcher, mailbox and subscriptions
+	// together, for POST /sim/reset.
+	bank *bankingcircle.Bank
+	// listeners are the vendor-facing addresses, for GET /sim/info.
+	listeners []string
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8085")
 	internalAddr := env("INTERNAL_LISTEN", ":8095")
 	delay := envDuration("PROCESSING_DELAY", 2*time.Second)
@@ -157,6 +168,8 @@ func main() {
 		tokenTTL: envDuration("TOKEN_TTL", time.Hour),
 		delivery: deliveryCfg,
 
+		listeners: []string{addr, internalAddr},
+
 		bankCreditURL: bankCreditURL,
 		payLog: activity.New("payments", "Payments received",
 			"What arrived on the lab bridge: payouts from B4B, and money landing on the safeguarding accounts."),
@@ -205,6 +218,9 @@ func main() {
 	log.Printf("banking-circle: seeded subscription %s -> %s (batch=%d, retries=%d, time_scale=%g)",
 		seeded.ID, dest, seeded.MaxNotificationsPerMessage,
 		deliveryCfg.DeactivateAfterRetries, deliveryCfg.TimeScale)
+	// Taken after the seed, before either listener: the subscriptions as
+	// they stand now are what a reset of scope all puts back.
+	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
 
 	go func() {
 		log.Printf("banking-circle internal listening on %s (plain, no auth) — B4B bridge only", internalAddr)
@@ -317,6 +333,18 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("GET /payments", a.requireBearer(a.listPayments))
 	mux.HandleFunc("GET /payments/{id}", a.requireBearer(a.getPayment))
 	mux.HandleFunc("GET /reconciliation", a.requireBearer(a.reconcile))
+	// The sim control contract (internal/simctl): who this is, its own log
+	// lines, and the reset. Behind the bearer like every other /sim route
+	// here, because this is the listener the lab API holds a token for.
+	ctl := http.NewServeMux()
+	simctl.Mount(ctl, simctl.Config{
+		Service: "banking-circle", Kind: "vendor", Simulates: "Banking Circle Connect",
+		Listeners: a.listeners,
+		Reset:     a.reset,
+	})
+	for _, route := range []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"} {
+		mux.HandleFunc(route, a.requireBearer(ctl.ServeHTTP))
+	}
 
 	// The Connect reports surface. These are what a reconciliation sweep
 	// reads, so they carry the vendor's own paths and body shapes rather
@@ -332,6 +360,30 @@ func (a *app) mux() *http.ServeMux {
 
 func (a *app) deliveryConfig(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, a.delivery)
+}
+
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow clears
+// what a run makes -- payments, balances, notifications not yet delivered,
+// pauses, emails, forced outcomes, activity -- and keeps what a platform set
+// up once: its subscriptions, the accounts its payouts opened, its bearer
+// tokens. all puts the bank back as it was on first start: the seeded
+// subscription only, the safeguarding accounts only, and no tokens --
+// including the one this request came with. Work in flight is dropped, not
+// raced (bankingcircle.Bank.Reset). Never refused: nothing here is unsafe
+// to cut short.
+func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+	all := req.Scope == simctl.ScopeAll
+	cleared := a.bank.Reset(all, func(cleared map[string]int) {
+		cleared["activity"] = int(a.payLog.Clear() + a.notifLog.Clear() + a.reportLog.Clear())
+		if all {
+			cleared["tokens"] = a.tokens.clear()
+		}
+	})
+	kept := []string{"subscriptions", "accounts", "tokens"}
+	if all {
+		kept = nil
+	}
+	return simctl.ResetResult{Cleared: cleared, Kept: kept}, nil
 }
 
 // internalMux is the lab-only, unauthenticated B4B<->Banking-Circle bridge
@@ -365,6 +417,22 @@ func (s *tokenStore) issue(ttl time.Duration) string {
 	s.tokens[tok] = time.Now().Add(ttl)
 	s.mu.Unlock()
 	return tok
+}
+
+// clear forgets every token issued, for a reset of scope all, and says how
+// many were still live.
+func (s *tokenStore) clear() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	live := 0
+	now := time.Now()
+	for _, exp := range s.tokens {
+		if now.Before(exp) {
+			live++
+		}
+	}
+	s.tokens = map[string]time.Time{}
+	return live
 }
 
 func (s *tokenStore) valid(tok string) bool {

@@ -16,6 +16,7 @@ package b4b
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
@@ -116,19 +117,28 @@ type Engine struct {
 	mu           sync.Mutex
 	payments     map[string]*Payment
 	delay        time.Duration // per-hop delay, simulates real bank latency
-	onTransition func(*Payment)
+	onTransition func(p *Payment, started uint64)
+	gate         Gate
+	walking      atomic.Int64 // payments still walking their phases
 }
 
 // NewEngine builds an Engine. onTransition fires (with a value copy, safe to
 // read without further locking) on every state transition, including the
-// initial B4BAccepted one; pass nil to disable.
-func NewEngine(delay time.Duration, onTransition func(*Payment)) *Engine {
+// initial B4BAccepted one, with the epoch the payment's work started under:
+// whatever the caller does about the transition later -- a callback, the
+// bridge call -- goes through Gate().Do with it, so a reset in between drops
+// it. Pass nil to disable.
+func NewEngine(delay time.Duration, onTransition func(p *Payment, started uint64)) *Engine {
 	return &Engine{
 		payments:     map[string]*Payment{},
 		delay:        delay,
 		onTransition: onTransition,
 	}
 }
+
+// Gate is the epoch this engine's payments, and everything done about them,
+// run under. A reset holds it.
+func (e *Engine) Gate() *Gate { return &e.gate }
 
 // Submit records p as B4BAccepted (firing immediately) and, after `delay`
 // per hop, progresses it in a goroutine through
@@ -137,52 +147,90 @@ func NewEngine(delay time.Duration, onTransition func(*Payment)) *Engine {
 // lifecycle progression.
 func (e *Engine) Submit(p *Payment) {
 	ts := labclock.Now().Format(time.RFC3339)
-	e.mu.Lock()
-	p.State = StateAccepted
-	p.CreatedAt = ts
-	p.UpdatedAt = ts
-	e.payments[p.ID] = p
-	cp := *p
-	e.mu.Unlock()
-	e.notify(cp)
-	go e.process(p)
+	var cp Payment
+	started := e.gate.Begin(func() {
+		e.mu.Lock()
+		p.State = StateAccepted
+		p.CreatedAt = ts
+		p.UpdatedAt = ts
+		e.payments[p.ID] = p
+		cp = *p
+		e.mu.Unlock()
+		e.walking.Add(1)
+	})
+	e.notify(cp, started)
+	go e.process(p, started)
 }
 
 // process walks p through whatever states it has not reached yet. It reads
 // the starting point from p rather than assuming B4BAccepted, so a payment
-// restored from the state file resumes instead of replaying.
-func (e *Engine) process(p *Payment) {
+// restored from the state file resumes instead of replaying. Each step is
+// taken only if no reset happened since the payment's work started; after
+// one, the payment no longer exists and the walk stops where it is.
+func (e *Engine) process(p *Payment, started uint64) {
+	defer e.walking.Add(-1)
 	e.mu.Lock()
 	rest := remainingStates(p.State)
 	e.mu.Unlock()
 
 	for _, st := range rest {
 		e.sleep()
-		e.mu.Lock()
-		p.State = st
-		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
-		cp := *p
-		e.mu.Unlock()
-		e.notify(cp)
+		if !e.advance(p, started, func() PaymentState { return st }) {
+			return
+		}
 	}
 
 	e.sleep()
-	e.mu.Lock()
-	if p.ForceFail {
-		p.State = StateFailed
-	} else {
-		p.State = StateTMApproved
+	e.advance(p, started, func() PaymentState {
+		if p.ForceFail {
+			return StateFailed
+		}
+		return StateTMApproved
+	})
+}
+
+// advance moves p to the state next names and fires onTransition, unless a
+// reset moved the epoch since started, in which case nothing happens.
+func (e *Engine) advance(p *Payment, started uint64, next func() PaymentState) bool {
+	var cp Payment
+	ok := e.gate.Do(started, func() {
+		e.mu.Lock()
+		p.State = next()
+		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
+		cp = *p
+		e.mu.Unlock()
+	})
+	if !ok {
+		return false
 	}
-	p.UpdatedAt = labclock.Now().Format(time.RFC3339)
-	cp := *p
-	e.mu.Unlock()
-	e.notify(cp)
+	e.notify(cp, started)
+	return true
 }
 
 func (e *Engine) sleep() {
 	if e.delay > 0 {
 		time.Sleep(e.delay)
 	}
+}
+
+// Walking is how many payment walks are still running, including any a
+// reset dropped that have not yet woken to find out.
+func (e *Engine) Walking() int { return int(e.walking.Load()) }
+
+// Clear drops every payment and says how many there were, and how many of
+// them had not reached a terminal state. Call it inside Gate().Hold: the
+// walkers it leaves behind are then refused their next step.
+func (e *Engine) Clear() (payments, inFlight int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, p := range e.payments {
+		if remainingStates(p.State) != nil {
+			inFlight++
+		}
+	}
+	payments = len(e.payments)
+	e.payments = map[string]*Payment{}
+	return payments, inFlight
 }
 
 // Get returns a copy of the payment by ID.
@@ -209,8 +257,8 @@ func (e *Engine) List() []*Payment {
 	return out
 }
 
-func (e *Engine) notify(p Payment) {
+func (e *Engine) notify(p Payment, started uint64) {
 	if e.onTransition != nil {
-		e.onTransition(&p)
+		e.onTransition(&p, started)
 	}
 }

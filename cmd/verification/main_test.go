@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -216,4 +217,83 @@ func nested(m map[string]any, a, b string) map[string]any {
 		return map[string]any{}
 	}
 	return second
+}
+
+// resetVia posts a reset to the service's own mux and decodes the answer.
+func resetVia(t *testing.T, a *app, scope string) (cleared map[string]int, kept []string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	a.routes(":8089").ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/sim/reset",
+		bytes.NewReader([]byte(`{"scope":"`+scope+`"}`))))
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset %s: %d %s", scope, w.Code, w.Body)
+	}
+	var got struct {
+		Cleared map[string]int `json:"cleared"`
+		Kept    []string       `json:"kept"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got.Cleared, got.Kept
+}
+
+// TestFlowResetPutsOutcomesBackAndKeepsTokens: a flipped check is a run's
+// trap and goes; a token the platform was issued is what it set up once,
+// and still opens the bearer routes after the reset.
+func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
+	a := &app{out: newOutcomes()}
+	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
+	for check, outcome := range map[string]string{checkScreening: "hit", checkIdentity: "fail"} {
+		if err := a.out.set(check, outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleared, kept := resetVia(t, a, "flow")
+	if len(cleared) != 1 || cleared["outcomes"] != 2 {
+		t.Errorf("cleared = %v, want two outcomes back to their defaults", cleared)
+	}
+	if strings.Join(kept, ",") != "tokens,portfolios" {
+		t.Errorf("kept = %v", kept)
+	}
+	for check, v := range newOutcomes().m {
+		if got := a.out.get(check); got != v {
+			t.Errorf("%s = %q after a reset, want its default %q", check, got, v)
+		}
+	}
+	if code, out := call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{}`, bearerHdr(cs)); code != http.StatusOK {
+		t.Errorf("a token issued before a flow reset: %d %v", code, out)
+	}
+	if _, out := call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"q"}`, bearerHdr(cs)); out["portfolioId"] != float64(2) {
+		t.Errorf("portfolio ids after a flow reset: %v, want 2", out["portfolioId"])
+	}
+}
+
+// TestAllResetIsFirstStart: no token issued before it is valid, and
+// portfolio ids count from 1 again.
+func TestAllResetIsFirstStart(t *testing.T) {
+	a := &app{out: newOutcomes()}
+	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	token(t, a, a.lexisToken, "/lexisnexis/oauth/token", `{"client_id":"c","client_secret":"s"}`)
+	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
+	if err := a.out.set(checkCompany, "dissolved"); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, kept := resetVia(t, a, "all")
+	if cleared["outcomes"] != 1 || cleared["tokens"] != 2 || cleared["portfolios"] != 1 || len(kept) != 0 {
+		t.Errorf("cleared = %v, kept = %v", cleared, kept)
+	}
+	if a.out.get(checkCompany) != "active" {
+		t.Error("company should be back to active")
+	}
+	if code, _ := call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{}`, bearerHdr(cs)); code != http.StatusUnauthorized {
+		t.Errorf("a token issued before an all reset: %d, want 401", code)
+	}
+	cs = token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	if _, out := call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"q"}`, bearerHdr(cs)); out["portfolioId"] != float64(1) {
+		t.Errorf("portfolio ids after an all reset: %v, want 1", out["portfolioId"])
+	}
 }

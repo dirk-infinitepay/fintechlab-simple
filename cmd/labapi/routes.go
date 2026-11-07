@@ -87,6 +87,8 @@ func (a *app) apiRoutes() []route {
 		{"GET", "/v1/lab", "/api/overview", "lab", "Every service and registered plugin with its last health probe", "each service's health_path, probed in the background", a.overview},
 		{"GET", "/v1/flow", "/api/flow", "lab", "The settlement run as a sequence: participants, hops, counts, report", "each vendor's GET /sim/activity, the plugin's status_path", a.flow},
 		{"GET", "/v1/flow/hops/{id}", "/api/flow/hops/{id}", "lab", "The events behind one arrow of the run diagram", "same reads as GET /v1/flow", a.flowHop},
+		{"POST", "/v1/lab/reset", "", "lab", "Reset every service in order, producers first and the clock last", "every service's POST /sim/reset; the merchant registry on all", a.labReset},
+		{"GET", "/v1/logs", "", "lab", "Every service's log lines, merged by time, behind one cursor", "every service's GET /sim/logs", a.labLogs},
 		{"GET", "/v1/stand-ins", "/api/stand-ins", "lab", "The stand-ins: shown or hidden, and how each is wired, read live", "settlement+aci /sim/connected, banking-circle subscriptions", a.listStandIns},
 		{"POST", "/v1/stand-ins/{id}", "/api/stand-ins/{id}", "lab", "Show, hide, connect or disconnect one stand-in", "settlement+aci POST /sim/connected; BC (de)activate", a.setStandIn},
 
@@ -94,6 +96,8 @@ func (a *app) apiRoutes() []route {
 		{"GET", "/v1/services/{id}", "", "services", "One service: its catalogue entry and its last health probe", "the service's health_path, probed in the background", a.getService},
 		{"POST", "/v1/services/{id}/probe", "/api/services/{id}/probe", "services", "Probe one service's health now instead of waiting for the monitor", "the service's GET health_path", a.probeService},
 		{"GET", "/v1/services/{id}/activity", "/api/services/{id}/activity", "services", "One service's activity logs, as the service reports them", "the service's GET /sim/activity (or plugin activity_path)", a.serviceActivity},
+		{"GET", "/v1/services/{id}/logs", "", "services", "One service's own log lines", "the service's GET /sim/logs", a.serviceLogs},
+		{"POST", "/v1/services/{id}/reset", "", "services", "Reset one service: flow or all", "the service's POST /sim/reset", a.serviceReset},
 		{"ANY", "/v1/services/{id}/sim/{path...}", "", "services", "Any of a service's /sim/* lab hooks, with the credentials it needs", "the service's /sim/{path}: method, query and body as sent", a.simPassthrough},
 
 		{"GET", "/v1/clock", "/api/clock", "clock", "The lab clock as it stands", "clock GET /clock", a.labClock},

@@ -27,6 +27,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
@@ -34,7 +35,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 type app struct {
@@ -50,6 +53,10 @@ type app struct {
 	bcURL         string
 	forceFails    map[string]bool
 	statePath     string
+	// persistMu makes each write of the state file one snapshot-and-save,
+	// so writes land in the order their snapshots were taken: a stale one
+	// can never overwrite a reset's.
+	persistMu sync.Mutex
 	// callbackURL is the client-account webhook endpoint: where a callback
 	// goes when the entity it is about carries no callback_url of its own.
 	// The real API has exactly this -- one endpoint agreed per client, not
@@ -72,6 +79,7 @@ type app struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8086")
 	labclock.FollowEnv(context.Background(), "b4b")
 	keysDir := env("B4B_JWT_KEYS_DIR", "/keys/b4b-keys")
@@ -142,6 +150,14 @@ func main() {
 	a.dir.OnChange = a.persist
 	a.beneficiaries.OnChange = a.persist
 
+	log.Printf("b4b listening on %s kid=%s allowlist=%s delay=%s banking_circle_url=%s state=%s callback_url=%q enforce_beneficiary_company=%t",
+		addr, kid, spec, delay, bcURL, statePathLabel(statePath), callbackURL, a.enforceCompany)
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(addr))))
+}
+
+// routes is b4b's HTTP surface. addr is the vendor listener, for
+// GET /sim/info.
+func (a *app) routes(addr string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "b4b"})
@@ -193,9 +209,20 @@ func main() {
 	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.requireAuth(a.setCompanySanctions))
 	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.requireAuth(a.setPersonSanctions))
 
-	log.Printf("b4b listening on %s kid=%s allowlist=%s delay=%s banking_circle_url=%s state=%s callback_url=%q enforce_beneficiary_company=%t",
-		addr, kid, spec, delay, bcURL, statePathLabel(statePath), callbackURL, a.enforceCompany)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	// The control contract (internal/simctl), behind the bearer JWT like
+	// the other /sim hooks: the lab API's passthrough signs one.
+	ctl := http.NewServeMux()
+	simctl.Mount(ctl, simctl.Config{
+		Service: "b4b", Kind: "vendor", Simulates: "B4B Payments (Oversight API)",
+		Listeners: []string{addr},
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			return a.reset(req.Scope)
+		},
+	})
+	for _, route := range []string{"GET /sim/info", "GET /sim/logs", "POST /sim/reset"} {
+		mux.HandleFunc(route, a.requireAuth(ctl.ServeHTTP))
+	}
+	return mux
 }
 
 // loadVerificationKey decides what this service verifies inbound tokens
@@ -240,16 +267,51 @@ func loadVerificationKey(keysDir, pubKeyPath, kid string) (*rsa.PublicKey, error
 // is bad, but taking the service down mid-payment because a disk is full
 // is worse, and the in-memory state is still correct.
 func (a *app) persist() {
-	if a.statePath == "" {
-		return
+	if err := a.save(); err != nil {
+		log.Printf("b4b: persist state to %s: %v", a.statePath, err)
 	}
+}
+
+func (a *app) save() error {
+	if a.statePath == "" {
+		return nil
+	}
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
 	var s b4b.State
 	a.dir.Snapshot(&s)
 	a.beneficiaries.Snapshot(&s)
 	a.engine.Snapshot(&s)
-	if err := b4b.SaveState(a.statePath, s); err != nil {
-		log.Printf("b4b: persist state to %s: %v", a.statePath, err)
+	return b4b.SaveState(a.statePath, s)
+}
+
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow drops the
+// payments, the callbacks in flight and both activity logs, and keeps the
+// boarding; all drops the boarding too, back to the empty state file of a
+// first start. Either way the state file is written before it answers, so
+// a restart cannot bring back -- or resume -- a payment it dropped. The
+// signing keys and B4B_FORCE_FAILURE_BENEFICIARY_IDS are configuration and
+// stay.
+func (a *app) reset(scope string) (simctl.ResetResult, error) {
+	var res simctl.ResetResult
+	var err error
+	a.engine.Gate().Hold(func(deliveries int) {
+		res = b4b.Reset(scope, a.engine, a.dir, a.beneficiaries)
+		res.Cleared["callbacks_in_flight"] = deliveries
+		res.Cleared["activity_events"] = int(a.payLog.Clear() + a.cbLog.Clear())
+		res.Kept = append(res.Kept, "jwt_keys", "force_failure_beneficiary_ids")
+		err = a.save()
+	})
+	if err != nil {
+		return res, fmt.Errorf("reset in memory, but the state file was not written, so a restart would bring it back: %w", err)
 	}
+	return res, nil
+}
+
+// later delivers in the background, counted as in flight until it is done,
+// under the epoch the work started in: a reset in between drops it.
+func (a *app) later(started uint64, deliver func(started uint64)) {
+	a.engine.Gate().Go(started, deliver)
 }
 
 // requireAuth verifies the inbound Authorization: Bearer <RS512 JWT> header
@@ -308,13 +370,20 @@ func (a *app) callbackTarget(override string) string {
 // no AES-GCM -- and are retried by the real vendor for about a day, which
 // is why every callback here goes through one retrying path rather than
 // some of them being best-effort single shots.
-func (a *app) deliverCallback(what, dest string, body any) {
+//
+// started is the epoch the work began in. Every attempt, and the activity
+// event it leaves, goes through the gate: after a reset the rest of the
+// delivery is dropped, not raced.
+func (a *app) deliverCallback(started uint64, what, dest string, body any) {
+	gate := a.engine.Gate()
 	if dest == "" {
-		log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
-		a.cbLog.Record(activity.Event{
-			Op: "callback", Summary: what + " — nowhere to send it",
-			Status: activity.StatusWarn,
-			Detail: map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"},
+		gate.Do(started, func() {
+			log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
+			a.cbLog.Record(activity.Event{
+				Op: "callback", Summary: what + " — nowhere to send it",
+				Status: activity.StatusWarn,
+				Detail: map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"},
+			})
 		})
 		return
 	}
@@ -329,33 +398,44 @@ func (a *app) deliverCallback(what, dest string, body any) {
 		if wait := retry.SleepBeforeAttempt(attempt, a.backs); wait > 0 {
 			time.Sleep(wait)
 		}
-		st, err := a.postWebhook(dest, payload)
-		last, lastErr = st, err
-		if err == nil {
-			log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
-			a.cbLog.Record(activity.Event{
-				Op: "callback", Peer: dest, Summary: what + " delivered",
-				Status: activity.StatusOK,
-				Detail: map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)},
-			})
+		var st int
+		var postErr error
+		if !gate.Do(started, func() {
+			st, postErr = a.postWebhook(dest, payload)
+			if postErr == nil {
+				log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
+				a.cbLog.Record(activity.Event{
+					Op: "callback", Peer: dest, Summary: what + " delivered",
+					Status: activity.StatusOK,
+					Detail: map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)},
+				})
+			}
+		}) {
+			log.Printf("b4b: %s callback dropped before attempt %d: b4b was reset", what, attempt)
 			return
 		}
-		log.Printf("b4b: %s callback attempt=%d http=%d err=%v", what, attempt, st, err)
+		last, lastErr = st, postErr
+		if postErr == nil {
+			return
+		}
+		log.Printf("b4b: %s callback attempt=%d http=%d err=%v", what, attempt, st, postErr)
 		if !retry.ShouldRetry(st, attempt, a.maxTry) {
 			break
 		}
 	}
-	log.Printf("b4b: %s callback failed after retries: http=%d err=%v", what, last, lastErr)
 	// Recorded once, at the end, rather than per attempt: the retries are
 	// one event from the operator's point of view, and a panel that shows
 	// four rows for one refused callback buries the other three payouts.
-	detail := map[string]string{"attempts": strconv.Itoa(a.maxTry), "http": strconv.Itoa(last)}
-	if lastErr != nil {
-		detail["error"] = lastErr.Error()
-	}
-	a.cbLog.Record(activity.Event{
-		Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
-		Status: activity.StatusBad, Detail: detail,
+	gate.Do(started, func() {
+		log.Printf("b4b: %s callback failed after retries: http=%d err=%v", what, last, lastErr)
+		detail := map[string]string{"attempts": strconv.Itoa(a.maxTry), "http": strconv.Itoa(last)}
+		if lastErr != nil {
+			detail["error"] = lastErr.Error()
+		}
+		a.cbLog.Record(activity.Event{
+			Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
+			Status: activity.StatusBad, Detail: detail,
+		})
 	})
 }
 
@@ -463,9 +543,13 @@ func envDuration(k string, def time.Duration) time.Duration {
 	return d
 }
 
+// logReq logs every request but the reads of the log itself: a reader
+// polling GET /sim/logs would otherwise fill the ring with its own polls.
 func logReq(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/sim/logs" {
+			log.Printf("%s %s", r.Method, r.URL.Path)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

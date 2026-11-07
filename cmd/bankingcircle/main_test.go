@@ -77,6 +77,7 @@ func newTestApp(t *testing.T) *app {
 	a.dispatch.Send = a.sendEncrypted
 	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
+	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
 	return a
 }
 
@@ -1063,6 +1064,12 @@ func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
 
+	// Held booked for good: the safeguarding account is empty, so left to
+	// itself the payout ends MissingFunding after the 5 ms delay and drops
+	// off the report before the reads below are done.
+	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomePending}); err != nil {
+		t.Fatal(err)
+	}
 	createBody := `{"paymentId":"bcp_report1","accountId":"` + merchantAccount + `","amount":"1.00","currency":"EUR"}`
 	resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
 	if err != nil {

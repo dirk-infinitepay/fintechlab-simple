@@ -122,6 +122,38 @@ Answers `200`:
                        "status": "ok", "detail": {"payment": "pay_9f8e7d6c5b4a", "idempotency_key": "tutorial-1", "status": "OK"}}]}]}
 ```
 
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "payment-api"`, `"kind": "stand-in"`,
+`"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): one line per
+request.
+
+### `POST /sim/reset`
+
+Forgets every payment. Both scopes do the same: nothing here is set up
+once.
+
+- **Clears**: every payment and every `Idempotency-Key` it was stored
+  under, so a key seen before the reset creates a new payment after it;
+  the `payments` log. A `POST /payments` still waiting on the bank or the
+  notifier when the reset lands answers as usual but is not stored.
+- **Keeps**: nothing. The ledger moves are the bank's, and reset there.
+
+`cleared` counts `payments`, `idempotency_keys` and `activity` events.
+
+```json
+{"service": "payment-api", "scope": "flow",
+ "cleared": {"activity": 2, "idempotency_keys": 1, "payments": 2},
+ "kept": [], "at": "2026-11-07T12:00:00Z"}
+```
+
 ## Called by
 
 - **by hand**: `make demo-payment` (`scripts/demo-payment.sh`) posts

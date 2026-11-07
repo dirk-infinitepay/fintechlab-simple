@@ -12,12 +12,16 @@
 //	POST   /clock/holds           {"holder", "reason", "ttl_seconds"} — refuse moves while a run is in flight
 //	DELETE /clock/holds/{holder}  release it
 //	GET    /sim/activity          every move and hold
+//	GET    /sim/info, /sim/logs   the sim control contract (internal/simctl)
+//	POST   /sim/reset             holds released, back to CLOCK_START; 409 while held
 //
 // State is in memory: a restarted clock is on the real time, like a
 // restarted lab.
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -27,9 +31,12 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8096")
 
 	cals, err := calendars(env("CLOCK_CALENDARS", "GB=Europe/London,SE=Europe/Stockholm"))
@@ -38,13 +45,7 @@ func main() {
 	}
 	s := labclock.NewServer(cals, nil)
 
-	if start := strings.TrimSpace(os.Getenv("CLOCK_START")); start != "" {
-		req := labclock.Request{Reason: "CLOCK_START=" + start}
-		if start == string(labclock.ModeAutoBusinessDay) || start == string(labclock.ModeReal) {
-			req.Mode = labclock.Mode(start)
-		} else {
-			req.At = start
-		}
+	if req, ok := startRequest(); ok {
 		if _, err := s.Move(req); err != nil {
 			log.Fatalf("clock: CLOCK_START: %v", err)
 		}
@@ -57,9 +58,45 @@ func main() {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "clock"})
 	})
 	s.Routes(mux)
+	simctl.Mount(mux, simctl.Config{
+		Service: "clock", Kind: "lab", Simulates: "the lab's business clock",
+		Listeners: []string{addr},
+		// One scope: the clock has nothing a platform set up once.
+		Scopes: []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			start, _ := startRequest()
+			holds, changes, err := s.Reset(req.Force, start)
+			if errors.Is(err, labclock.ErrHeld) {
+				return simctl.ResetResult{}, simctl.Refusal{Reason: err.Error() + " — a settlement run is in flight"}
+			}
+			if err != nil {
+				return simctl.ResetResult{}, err
+			}
+			return simctl.ResetResult{
+				Cleared: map[string]int{"holds": holds, "changes": int(changes)},
+				Kept:    []string{"calendars"},
+			}, nil
+		},
+	})
 
 	log.Printf("clock listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, mux))
+}
+
+// startRequest is CLOCK_START as a move: an RFC 3339 instant, "real" or
+// "auto-business-day". Where the clock starts, and where a reset puts it.
+func startRequest() (labclock.Request, bool) {
+	start := strings.TrimSpace(os.Getenv("CLOCK_START"))
+	if start == "" {
+		return labclock.Request{}, false
+	}
+	req := labclock.Request{Reason: "CLOCK_START=" + start}
+	if start == string(labclock.ModeAutoBusinessDay) || start == string(labclock.ModeReal) {
+		req.Mode = labclock.Mode(start)
+	} else {
+		req.At = start
+	}
+	return req, true
 }
 
 // calendars reads "GB=Europe/London,SE=Europe/Stockholm", with each code's

@@ -214,6 +214,36 @@ Answers `200`:
 
 Events carry no `peer`. `at` is wall-clock time.
 
+### `GET /sim/info`
+
+Who this is and what it can do, as every service answers it
+([the control contract](../README.md#the-control-contract)):
+`"service": "clock"`, `"kind": "lab"`, `"reset_scopes": ["flow", "all"]`.
+
+### `GET /sim/logs`
+
+The process's own log lines, as every service answers it
+([the control contract](../README.md#the-control-contract)): every move,
+hold and refusal is a line here too.
+
+### `POST /sim/reset`
+
+Puts the clock back where it started. Both scopes do the same: the clock
+has nothing a platform set up once.
+
+- **Clears**: every hold, and the `changes` log; then applies `CLOCK_START`
+  as on first start, or the real clock when it is unset. The move back is
+  the first event of the new log.
+- **Keeps**: the calendars.
+- **Refuses** with `409` while a hold is live — a settlement run is in
+  flight, and resetting the clock under it would move the run's business
+  day. `{"force": true}` releases the hold and resets anyway.
+
+```json
+{"service": "clock", "scope": "flow", "cleared": {"holds": 0, "changes": 7},
+ "kept": ["calendars"], "at": "2026-11-07T12:00:00Z"}
+```
+
 ## Called by
 
 - **every vendor, as a follower**: bank, settlement, worldline,

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/hmacx"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -61,11 +64,11 @@ type store struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8443")
 	cert := env("TLS_CERT", "/keys/certs/receiver.pem")
 	key := env("TLS_KEY", "/keys/certs/receiver-key.pem")
 	secret := []byte(env("HMAC_SECRET", "sim-hmac-dev-only"))
-	skew := 10 * time.Minute
 	s := &store{}
 
 	// The ca service and this one start concurrently under compose; not
@@ -75,6 +78,14 @@ func main() {
 	if err := waitfor.Files(30*time.Second, cert, key); err != nil {
 		log.Fatalf("receiver: %v", err)
 	}
+	log.Printf("receiver listening https %s", addr)
+	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(s.routes(secret, addr))))
+}
+
+// routes is the receiver's HTTP surface: the HMAC-checked listener, the
+// raw capture sink, what each stored, and the sim control contract.
+func (s *store) routes(secret []byte, addr string) *http.ServeMux {
+	const skew = 10 * time.Minute
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "receiver"})
@@ -165,8 +176,27 @@ func main() {
 		httputilx.WriteJSON(w, 200, map[string]any{"raw_events": s.rawEvents})
 	})
 
-	log.Printf("receiver listening https %s", addr)
-	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(mux)))
+	// Both scopes do the same: everything here is what a run delivered.
+	simctl.Mount(mux, simctl.Config{
+		Service: "receiver", Kind: "stand-in", Simulates: "the platform's webhook listener",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			events, raw := s.reset()
+			return simctl.ResetResult{Cleared: map[string]int{"events": events, "raw_events": raw}}, nil
+		},
+	})
+	return mux
+}
+
+// reset empties both stores and says how many each held. GET /events and
+// GET /raw-events answer null again, as on first start.
+func (s *store) reset() (events, raw int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events, raw = len(s.events), len(s.rawEvents)
+	s.events, s.rawEvents = nil, nil
+	return events, raw
 }
 
 func shortID() string {

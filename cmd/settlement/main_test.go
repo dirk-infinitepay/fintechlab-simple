@@ -387,7 +387,7 @@ func TestSubmitPayoutMarksSubmissionFailedOnUnreachableB4B(t *testing.T) {
 	if err := a.store.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 	got, err := a.store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -429,7 +429,7 @@ func TestSubmitPayoutAwaitsFundingWhenSgaBalanceInsufficient(t *testing.T) {
 	if err := a.store.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 	got, err := a.store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -456,7 +456,7 @@ func TestSubmitPayoutMarksBalanceCheckFailedWhenBankingCircleUnreachable(t *test
 	if err := a.store.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 	got, err := a.store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -491,7 +491,7 @@ func TestSubmitPayoutDeclinedByVerification(t *testing.T) {
 	if err := a.store.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 	got, err := a.store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -554,7 +554,7 @@ func TestRetryPayoutSucceedsAfterFundingArrives(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 	got, err := a.store.Get(rec.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -644,7 +644,7 @@ func TestSubmitPayoutStopsOnABlockedBeneficiary(t *testing.T) {
 	if err := a.store.Create(rec); err != nil {
 		t.Fatal(err)
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, a.guard.start())
 
 	if paymentAttempted {
 		t.Fatal("a payment was submitted for a beneficiary whose sanctions_status is fail")

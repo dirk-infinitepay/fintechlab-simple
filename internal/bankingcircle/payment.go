@@ -1,6 +1,7 @@
 package bankingcircle
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -97,7 +98,17 @@ type Payment struct {
 	State     NotificationType `json:"state"`
 	CreatedAt string           `json:"createdAt"`
 	UpdatedAt string           `json:"updatedAt"`
+
+	// epoch is the run the payment was made in (Run.Current). A reset ends
+	// that run: the payment is cleared, and every step still to come for it
+	// — its processing, its notifications, its credit at the beneficiary's
+	// bank — is dropped.
+	epoch uint64
 }
+
+// Epoch is the run the payment was made in, for work done on its behalf
+// outside the engine (Run.Do, Dispatcher.EnqueueFrom).
+func (p *Payment) Epoch() uint64 { return p.epoch }
 
 // errForcedRejection routes a ForceNext rejection through the same branch
 // as any other failed move.
@@ -146,6 +157,12 @@ type Engine struct {
 	onTransition func(*Payment)
 	forced       []Outcome // taken in order by the next outgoing payments
 	refSeq       int64     // last ReferenceNumber handed out
+
+	// run is the epoch a reset moves; the engine owns it because the
+	// payments are where in-flight work starts. NewBank shares it with the
+	// dispatcher.
+	run *Run
+	wg  sync.WaitGroup // payments still walking their phases
 }
 
 // NewEngine builds an Engine backed by ledger. onTransition fires (with a
@@ -158,8 +175,17 @@ func NewEngine(ledger *Ledger, delay time.Duration, onTransition func(*Payment))
 		payments:     map[string]*Payment{},
 		delay:        delay,
 		onTransition: onTransition,
+		run:          NewRun(),
 	}
 }
+
+// Run is the engine's run: what a reset ends, and what work on a payment's
+// behalf checks before each step.
+func (e *Engine) Run() *Run { return e.run }
+
+// Wait blocks until every payment still walking its phases has finished or
+// been dropped. For tests.
+func (e *Engine) Wait() { e.wg.Wait() }
 
 // Create records p and immediately fires OutgoingPaymentBooked (the
 // equivalent of the old lifecycle's initial Received) and, after `delay`,
@@ -172,6 +198,7 @@ func NewEngine(ledger *Ledger, delay time.Duration, onTransition func(*Payment))
 func (e *Engine) Create(p *Payment) {
 	now := labclock.Now().Format(time.RFC3339)
 	e.mu.Lock()
+	p.epoch = e.run.Current()
 	p.State = NotificationOutgoingPaymentBooked
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -184,6 +211,7 @@ func (e *Engine) Create(p *Payment) {
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
+	e.wg.Add(1)
 	go e.process(p, outcome)
 }
 
@@ -209,39 +237,47 @@ func (e *Engine) ForcedOutcomes() []Outcome {
 	return append([]Outcome{}, e.forced...)
 }
 
+// process ends an outgoing payment after the delay. A reset during the
+// delay, or before the move, drops it: no money moves, no state changes and
+// nothing is notified for a payment the reset cleared.
 func (e *Engine) process(p *Payment, outcome Outcome) {
+	defer e.wg.Done()
 	if outcome == OutcomePending {
 		return
 	}
-	if e.delay > 0 {
-		time.Sleep(e.delay)
+	started := p.epoch
+	if !e.run.Sleep(started, e.delay) {
+		return
 	}
-	var err error
-	if outcome == OutcomeRejected {
-		err = errForcedRejection
-	} else {
-		var cents int64
-		cents, err = money.Parse(p.Amount)
-		if err == nil {
-			_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
+	e.run.Do(started, func(context.Context) {
+		// The move and the state change are one step under e.mu, the lock a
+		// reset clears the payments under: a reset sees both or neither.
+		e.mu.Lock()
+		var err error
+		if outcome == OutcomeRejected {
+			err = errForcedRejection
+		} else {
+			var cents int64
+			cents, err = money.Parse(p.Amount)
+			if err == nil {
+				_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
+			}
 		}
-	}
-
-	e.mu.Lock()
-	now := labclock.Now().Format(time.RFC3339)
-	switch {
-	case err == nil:
-		p.State = NotificationOutgoingPaymentProcessed
-		p.ProcessedAt = now
-	case errors.Is(err, ErrInsufficientFunds):
-		p.State = NotificationMissingFunding
-	default:
-		p.State = NotificationOutgoingPaymentRejected
-	}
-	p.UpdatedAt = now
-	cp := *p
-	e.mu.Unlock()
-	e.notify(cp)
+		now := labclock.Now().Format(time.RFC3339)
+		switch {
+		case err == nil:
+			p.State = NotificationOutgoingPaymentProcessed
+			p.ProcessedAt = now
+		case errors.Is(err, ErrInsufficientFunds):
+			p.State = NotificationMissingFunding
+		default:
+			p.State = NotificationOutgoingPaymentRejected
+		}
+		p.UpdatedAt = now
+		cp := *p
+		e.mu.Unlock()
+		e.notify(cp)
+	})
 }
 
 // Get returns a copy of the payment by ID.
@@ -317,8 +353,12 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 	return &cp, nil
 }
 
+// notify hands a transition to the caller, unless a reset has ended the run
+// the payment was made in. The dispatcher checks again under its own lock
+// (EnqueueFrom), which is what closes the gap between this check and the
+// notification being queued.
 func (e *Engine) notify(p Payment) {
-	if e.onTransition != nil {
+	if e.onTransition != nil && !e.run.Moved(p.epoch) {
 		e.onTransition(&p)
 	}
 }
@@ -339,9 +379,6 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := e.ledger.Credit(toAccountID, cents); err != nil {
-		return nil, err
-	}
 
 	// The sender's reference reaches the beneficiary as remittance
 	// information, the way Banking Circle shows it.
@@ -358,31 +395,45 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
+	// The credit and the record are one step under e.mu, so a reset cannot
+	// land between them and leave money on the account with no payment
+	// that put it there.
 	e.mu.Lock()
+	if _, err := e.ledger.Credit(toAccountID, cents); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	p.epoch = e.run.Current()
 	p.ReferenceNumber = e.nextReferenceNumber()
 	e.payments[p.ID] = p
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
 
+	e.wg.Add(1)
 	go e.processIncoming(p)
 
 	return &cp, nil
 }
 
 // processIncoming moves a booked incoming payment to
-// IncomingPaymentProcessed after the engine's delay.
+// IncomingPaymentProcessed after the engine's delay, unless a reset has
+// cleared it in the meantime.
 func (e *Engine) processIncoming(p *Payment) {
-	if e.delay > 0 {
-		time.Sleep(e.delay)
+	defer e.wg.Done()
+	started := p.epoch
+	if !e.run.Sleep(started, e.delay) {
+		return
 	}
-	e.mu.Lock()
-	p.State = NotificationIncomingPaymentProcessed
-	p.UpdatedAt = labclock.Now().Format(time.RFC3339)
-	p.ProcessedAt = p.UpdatedAt
-	cp := *p
-	e.mu.Unlock()
-	e.notify(cp)
+	e.run.Do(started, func(context.Context) {
+		e.mu.Lock()
+		p.State = NotificationIncomingPaymentProcessed
+		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
+		p.ProcessedAt = p.UpdatedAt
+		cp := *p
+		e.mu.Unlock()
+		e.notify(cp)
+	})
 }
 
 // nonEmpty is lines without the empty ones, nil when none are left.
@@ -447,6 +498,7 @@ func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, err
 	}
 	now := labclock.Now().Format(time.RFC3339)
 	p := &Payment{
+		epoch:                   e.run.Current(),
 		ID:                      "bcp_" + randomHex(6),
 		FromAccountID:           orig.ToAccountID,
 		ToAccountID:             orig.FromAccountID,
@@ -469,6 +521,7 @@ func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, err
 	e.mu.Unlock()
 	e.notify(cp)
 
+	e.wg.Add(1)
 	go e.processIncoming(p)
 
 	return &cp, nil

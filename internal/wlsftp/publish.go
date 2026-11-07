@@ -1,6 +1,7 @@
 package wlsftp
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,4 +39,39 @@ func Publish(root, filename string, plaintext []byte, keys *PGPKeys) (string, er
 		}
 	}
 	return outName, nil
+}
+
+// RemoveFiles deletes the regular files directly in root/dir whose name
+// ours accepts, and returns how many it deleted. It is how a reset takes
+// back what the acquirer wrote into a directory it shares with the
+// platform: the test is the caller's proof of authorship, and anything it
+// does not accept stays. It never deletes a directory, a symlink or
+// anything below dir. A missing dir is nothing to delete; a file that
+// disappears before it can be deleted (the platform took it) is not
+// counted. Every other failure is returned, after the rest are tried.
+func RemoveFiles(root, dir string, ours func(name string) bool) (int, error) {
+	full := filepath.Join(root, filepath.FromSlash(dir))
+	entries, err := os.ReadDir(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("wlsftp: read %s: %w", full, err)
+	}
+	var n int
+	var errs []error
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !ours(e.Name()) {
+			continue
+		}
+		p := filepath.Join(full, e.Name())
+		if err := os.Remove(p); err != nil {
+			if !os.IsNotExist(err) {
+				errs = append(errs, fmt.Errorf("wlsftp: remove %s: %w", p, err))
+			}
+			continue
+		}
+		n++
+	}
+	return n, errors.Join(errs...)
 }

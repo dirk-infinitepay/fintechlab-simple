@@ -1,6 +1,7 @@
 package bankingcircle
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -14,17 +15,20 @@ import (
 // one. Delivery itself is injected (Send) so the whole thing is testable
 // without HTTP, encryption or a network.
 type Dispatcher struct {
-	cfg   DeliveryConfig
-	subs  *SubscriptionStore
-	mail  *MailBox
-	logf  func(format string, args ...any)
-	sleep func(time.Duration)
+	cfg  DeliveryConfig
+	subs *SubscriptionStore
+	mail *MailBox
+	logf func(format string, args ...any)
+	// run is the epoch a reset moves. Its own until NewBank shares the
+	// engine's, so a reset ends both at the same instant.
+	run *Run
 
 	// Send delivers one encrypted batch to a subscription and reports
 	// whether it was acknowledged with a 2xx. Anything else -- a 500, a
 	// refused connection, a timeout -- is a failure that starts the retry
-	// schedule.
-	Send func(sub *Subscription, env Envelope) error
+	// schedule. ctx is cancelled when a reset begins; a send still on the
+	// wire then is abandoned with the run it belonged to.
+	Send func(ctx context.Context, sub *Subscription, env Envelope) error
 
 	// OnQueued reports notifications parked behind a pause. Parking
 	// happens inside Enqueue and inside delivery, neither of which the
@@ -52,13 +56,20 @@ type Dispatcher struct {
 	// window anyone can debug in.
 	paused map[string]bool
 	queued map[string][]Notification
-	wg     sync.WaitGroup
+	// inflight is every batch on its way out: being sent, or waiting out
+	// the retry schedule. Kept so a reset can say how many notifications it
+	// dropped mid-delivery.
+	inflight map[*flight]struct{}
+	wg       sync.WaitGroup
 }
 
 type queue struct {
 	items []Notification
 	timer *time.Timer
 }
+
+// flight is one batch's delivery, counted by its notifications.
+type flight struct{ n int }
 
 // NewDispatcher builds a Dispatcher. logf may be nil.
 func NewDispatcher(cfg DeliveryConfig, subs *SubscriptionStore, mail *MailBox, logf func(string, ...any)) *Dispatcher {
@@ -69,31 +80,47 @@ func NewDispatcher(cfg DeliveryConfig, subs *SubscriptionStore, mail *MailBox, l
 		mail = &MailBox{}
 	}
 	return &Dispatcher{
-		cfg:     cfg,
-		subs:    subs,
-		mail:    mail,
-		logf:    logf,
-		sleep:   time.Sleep,
-		queues:  map[string]*queue{},
-		pending: map[string][]Notification{},
-		paused:  map[string]bool{},
-		queued:  map[string][]Notification{},
+		cfg:      cfg,
+		subs:     subs,
+		mail:     mail,
+		logf:     logf,
+		run:      NewRun(),
+		queues:   map[string]*queue{},
+		pending:  map[string][]Notification{},
+		paused:   map[string]bool{},
+		queued:   map[string][]Notification{},
+		inflight: map[*flight]struct{}{},
 	}
 }
 
 // Enqueue adds n to sub's batch, flushing immediately if the batch is now
-// full and otherwise arming the flush timer.
+// full and otherwise arming the flush timer. n belongs to the run now; for
+// a notification about earlier work, use EnqueueFrom.
 func (d *Dispatcher) Enqueue(sub *Subscription, n Notification) {
+	d.EnqueueFrom(d.run.Current(), sub, n)
+}
+
+// EnqueueFrom is Enqueue for a notification about work that started in run
+// started — a payment's (Payment.Epoch). If a reset has ended that run the
+// notification is dropped: it is about a payment that no longer exists.
+// The check is under the lock a reset clears the queues under, so the
+// notification is either queued before the reset (and cleared by it) or
+// dropped, never queued after it.
+func (d *Dispatcher) EnqueueFrom(started uint64, sub *Subscription, n Notification) {
 	// A paused subscription does not batch: the notification is parked
 	// whole, so what comes out on resume is what went in, in order, rather
 	// than a batch half-assembled before the pause and half after.
-	if d.park(sub, []Notification{n}) {
+	if parked, dropped := d.park(sub, []Notification{n}, started, nil); parked || dropped {
 		return
 	}
 
 	size := d.batchSize(sub)
 
 	d.mu.Lock()
+	if d.run.Moved(started) {
+		d.mu.Unlock()
+		return
+	}
 	q, ok := d.queues[sub.ID]
 	if !ok {
 		q = &queue{}
@@ -108,8 +135,9 @@ func (d *Dispatcher) Enqueue(sub *Subscription, n Notification) {
 			q.timer.Stop()
 			q.timer = nil
 		}
+		f := d.launchLocked(len(batch))
 		d.mu.Unlock()
-		d.deliver(sub, batch)
+		d.deliver(sub, batch, started, f)
 		return
 	}
 
@@ -158,40 +186,73 @@ func (d *Dispatcher) flush(subscriptionID string) {
 		q.timer.Stop()
 		q.timer = nil
 	}
+	// Read under d.mu, where a reset clears the queues: whatever was still
+	// queued belongs to the run now.
+	started := d.run.Current()
+	f := d.launchLocked(len(batch))
 	d.mu.Unlock()
 
 	sub, err := d.subs.Get(subscriptionID)
 	if err != nil {
+		d.land(f)
 		d.logf("banking-circle: dropping %d notification(s) for deleted subscription %s", len(batch), subscriptionID)
 		return
 	}
-	d.deliver(sub, batch)
+	d.deliver(sub, batch, started, f)
+}
+
+// launchLocked counts a batch of n as on its way out. Caller holds d.mu.
+func (d *Dispatcher) launchLocked(n int) *flight {
+	f := &flight{n: n}
+	d.inflight[f] = struct{}{}
+	return f
+}
+
+// land is a batch's delivery over: delivered, retained or abandoned. It
+// lands inside the same Run.Do as the effect that ended it, so a reset
+// counts the batch as in flight or as done, never both. A delivery a reset
+// dropped does not land; its flight stays for the reset to count, and goes
+// with the reset's clear.
+func (d *Dispatcher) land(f *flight) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.inflight, f)
 }
 
 // deliver runs one batch through the retry schedule in its own goroutine,
 // so a subscriber that takes two simulated days to fail never blocks
 // payment processing.
-func (d *Dispatcher) deliver(sub *Subscription, batch []Notification) {
+func (d *Dispatcher) deliver(sub *Subscription, batch []Notification, started uint64, f *flight) {
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		d.deliverSync(sub, batch)
+		d.deliverSync(sub, batch, started, f)
 	}()
 }
 
-// deliverSync is deliver's blocking form, used by Wait-based tests.
-func (d *Dispatcher) deliverSync(sub *Subscription, batch []Notification) {
+// deliverSync is deliver's blocking form. Every step — each attempt, each
+// email, the deactivation — goes through the run, so a reset that lands
+// anywhere in a two-day schedule stops it there: nothing further is sent,
+// mailed or deactivated for a batch from before it.
+func (d *Dispatcher) deliverSync(sub *Subscription, batch []Notification, started uint64, f *flight) {
 	// The pause may have arrived after this batch was assembled -- a full
 	// batch flushes straight out of Enqueue, and the timer fires on its
 	// own schedule. Checking again here is what makes the button mean
 	// "nothing further leaves" rather than "nothing further is queued".
-	if d.park(sub, batch) {
+	if parked, dropped := d.park(sub, batch, started, f); parked || dropped {
 		return
 	}
 
 	env := Envelope{Notifications: batch}
 
-	err := d.Send(sub, env)
+	var err error
+	if !d.run.Do(started, func(ctx context.Context) {
+		if err = d.Send(ctx, sub, env); err == nil {
+			d.land(f)
+		}
+	}) {
+		return
+	}
 	if err == nil {
 		d.logf("banking-circle: delivered %d notification(s) to %s on the first attempt", len(batch), sub.Endpoint)
 		return
@@ -203,20 +264,32 @@ func (d *Dispatcher) deliverSync(sub *Subscription, batch []Notification) {
 		if !ok {
 			break
 		}
-		d.sleep(wait)
-
-		// A subscription deleted mid-schedule has nothing left to retry
-		// against.
-		if _, gerr := d.subs.Get(sub.ID); gerr != nil {
-			d.logf("banking-circle: subscription %s disappeared mid-retry, abandoning %d notification(s)", sub.ID, len(batch))
+		if !d.run.Sleep(started, wait) {
 			return
 		}
 
-		if kind := d.cfg.EmailFor(retry); kind != "" {
-			d.sendEmail(sub, kind, retry)
+		gone := false
+		if !d.run.Do(started, func(ctx context.Context) {
+			// A subscription deleted mid-schedule has nothing left to
+			// retry against.
+			if _, gerr := d.subs.Get(sub.ID); gerr != nil {
+				gone = true
+				d.land(f)
+				return
+			}
+			if kind := d.cfg.EmailFor(retry); kind != "" {
+				d.sendEmail(sub, kind, retry)
+			}
+			if err = d.Send(ctx, sub, env); err == nil {
+				d.land(f)
+			}
+		}) {
+			return
 		}
-
-		err = d.Send(sub, env)
+		if gone {
+			d.logf("banking-circle: subscription %s disappeared mid-retry, abandoning %d notification(s)", sub.ID, len(batch))
+			return
+		}
 		if err == nil {
 			d.logf("banking-circle: delivered %d notification(s) to %s on retry %d", len(batch), sub.Endpoint, retry)
 			return
@@ -228,13 +301,16 @@ func (d *Dispatcher) deliverSync(sub *Subscription, batch []Notification) {
 	// they are delivered when the subscription is reactivated. Discarding
 	// them here is how a client loses a day of payments and never learns
 	// which ones.
-	d.retain(sub.ID, batch)
-	if _, derr := d.subs.Deactivate(sub.ID,
-		"Subscription deactivated after the final unsuccessful delivery retry"); derr != nil {
-		d.logf("banking-circle: deactivate %s: %v", sub.ID, derr)
-	}
-	d.logf("banking-circle: subscription %s (%s) deactivated after %d failed retries; %d notification(s) retained for redelivery",
-		sub.ID, sub.Endpoint, d.cfg.DeactivateAfterRetries, len(batch))
+	d.run.Do(started, func(context.Context) {
+		d.retain(sub.ID, batch)
+		d.land(f)
+		if _, derr := d.subs.Deactivate(sub.ID,
+			"Subscription deactivated after the final unsuccessful delivery retry"); derr != nil {
+			d.logf("banking-circle: deactivate %s: %v", sub.ID, derr)
+		}
+		d.logf("banking-circle: subscription %s (%s) deactivated after %d failed retries; %d notification(s) retained for redelivery",
+			sub.ID, sub.Endpoint, d.cfg.DeactivateAfterRetries, len(batch))
+	})
 }
 
 func (d *Dispatcher) sendEmail(sub *Subscription, kind string, attempt int) {
@@ -276,13 +352,14 @@ func (d *Dispatcher) Redeliver(sub *Subscription) int {
 	d.mu.Lock()
 	held := d.pending[sub.ID]
 	delete(d.pending, sub.ID)
+	started := d.run.Current() // the run they were held in
 	d.mu.Unlock()
 	if len(held) == 0 {
 		return 0
 	}
 	d.logf("banking-circle: redelivering %d retained notification(s) to %s", len(held), sub.Endpoint)
 	for _, n := range held {
-		d.Enqueue(sub, n)
+		d.EnqueueFrom(started, sub, n)
 	}
 	return len(held)
 }
@@ -324,10 +401,19 @@ func (d *Dispatcher) Pause(subscriptionID string) int {
 // failing batch holds up the ones behind it -- which is also what a real
 // endpoint coming back to a backlog does.
 func (d *Dispatcher) Resume(sub *Subscription) int {
+	size := d.batchSize(sub)
 	d.mu.Lock()
 	delete(d.paused, sub.ID)
 	held := d.queued[sub.ID]
 	delete(d.queued, sub.ID)
+	started := d.run.Current() // the run they were parked in
+	var batches [][]Notification
+	var flights []*flight
+	for start := 0; start < len(held); start += size {
+		end := min(start+size, len(held))
+		batches = append(batches, held[start:end])
+		flights = append(flights, d.launchLocked(end-start))
+	}
 	d.mu.Unlock()
 
 	if len(held) == 0 {
@@ -336,16 +422,16 @@ func (d *Dispatcher) Resume(sub *Subscription) int {
 	}
 	d.logf("banking-circle: delivery to %s resumed; releasing %d notification(s)", sub.Endpoint, len(held))
 
-	size := d.batchSize(sub)
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		for start := 0; start < len(held); start += size {
-			end := start + size
-			if end > len(held) {
-				end = len(held)
+		for i, batch := range batches {
+			// A reset ends the release: the batches still to go belong to
+			// the run it ended, and are counted by it.
+			if d.run.Moved(started) {
+				return
 			}
-			d.deliverSync(sub, held[start:end])
+			d.deliverSync(sub, batch, started, flights[i])
 		}
 	}()
 	return len(held)
@@ -366,25 +452,35 @@ func (d *Dispatcher) Queued(subscriptionID string) int {
 }
 
 // park puts a batch behind the pause if there is one, and reports whether
-// it did. The paused check and the append are one critical section: a
-// resume racing a delivery must either release the batch or find it
-// parked, never lose it between the two.
-func (d *Dispatcher) park(sub *Subscription, batch []Notification) bool {
+// it did; or drops it, when it is from a run a reset has ended. Either way
+// there is nothing left for the caller to deliver. The paused check and
+// the append are one critical section: a resume racing a delivery must
+// either release the batch or find it parked, never lose it between the
+// two.
+//
+// f is the batch's flight, when it was on its way out: parked, it is no
+// longer in flight but waiting, and counted as such.
+func (d *Dispatcher) park(sub *Subscription, batch []Notification, started uint64, f *flight) (parked, dropped bool) {
 	d.mu.Lock()
+	if d.run.Moved(started) {
+		d.mu.Unlock()
+		return false, true
+	}
 	if !d.paused[sub.ID] {
 		d.mu.Unlock()
-		return false
+		return false, false
 	}
+	delete(d.inflight, f)
 	d.queued[sub.ID] = append(d.queued[sub.ID], batch...)
 	depth := len(d.queued[sub.ID])
 	d.mu.Unlock()
 
 	d.logf("banking-circle: delivery to %s is paused; %d notification(s) queued (%d waiting)",
 		sub.Endpoint, len(batch), depth)
-	if d.OnQueued != nil {
+	if d.OnQueued != nil && !d.run.Moved(started) {
 		d.OnQueued(sub, Envelope{Notifications: batch})
 	}
-	return true
+	return true, false
 }
 
 // Wait blocks until every in-flight delivery has finished. For tests.

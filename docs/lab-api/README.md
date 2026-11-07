@@ -7,9 +7,11 @@ on what is left.
 **Built so far (2026-11-07):** the `lab-api` service itself, the first part
 of [phase 1](plan.md#phase-1--the-control-contract-lab-api-first-traps).
 `cmd/labapi` serves `/v1` on `:8097` with everything the console's server
-did, plus `/v1/services`, the passthrough to every sim's `/sim/*` and the
-clock holds; `LAB_API_TOKEN`; the console is a page that forwards `/v1` to
-it, and the page already calls `/v1`. The reference for what answers today
+did, plus `/v1/services`, the passthrough to every sim's `/sim/*`, the
+clock holds, a reset of the whole lab and every service's logs in one
+read; `LAB_API_TOKEN`; every sim serves `/sim/info`, `/sim/logs` and
+`/sim/reset`; the console is a page that forwards `/v1` to it, and the page
+already calls `/v1`. The reference for what answers today
 is [../api/lab-api.md](../api/lab-api.md); this directory stays the design
 for the rest.
 

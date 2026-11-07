@@ -194,18 +194,24 @@ func (e *Engine) Snapshot(s *State) {
 // and is not one. Resuming re-fires only the transitions that had not
 // happened yet, so a client never sees a state it has already been told
 // about twice in a row because of a restart.
+//
+// Only what the file holds resumes: a reset writes the file without the
+// payments it dropped, so a restart never brings one back.
 func (e *Engine) Restore(s State) {
-	e.mu.Lock()
 	resumable := make([]*Payment, 0, len(s.Payments))
-	for _, p := range s.Payments {
-		e.payments[p.ID] = p
-		if remainingStates(p.State) != nil {
-			resumable = append(resumable, p)
+	started := e.gate.Begin(func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		for _, p := range s.Payments {
+			e.payments[p.ID] = p
+			if remainingStates(p.State) != nil {
+				resumable = append(resumable, p)
+			}
 		}
-	}
-	e.mu.Unlock()
+		e.walking.Add(int64(len(resumable)))
+	})
 	for _, p := range resumable {
-		go e.process(p)
+		go e.process(p, started)
 	}
 }
 

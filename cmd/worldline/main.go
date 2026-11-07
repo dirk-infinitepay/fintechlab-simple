@@ -28,7 +28,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -39,6 +41,7 @@ import (
 const maxUploadBytes = sftpgateway.MaxInboundFileSize + (1 << 10)
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8084")
 	labclock.FollowEnv(context.Background(), "worldline")
 	baseDir := env("SFTP_BASE_DIR", "/sftp")
@@ -56,7 +59,10 @@ func main() {
 		log.Fatalf("worldline: seed default config: %v", err)
 	}
 
-	acq, desk, sftpLog := startWorldlineSFTP()
+	// One guard for everything that outlives a request, so a reset drops
+	// it all at once (reset.go).
+	guard := &runGuard{}
+	acq, desk, sftpLog, sshAddr := startWorldlineSFTP(guard)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +87,14 @@ func main() {
 	mux.HandleFunc("GET /config", getConfig(ch))
 	mux.HandleFunc("PUT /config", putConfig(ch))
 	mux.HandleFunc("GET /archive/{year}/{month}", listArchive(ch))
+	// GET /sim/info, GET /sim/logs and POST /sim/reset: the control
+	// contract every sim serves (internal/simctl).
+	lab := &sim{guard: guard, acq: acq, desk: desk, sftpLog: sftpLog, ch: ch, merchantID: merchantID}
+	simctl.Mount(mux, simctl.Config{
+		Service: "worldline", Kind: "vendor", Simulates: "Worldline, the card acquirer",
+		Listeners: []string{addr, sshAddr},
+		Reset:     lab.reset,
+	})
 
 	log.Printf("worldline listening on %s base=%s merchant=%s", addr, baseDir, merchantID)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
@@ -112,16 +126,7 @@ func seedDefaultConfig(ch *sftpgateway.Channel, merchantID string) error {
 	if _, err := ch.GetConfig(); err == nil {
 		return nil
 	}
-	cfg := &sftpgateway.Config{
-		MerchantID:          merchantID,
-		SFTPDirectory:       filepath.Join(ch.BaseDir, "outbound", merchantID),
-		ReportTypes:         []string{"WX", "Financial"},
-		ReportFormats:       []string{"CSV", "XML", "ASCII"},
-		CutOffTime:          "00:00 CET",
-		RemittanceFrequency: "daily",
-		SFTPDirectoryCount:  3,
-	}
-	return ch.UpdateConfig(cfg)
+	return ch.UpdateConfig(sftpgateway.DefaultConfig(ch.BaseDir, merchantID))
 }
 
 type fileEntry struct {
@@ -313,8 +318,9 @@ func envDuration(k string, def time.Duration) time.Duration {
 // and no code ever exercised the download. Everything here runs in
 // background goroutines so the HTTP listener is unaffected; a setup
 // failure (bad host key, unparsable keys, bind failure) is fatal at
-// startup rather than silently leaving the service half-configured.
-func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
+// startup rather than silently leaving the service half-configured. The
+// cycle and the enrolment desk share guard, which a reset moves.
+func startWorldlineSFTP(guard *runGuard) (*settlementApp, *enrolmentDesk, *activity.Log, string) {
 	root := env("WORLDLINE_SFTP_ROOT", "/wlsftp")
 	if err := wlsftp.EnsureLayout(root); err != nil {
 		log.Fatalf("worldline: sftp layout: %v", err)
@@ -387,6 +393,7 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
 			"GBP": env("BC_SAFEGUARDING_ACCOUNT_ID_GBP", ""),
 		},
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		guard:      guard,
 	}
 
 	sshAddr := ":" + env("WORLDLINE_SFTP_PORT", "2222")
@@ -411,12 +418,13 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
 	desk := newEnrolmentDesk(root, keys,
 		envDuration("WORLDLINE_ENROLMENT_DELAY", 30*time.Second),
 		envDuration("WORLDLINE_ENROLMENT_SWEEP", 5*time.Second))
+	desk.guard = guard
 	go desk.watch()
 
 	go acq.schedule()
 	log.Printf("worldline: sftp+pgp listening on %s root=%s source=%s morning=%s afternoon=%s",
 		sshAddr, root, source, acq.cfg.MorningAt, acq.cfg.AfternoonAt)
-	return acq, desk, sftpLog
+	return acq, desk, sftpLog, sshAddr
 }
 
 func logReq(next http.Handler) http.Handler {

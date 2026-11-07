@@ -124,6 +124,95 @@ health probe. What the Vendors, Platform and Verification views draw.
 **Reaches** — nothing at request time. A background monitor probes each
 service's `health_path` every `CONSOLE_PROBE_INTERVAL` (5 s).
 
+### `POST /v1/lab/reset`
+
+Put the whole lab back to a known state in one call: every service's
+`POST /sim/reset` ([the control contract](README.md#the-control-contract)),
+in order, then the lab API's own state.
+
+**Body** — optional, *strict*:
+
+```json
+{"scope": "flow", "force": false, "services": ["banking-circle", "b4b"]}
+```
+
+- `scope`: `flow` (default) clears what a run makes and keeps what a
+  platform set up once — Banking Circle's subscriptions, B4B's boarding,
+  Worldline's enrolment, and this API's merchant registry. `all` puts every
+  service back as on first start, and clears the merchant registry too.
+- `services`: reset only these (any lab service, or `lab-api` for the
+  registry); omitted, all of them.
+- `force`: reset even while the lab clock is held, and pass `force` to every
+  service.
+
+**Order** — producers before consumers, so nothing new arrives at a
+service already clean, and the clock last: `worldline`, `aci`, `b4b`,
+`banking-circle`, `bank`, `verify`, `verification`, `settlement`,
+`receiver`, `payment-api`, `notifier`, `clock`, then `lab-api`. Only
+services in the catalogue are called. Plugin registrations and stand-in
+switches are never reset: they are live wiring, not run state.
+
+**Answers** — `200` when every part succeeded:
+
+```json
+{"scope": "flow", "at": "2026-11-07T12:00:00Z", "ok": true,
+ "services": [
+   {"service": "worldline", "status": 200, "scope": "flow", "cleared": {"transactions": 120, "files": 2}, "kept": ["enrolment", "channel config"], "at": "…"},
+   …,
+   {"service": "clock", "status": 200, "scope": "flow", "cleared": {"holds": 0, "changes": 4}, "kept": ["calendars"], "at": "…"},
+   {"service": "lab-api", "status": 200, "scope": "flow", "cleared": {}, "kept": ["merchants", "plugins", "stand-ins"]}]}
+```
+
+Each entry is the service's own answer with `service` and `status` added.
+A failure is reported, not hidden: the entry carries the service's
+`status` and `error`, the rest still reset, `ok` is false and the answer is
+`502`. A service built before the control contract answers `404`, said as
+such. `409` before anything is reset while the lab clock is held — a
+settlement run is in flight — naming the holder, unless `force`. `400` for
+a scope other than `flow` or `all`, an unknown service, or an unknown
+field.
+
+**Reaches** — each service's `POST /sim/reset`; the clock's `GET /clock`
+first, for its holds; on `all`, the lab API's merchant registry.
+
+### `GET /v1/logs`
+
+Every service's own log lines ([the control
+contract](README.md#the-control-contract)), merged by time: what
+`podman logs` on each container would show, through one address.
+
+**Query parameters**
+
+| | |
+| --- | --- |
+| `services` | comma-separated service ids; omitted, every lab service |
+| `q` | case-insensitive substring filter, applied by each service |
+| `since` | a previous answer's `next`; omitted, the newest `limit` lines across the lab |
+| `limit` | 1–1000, default 200 |
+
+**Answers** — `200`:
+
+```json
+{"lines": [
+   {"service": "b4b", "seq": 911, "at": "2026-11-07T09:14:01.870Z", "text": "b4b: banking circle bridge call for payment … ok"},
+   {"service": "banking-circle", "seq": 1841, "at": "2026-11-07T09:14:02.114Z", "text": "…"}],
+ "next": "eyJiNGIiOjkxMSwiYmFua2luZy1jaXJjbGUiOjE4NDF9",
+ "dropped": {"b4b": 0, "banking-circle": 0},
+ "unreachable": [{"service": "aci", "error": "no GET /sim/logs: a build from before the control contract?"}]}
+```
+
+Lines are oldest first. `next` is an opaque cursor holding one position per
+service; pass it back as `since` and the next read starts after the last
+line each service showed — a page cut at `limit` loses nothing. `since=e30`
+(an empty cursor) reads every line each service still holds, from the
+start. `dropped` counts, per service, lines after the cursor its ring no
+longer holds. A service that does not answer is listed under
+`unreachable` and keeps its place in the cursor; the rest still answer.
+`400` for an unknown service, a `limit` out of range or a cursor this API
+did not give.
+
+**Reaches** — each service's `GET /sim/logs`, in parallel.
+
 ### `GET /v1/flow`
 
 The settlement run as a sequence diagram: the participants, one step per
@@ -325,6 +414,30 @@ its body dropped).
 **Reaches** — the service's `GET /sim/activity?limit=` (Banking Circle's
 on its credentialed listener, with a bearer token); for a plugin,
 `base_url` + `activity_path`.
+
+### `GET /v1/services/{id}/logs`
+
+One service's own log lines: its `GET /sim/logs`, query and answer as they
+are ([the control contract](README.md#the-control-contract)). The same
+call as `/v1/services/{id}/sim/logs`.
+
+**Answers** — *verbatim*: the service's `{"service", "lines", "next",
+"dropped"}`. `404 no lab service <id>`; `502` when it cannot be reached.
+
+**Reaches** — the service's `GET /sim/logs`.
+
+### `POST /v1/services/{id}/reset`
+
+Reset one service: its `POST /sim/reset`, body and answer as they are
+(`{"scope": "flow"|"all", "force": false}`). Unlike
+`POST /v1/lab/reset`, it does not ask the clock first: a service that
+cannot reset safely says so itself, with `409`.
+
+**Answers** — *verbatim*: the service's `{"service", "scope", "cleared",
+"kept", "at"}`, or its `400`/`409`/`500`. `404 no lab service <id>`; `502`
+when it cannot be reached.
+
+**Reaches** — the service's `POST /sim/reset`.
 
 ### `ANY /v1/services/{id}/sim/{path...}`
 
