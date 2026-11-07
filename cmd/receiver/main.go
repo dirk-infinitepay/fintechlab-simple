@@ -39,7 +39,7 @@ type event struct {
 //
 // The body is retained, base64-encoded, up to maxRawBodyBytes. It used to
 // be discarded, which meant nothing could check *what* was delivered: a
-// caller holding the encryption key (the harness does) can now decrypt the
+// caller holding the encryption key (the e2e suite does) can now decrypt the
 // capture and assert on the payload, which is the difference between
 // proving a message arrived and proving the right message arrived.
 type rawEvent struct {

@@ -18,7 +18,7 @@ against them without a vendor contract:
 Plus ACI's card-gateway webhook and a merchant-verification stub.
 
 **This repo is the vendors, not the platform.** `settlement` and
-`receiver` are stand-ins for your side, kept only so the harness can prove
+`receiver` are stand-ins for your side, kept only so the e2e suite can prove
 each hop is really connected — see
 [docs/catalogue.md](docs/catalogue.md#which-half-is-which).
 
@@ -36,7 +36,7 @@ cd fintechlab-simple
 make up
 make console        # http://127.0.0.1:8090
 make demo-payment
-make harness
+make e2e
 ```
 
 **`make console`** opens the control panel: which services are up, what
@@ -58,16 +58,16 @@ names — from the console (Configuration → *Connect your platform*).
 
 `make demo-payment` creates a payment with an `Idempotency-Key`, then
 **polls the receiver until the webhook for that payment arrives** and
-prints it. `make harness` runs the full scenario suite; `make
-harness-docker` runs the identical binary as one container attached to the
+prints it. `make e2e` runs the full scenario suite; `make
+e2e-docker` runs the identical binary as one container attached to the
 compose network instead.
 
-That matters: a health ping is not a connected system. The harness fails
+That matters: a health ping is not a connected system. The e2e suite fails
 loudly if any hop is disconnected, and it asserts things a status code
 cannot tell you:
 
 - A settlement file must be **cut by the acquirer**, PGP-encrypted on its
-  own SFTP root, and reachable only over the wire. The harness dials the
+  own SFTP root, and reachable only over the wire. The e2e suite dials the
   same server itself and re-parses the same bytes.
 - The per-MID totals inside it must **add up to the lump sum** that landed.
 - An **afternoon confirmation file must not be paid out again** — that
@@ -148,7 +148,7 @@ batch-size rules), its batching and eleven-step retry schedule through to
 deactivation and redelivery, its byte-exact AES-256-GCM cipher, B4B's JWT
 verification, sanctions gate, creditor-consistency check and payout
 lifecycle, ACI's webhook crypto (known-answer-tested against ACI's own
-published reference vector), and the verify stub. `make harness` is the
+published reference vector), and the verify stub. `make e2e` is the
 containerizable, black-box version of the same guarantees.
 
 ## What this is not
@@ -166,7 +166,7 @@ containerizable, black-box version of the same guarantees.
   (superseded — historical record only).
 - Not the platform's own virtual-account, fee or reconciliation logic —
   this lab mocks the third parties, not the platform built against them.
-  `settlement` is a stand-in that exists so the harness has something to
+  `settlement` is a stand-in that exists so the e2e suite has something to
   prove the vendors are connected *to*; it is not a model of any real
   platform, and it does not grow.
 - Not a Worldline Acquiring REST API. The settlement file over SFTP is the

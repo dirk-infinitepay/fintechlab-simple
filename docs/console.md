@@ -26,10 +26,10 @@ That constraint is the whole design, and it is worth stating plainly:
 - **Nothing in this lab is reachable only through the console.** Every
   button is a lab API route ([api/lab-api.md](api/lab-api.md)), and if a
   state could only be produced by clicking, that state would be untestable:
-  the harness — which is what actually judges this repo — could never
+  the e2e suite — which is what actually judges this repo — could never
   assert on it.
 - **The console being down is never why a scenario cannot run.** It is not
-  a dependency of anything. Neither is the lab API: `make harness` knows
+  a dependency of anything. Neither is the lab API: `make e2e` knows
   neither exists.
 - **It holds no vendor contract.** Nothing real-shaped lives here. The
   contracts live in `worldline`, `b4b`, `banking-circle` and `aci`, which
@@ -318,7 +318,7 @@ live from the services that own it, and two buttons:
   cards were lists what is hidden and by whom, with a *Show* for each.
 
 `payment-api` and `notifier` are stand-ins with nothing calling them on
-their own — only `make demo-payment` and the harness's first scenario do —
+their own — only `make demo-payment` and the e2e suite's first scenario do —
 so they can be hidden, not disconnected. Their cards say what they play, and
 each now keeps a log (*Payments received*, *Webhooks delivered*) so it is
 plain whether anything has called them.
@@ -679,7 +679,7 @@ see afterwards.
 **API reference** (`#docs/api`): every API a caller can use.
 
 - A diagram of who calls which API: the console page, scripts and agents,
-  the harness, and your platform, against the lab API and the services.
+  the e2e suite, and your platform, against the lab API and the services.
 - *Which to call*: intent to API ("make a vendor misbehave" goes to the lab
   API's passthrough to that service's `/sim/*`).
 - **The lab API's routes**, read from the lab API itself (`GET /v1`),

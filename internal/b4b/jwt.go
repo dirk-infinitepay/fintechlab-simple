@@ -112,7 +112,7 @@ func LoadOrGenerateKeyPair(dir string) (*rsa.PrivateKey, error) {
 	// B4B key), shared across a UID boundary the same way every other
 	// generated credential in this lab is (see ca/generate.sh's cert
 	// permissions comment) -- settlement's container reads this back to
-	// sign its own JWTs, and a human/harness on the host may want to as
+	// sign its own JWTs, and a person or the e2e suite on the host may want to as
 	// well (the whole point of persisting it here per Addendum section D).
 	if err := os.WriteFile(privPath, privPEM, 0o644); err != nil {
 		return nil, fmt.Errorf("b4b: write %s: %w", privPath, err)
@@ -166,7 +166,7 @@ func parsePrivateKeyPEM(data []byte) (*rsa.PrivateKey, error) {
 }
 
 // PublicKeyPEM renders pub as a PEM-encoded PKIX public key, for printing at
-// startup so an operator/harness can see it.
+// startup so an operator or the e2e suite can see it.
 func PublicKeyPEM(pub *rsa.PublicKey) (string, error) {
 	b, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {

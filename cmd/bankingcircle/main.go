@@ -12,7 +12,7 @@
 // lab's plain-HTTP surfaces cannot share a listener (Addendum section C).
 //   - LISTEN (default :8085, mTLS + bearer): every real-shaped endpoint,
 //     plus a few read-only debug endpoints (accounts/payments/reconciliation
-//     listings) this lab keeps for harness introspection — not part of the
+//     listings) this lab keeps for introspection — not part of the
 //     real contract, but still behind the same credentials as everything
 //     else on this listener. The old /sim paths answer here too, behind the
 //     bearer, until phase 4 of docs/lab-api/plan.md retires them.
@@ -329,7 +329,7 @@ func (a *app) mux(ctl http.Handler) *http.ServeMux {
 	// own routes, so they answer exactly what it answers.
 	mux.Handle("/sim/", a.requireBearer(ctl.ServeHTTP))
 	// Debug/introspection endpoints kept from the old surface — not part of
-	// the real Banking Circle contract, but useful for the harness and kept
+	// the real Banking Circle contract, but useful for the e2e suite and kept
 	// behind the same credentials as everything else on this listener.
 	mux.HandleFunc("GET /accounts", a.requireBearer(a.listAccounts))
 	mux.HandleFunc("GET /accounts/{id}", a.requireBearer(a.getAccount))
@@ -1014,10 +1014,10 @@ type incomingPaymentReq struct {
 }
 
 // createIncomingPayment implements POST /internal/incoming-payments — the
-// harness's "Worldline lump sum landed" trigger
+// e2e suite's "Worldline lump sum landed" trigger
 // (docs/ARCHITECTURE-phase3-corrections.md section 1), same lab-only trust
 // boundary as the B4B bridge above. Real Banking Circle has no equivalent
-// caller-facing endpoint; this is the harness's stand-in for the acquirer
+// caller-facing endpoint; this is the e2e suite's stand-in for the acquirer
 // actually wiring funds into the SGA.
 func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request) {
 	var req incomingPaymentReq

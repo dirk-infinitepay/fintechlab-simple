@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -27,7 +27,7 @@ type eventsResp struct {
 	} `json:"events"`
 }
 
-// PaymentAPIToWebhook is the harness version of scripts/demo-payment.sh,
+// PaymentAPIToWebhook is the e2e version of scripts/demo-payment.sh,
 // with stronger assertions: it also checks the idempotency replay debits
 // nothing a second time, and that both account balances moved by exactly
 // the payment amount (not just that a webhook eventually showed up).
@@ -132,11 +132,11 @@ func PaymentAPIToWebhook() Scenario {
 func shiftBalance(balance, delta string) (string, error) {
 	b, err := money.Parse(balance)
 	if err != nil {
-		return "", fmt.Errorf("harness: parse balance %q: %w", balance, err)
+		return "", fmt.Errorf("e2e: parse balance %q: %w", balance, err)
 	}
 	d, err := money.Parse(delta)
 	if err != nil {
-		return "", fmt.Errorf("harness: parse delta %q: %w", delta, err)
+		return "", fmt.Errorf("e2e: parse delta %q: %w", delta, err)
 	}
 	return money.Format(b + d), nil
 }

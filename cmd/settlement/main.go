@@ -1,6 +1,6 @@
 // Settlement is this lab's stand-in for the platform side. It is
 // scaffolding, not a vendor simulation and not a model of any real
-// platform: it exists so the harness has something to prove the vendor
+// platform: it exists so the e2e suite has something to prove the vendor
 // simulations are actually connected to. See docs/catalogue.md.
 //
 // It pulls Worldline's settlement file over the real SFTP+PGP channel
@@ -292,7 +292,7 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 
 // payoutResp is a lab-only introspection view of a record's best-effort
 // payout submission -- not part of any real Worldline/B4B contract, purely
-// so a test harness can observe PayoutID/PayoutState (which the vendor-
+// so the e2e suite can observe PayoutID/PayoutState (which the vendor-
 // shaped Report/CSV/XML output deliberately never carries) without
 // re-deriving them from logs.
 type payoutResp struct {
@@ -823,7 +823,7 @@ func (a *app) checkSgaBalance(currency string, requiredCents int64) (sufficient 
 // 3) and reports whether the merchant is cleared to be paid. Unlike
 // checkSgaBalance, connectivity errors here ARE logged-and-continued
 // (approved=true): verification is explicitly a sample/stub component in
-// this lab, not the thing this harness exists to prove, so its own
+// this lab, not the thing this e2e suite exists to prove, so its own
 // unavailability must not block the payout demonstration the way
 // insufficient SGA funds genuinely should. An actual DECLINE decision,
 // once received, still blocks -- only *not hearing back* is forgiven.

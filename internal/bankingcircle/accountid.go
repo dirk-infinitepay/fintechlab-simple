@@ -48,7 +48,7 @@ const NamespaceAccount = "5f1b0000-0000-4000-8000-5f1b1abc0de0"
 // instead. The effect a client sees is identical -- a UUID it did not
 // choose, stable across restarts -- and, unlike a random id, two
 // independent processes reach it without talking to each other, which is
-// what lets B4B bridge a payout to the same account the harness then
+// what lets B4B bridge a payout to the same account the e2e suite then
 // inspects.
 //
 // A key that is already a UUID is returned unchanged: when the platform

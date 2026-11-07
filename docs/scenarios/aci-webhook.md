@@ -68,4 +68,4 @@ fixture — and it is byte-interoperable with ACI's own decryptor: the
 reference vector and asserts the exact plaintext fields, so the same
 algorithm encrypting *this* notification is provably correct, not just
 internally self-consistent. That is `aci-payment-notification` in `make
-harness`; this walkthrough is the same assertions, by hand.
+e2e`; this walkthrough is the same assertions, by hand.

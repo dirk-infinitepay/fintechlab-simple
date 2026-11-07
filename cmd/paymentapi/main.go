@@ -74,9 +74,9 @@ func main() {
 func routes(s *store, client *http.Client, bankURL, notifierURL, addr string) (*http.ServeMux, *simctl.Control, error) {
 	// What reached it, for the console: nothing in the settle path calls
 	// this service, so an empty log is the normal state and a row here is
-	// make demo-payment, the harness or somebody's curl.
+	// make demo-payment, the e2e suite or somebody's curl.
 	payLog := activity.New("payments", "Payments received",
-		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the harness call this.")
+		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the e2e suite call this.")
 
 	// Both scopes do the same: a payment and its idempotency key are what a
 	// run made, and nothing here is set up once.

@@ -6,11 +6,11 @@ COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker 
 	elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; \
 	else echo "docker compose"; fi)
 
-# Plain single-container engine (not compose) for `make harness-docker`,
+# Plain single-container engine (not compose) for `make e2e-docker`,
 # which attaches one container to the already-running compose network
 # instead of being a compose service itself — compose "profiles" would be
 # the normal way to keep a batch job out of `make up`, but podman-compose
-# (a real target here) does not implement profiles at all, so a harness
+# (a real target here) does not implement profiles at all, so an e2e
 # compose service would either always run on `up` or need profiles it
 # can't see. A plain `run --network` sidesteps that entirely.
 ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
@@ -20,14 +20,14 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild pod-images pod-up pod-down pod-bundle
+.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console e2e e2e-docker tidy rebuild pod-images pod-up pod-down pod-bundle
 
 help:
 	@echo "make up             build, replace the containers, start the lab"
 	@echo "make console        open the control panel (http://127.0.0.1:8090)"
 	@echo "make demo-payment   create a payment and wait for the webhook"
-	@echo "make harness        run the full scenario harness locally (go run)"
-	@echo "make harness-docker build+run the harness as one container against the compose network"
+	@echo "make e2e            run the end-to-end scenarios locally (go run)"
+	@echo "make e2e-docker     build+run the e2e suite as one container against the compose network"
 	@echo "make test           unit tests + vet + gofmt check (no Docker required)"
 	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
@@ -115,7 +115,7 @@ sftp-dirs:
 # (docs/ARCHITECTURE-vendor-corrections.md Addendum sections D/E): b4b
 # generates its JWT keypair into b4b-keys/, settlement reads it back to
 # sign outgoing calls; worldline generates its SSH host key + PGP keypair
-# into wlsftp-keys/, and settlement and the harness read the PGP private
+# into wlsftp-keys/, and settlement and the e2e suite read the PGP private
 # key back to decrypt what they download over the real SFTP+PGP channel.
 # World-writable, non-secret (lab-only, gitignored, never real key material)
 # -- same tradeoff as certs/.
@@ -172,7 +172,7 @@ up: certs sftp-dirs key-dirs console-dir b4b-dir
 	@echo ""
 	@echo "control panel: http://127.0.0.1:8090   (make console)"
 	@echo "lab API:       http://127.0.0.1:8097/v1 (docs/api/lab-api.md)"
-	@echo "next: make demo-payment  (or: make harness)"
+	@echo "next: make demo-payment  (or: make e2e)"
 
 
 # The console embeds its web assets, and the lab API serves the routes the
@@ -286,11 +286,11 @@ pod-bundle: pod-images
 	@cp deploy/pod/regenerate-keys.yaml dist/
 	@echo "dist/fintechlab-$(LAB_VERSION)-images.tar + dist/fintechlab-$(LAB_VERSION).yaml -- see docs/deploy-pod.md"
 
-harness:
-	@go run ./cmd/harness
+e2e:
+	@go run ./cmd/e2e
 
-harness-docker:
-	$(ENGINE) build -f docker/Dockerfile.harness -t fintechlab-simple_harness .
+e2e-docker:
+	$(ENGINE) build -f docker/Dockerfile.e2e -t fintechlab-simple_e2e .
 	$(ENGINE) run --rm --network fintechlab-simple_default \
 		-e PAYMENT_API_URL=http://payment-api:8080 \
 		-e BANK_URL=http://bank:8081 \
@@ -314,4 +314,4 @@ harness-docker:
 		-e WORLDLINE_SFTP_PASSWORD=sim-sftp-dev-only \
 		-e WORLDLINE_PGP_PRIVATE_KEY_PATH=/keys/wlsftp-keys/worldline_private.asc \
 		-v "$(LAB_KEYS_DIR)":/keys:ro \
-		fintechlab-simple_harness
+		fintechlab-simple_e2e

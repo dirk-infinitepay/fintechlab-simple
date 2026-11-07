@@ -16,7 +16,7 @@ should treat a `2xx` from it as proof a message was understood:
 | --- | --- |
 | Listens | `:8443`, HTTPS only, with a server certificate from the lab CA (`keys/certs/receiver.pem`; SANs `receiver`, `localhost`, `127.0.0.1`, `receiver.local`, `receiver.fintech-sim-lab.test`). Compose service `receiver` (`https://receiver:8443`); host `https://127.0.0.1:8443` (`curl --cacert keys/certs/ca.pem`).<br>`:9443`, **plain HTTP**, not TLS: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://receiver:9443` |
 | Auth | TLS server authentication only; no client certificate is asked for. `POST /webhooks` requires the lab HMAC; every other route is open. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
-| Found with | notifier `WEBHOOK_URL` (`https://receiver:8443/webhooks`).<br>banking-circle `WEBHOOK_URL` (`https://receiver:8443/raw-events`), its seeded subscription's endpoint.<br>aci `ACI_WEBHOOK_TARGET_URL` (`https://receiver:8443/raw-events`).<br>harness `RECEIVER_URL` (where it reads, `https://127.0.0.1:8443`) and `RECEIVER_DELIVERY_URL` (where it tells a vendor to post; defaults to `https://receiver:8443` when `RECEIVER_URL` is loopback).<br>`scripts/demo-payment.sh` `RECEIVER_URL`; console `CONSOLE_URL_RECEIVER`.<br>Senders allowlist it as `receiver` and `receiver:8443` |
+| Found with | notifier `WEBHOOK_URL` (`https://receiver:8443/webhooks`).<br>banking-circle `WEBHOOK_URL` (`https://receiver:8443/raw-events`), its seeded subscription's endpoint.<br>aci `ACI_WEBHOOK_TARGET_URL` (`https://receiver:8443/raw-events`).<br>e2e `RECEIVER_URL` (where it reads, `https://127.0.0.1:8443`) and `RECEIVER_DELIVERY_URL` (where it tells a vendor to post; defaults to `https://receiver:8443` when `RECEIVER_URL` is loopback).<br>`scripts/demo-payment.sh` `RECEIVER_URL`; console `CONSOLE_URL_RECEIVER`.<br>Senders allowlist it as `receiver` and `receiver:8443` |
 | Activity logs | None. There is no `GET /sim/activity`, and `GET /v1/services/receiver/activity` on the lab API answers `501`. Its two stores are the record: `GET /events` and `GET /raw-events`. Each request line is logged on stdout |
 | Configuration | `LISTEN` (`:8443`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9443`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`TLS_CERT` (`/keys/certs/receiver.pem`), `TLS_KEY` (`/keys/certs/receiver-key.pem`): waited for up to 30 s at start, then the service exits.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the notifier's.<br>The 10-minute timestamp window and the 1 MiB body caps are fixed in code. Both stores are in memory, unbounded and never evicted; a restart or [`POST /sim/reset`](#post-simreset) empties them.<br>It has no lab switch of its own: it is disconnected at the senders (Banking Circle's subscriptions to it deactivated, aci's `/sim/connected`) |
 | Design record | [ARCHITECTURE-phase3-corrections.md §6](../../ARCHITECTURE-phase3-corrections.md#6-receiver-a-raw-capture-endpoint-closes-a-documented-gap) (the raw sink; it predates retained bodies), [services/webhooks.md](../../services/webhooks.md), [security/ca-and-tls.md](../../security/ca-and-tls.md), [plugins.md](../../plugins.md#stand-ins), [console.md](../../console.md#stand-ins-disconnect-and-hide) |
@@ -93,7 +93,7 @@ The `/sim/*` routes are on the control port, `:9443`, over plain HTTP
 ([the control contract](../README.md#the-control-contract)); the same
 paths still answer over HTTPS on `:8443` until phase 4 of
 [the plan](../../lab-api/plan.md) retires them. `GET /events` and
-`GET /raw-events` are on `:8443` only, where the harness and
+`GET /raw-events` are on `:8443` only, where the e2e suite and
 `make demo-payment` read them.
 
 ### `GET /health`
@@ -174,7 +174,7 @@ run delivered.
   endpoint here.
 - **aci**: `POST /raw-events` (`ACI_WEBHOOK_TARGET_URL`), while aci's own
   lab switch is on.
-- **harness**: `payment-api-to-webhook` polls `GET /events` for a
+- **e2e suite**: `payment-api-to-webhook` polls `GET /events` for a
   `payment.accepted` with its payment id; `banking-circle-subscription`
   and `banking-circle-retry-deactivation` register Banking Circle
   subscriptions at `{RECEIVER_DELIVERY_URL}/raw-events?sub=…`, read

@@ -1,7 +1,7 @@
 # Plan
 
 **[PROPOSED]**, except where a phase says otherwise. Each phase ends with
-the lab working end to end, and `make harness` green.
+the lab working end to end, and `make e2e` green.
 
 ## Phase 1 — the control contract, lab-api, first traps
 
@@ -22,8 +22,8 @@ the lab working end to end, and `make harness` green.
   shortcut over it; B4B's `payment.create`, with
   `B4B_FORCE_FAILURE_BENEFICIARY_IDS` as standing traps; `/v1/traps`,
   `/v1/traps/hooks` and `DELETE /v1/traps`;
-- the harness scenarios for the trap paths and for a reset mid-payout
-  (`HARNESS_ONLY` runs a few);
+- the e2e scenarios for the trap paths and for a reset mid-payout
+  (`E2E_ONLY` runs a few);
 - `openapi.yaml`, generated from the route table and an annotation of
   what each route takes, served at `GET /v1/openapi.json` and checked in
   as [docs/api/openapi.yaml](../api/openapi.yaml) (next to the reference,
@@ -75,7 +75,7 @@ decided: `MissingFunding` stays final.
 own reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and
 settlement's `runGuard`), and one in `internal/simctl` should replace them;
 a walking graph's hops are expanded by b4b itself, where `internal/trap`
-could do it for every sim; the harness still calls some old `/sim` paths on
+could do it for every sim; the e2e suite still calls some old `/sim` paths on
 vendor ports, which must move before phase 4 retires them.
 
 Shared packages, generic infra like `internal/activity`:
@@ -117,7 +117,7 @@ Wiring and proof:
 
 - `compose.yml` and the pod manifest gain `lab-api` and the control ports,
   and `deploy/pod/manifest_test.go` follows;
-- the harness gains a scenario for each trap path, and one for reset (a
+- the e2e suite gains a scenario for each trap path, and one for reset (a
   reset in the middle of a payout leaves no stray notification);
 - [plugins.md](../plugins.md), [console.md](../console.md) and
   [agent.runbooks.md](../../agent.runbooks.md) say where things moved.

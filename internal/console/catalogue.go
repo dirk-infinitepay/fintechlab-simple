@@ -22,7 +22,7 @@ import (
 
 // Kind is which half of the lab a service belongs to. The distinction is
 // the one docs/catalogue.md draws: a vendor simulation is the deliverable,
-// scaffolding exists only so the harness can prove a hop is connected.
+// scaffolding exists only so the e2e suite can prove a hop is connected.
 type Kind string
 
 const (
@@ -382,13 +382,13 @@ func DefaultCatalogue() *Catalogue {
 			// Not on the settle path: payment-api, the business bank's
 			// transfers and the notifier make the lab's oldest scenario,
 			// `make demo-payment` — payment, ledger move, signed webhook,
-			// stored event — which the harness still runs.
+			// stored event — which the e2e suite still runs.
 			ID: "payment-api", Name: "Payment API (demo stand-in)", Kind: KindPlatform,
 			StandIn: &StandInInfo{
 				Shown: shown,
-				Plays: "a payment facade of the platform's own: POST /payments with an Idempotency-Key moves money between two accounts at the business bank and enqueues a signed webhook at the notifier. Nothing in the settle path calls it; make demo-payment and the harness's first scenario do.",
+				Plays: "a payment facade of the platform's own: POST /payments with an Idempotency-Key moves money between two accounts at the business bank and enqueues a signed webhook at the notifier. Nothing in the settle path calls it; make demo-payment and the e2e suite's first scenario do.",
 			},
-			Summary: "Generic payment facade with Idempotency-Key: one POST /payments moves money at the business bank and enqueues a signed webhook at the notifier. Only make demo-payment and the harness call it — the settle path never does.",
+			Summary: "Generic payment facade with Idempotency-Key: one POST /payments moves money at the business bank and enqueues a signed webhook at the notifier. Only make demo-payment and the e2e suite call it — the settle path never does.",
 			BaseURL: "http://127.0.0.1:8080", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8080/http"}, Transport: "HTTP", Auth: "none (lab)",
 			SwapFor: "-- generic shape, not a vendor.",
@@ -404,7 +404,7 @@ func DefaultCatalogue() *Catalogue {
 				Shown: shown,
 				Plays: "a webhook worker of the platform's own: HMAC-signs what payment-api enqueues and delivers it to the receiver, with retries and a destination allowlist. Nothing in the settle path calls it; make demo-payment does.",
 			},
-			Summary: "Signed webhook worker: HMAC-signs what payment-api enqueues and POSTs it to the receiver, with retries and an allowlist. Only make demo-payment and the harness call it — the settle path never does.",
+			Summary: "Signed webhook worker: HMAC-signs what payment-api enqueues and POSTs it to the receiver, with retries and an allowlist. Only make demo-payment and the e2e suite call it — the settle path never does.",
 			BaseURL: "http://127.0.0.1:8082", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8082/http"}, Transport: "HTTP", Auth: "HMAC out",
 			SwapFor: "-- generic shape, not a vendor.",

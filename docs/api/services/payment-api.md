@@ -6,7 +6,7 @@ signed webhook at the notifier, because a created payment must produce a
 webhook rather than a disconnected ping. [catalogue.md](../../catalogue.md)
 files it as **scaffolding**, a demo stand-in: a generic shape, not
 B4B-shaped and not B4B (the real payout rail is `cmd/b4b`). Only
-`make demo-payment` and the harness's `payment-api-to-webhook` call it.
+`make demo-payment` and the e2e suite's `payment-api-to-webhook` call it.
 Nothing on the settle path does, and nothing should depend on it.
 
 ## At a glance
@@ -15,7 +15,7 @@ Nothing on the settle path does, and nothing should depend on it.
 | --- | --- |
 | Listens | `:8080`, plain HTTP: the payment routes. Compose service `payment-api` (`http://payment-api:8080`); host `http://127.0.0.1:8080`.<br>`:9080`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://payment-api:9080` |
 | Auth | None. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
-| Found with | `PAYMENT_API_URL` (`http://127.0.0.1:8080`) in the harness and `scripts/demo-payment.sh`.<br>`CONSOLE_URL_PAYMENT_API` on the console |
+| Found with | `PAYMENT_API_URL` (`http://127.0.0.1:8080`) in the e2e suite and `scripts/demo-payment.sh`.<br>`CONSOLE_URL_PAYMENT_API` on the console |
 | Activity logs | `payments` (*Payments received*): every `POST /payments`, op `payment.create`. The summary gives amount, debtor and creditor, then the outcome: accepted with the webhook's state, replayed for a seen key, or the refusal's own error. Detail: `payment`, `idempotency_key` |
 | Configuration | `BANK_URL` (`http://bank:8081`): where the ledger move goes.<br>`NOTIFIER_URL` (`http://notifier:8082`): where the webhook is enqueued.<br>`LISTEN` (`:8080`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9080`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Payments are in memory. It does not follow the lab clock: `createdAt` is wall-clock time |
 | Design record | [scenarios/payment-to-webhook.md](../../scenarios/payment-to-webhook.md), [services/webhooks.md](../../services/webhooks.md), [services/fake-bank.md](../../services/fake-bank.md) |
@@ -166,7 +166,7 @@ once.
   `POST /payments` with a fresh key, reads `GET /payments/{id}`, then polls
   the receiver for the webhook. [payment-to-webhook.md](../../scenarios/payment-to-webhook.md)
   is the same with `curl`.
-- **harness**: `payment-api-to-webhook` posts `POST /payments` twice with
+- **e2e suite**: `payment-api-to-webhook` posts `POST /payments` twice with
   one key, expecting `201` then `200` with the same id, and checks one
   debit, one credit and the webhook at the receiver.
 - **lab API**: only the control port, `http://payment-api:9080`.

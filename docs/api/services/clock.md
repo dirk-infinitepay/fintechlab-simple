@@ -267,7 +267,7 @@ has nothing a platform set up once.
   `POST /clock/holds` (holder `infinite-local-runner`, 900 s in
   [plugins.md](../../plugins.md#the-clock)) and releases it with
   `DELETE /clock/holds/infinite-local-runner`.
-- **harness**: no scenario reads or moves the clock.
+- **e2e suite**: no scenario reads or moves the clock.
 - **by hand**: [agent.runbooks.md](../../../agent.runbooks.md#the-clock)
   moves it with `curl`.
 

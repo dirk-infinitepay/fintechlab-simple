@@ -1,11 +1,11 @@
-// Package harness runs black-box scenario tests against a running
+// Package e2e runs black-box scenario tests against a running
 // fintechlab-simple stack: payment-api, bank, notifier, receiver, and
 // (once running) settlement, worldline, banking-circle.
 //
 // A scenario is judged the same way this whole repo judges itself: a
 // created record must produce a real, observable downstream effect. A
 // health ping is not a scenario.
-package harness
+package e2e
 
 import (
 	"context"
@@ -18,11 +18,11 @@ import (
 
 // Env holds every peer service's base URL plus a client pre-configured to
 // trust the receiver's TLS certificate. Defaults point at the host-published
-// ports from `make up` (127.0.0.1:*) so `go run ./cmd/harness` works right
+// ports from `make up` (127.0.0.1:*) so `go run ./cmd/e2e` works right
 // after `make up` with no environment variables set, exactly like
-// scripts/demo-payment.sh. Running containerized (docker/Dockerfile.harness)
+// scripts/demo-payment.sh. Running containerized (docker/Dockerfile.e2e)
 // overrides every URL to the in-network compose service name — see
-// `make harness-docker`.
+// `make e2e-docker`.
 type Env struct {
 	// BankingCircleControlURL is Banking Circle's control port.
 	BankingCircleControlURL string
@@ -31,7 +31,7 @@ type Env struct {
 	NotifierURL             string
 	ReceiverURL             string
 	// ReceiverDeliveryURL is the base the Banking Circle twin POSTs
-	// webhooks to. Distinct from ReceiverURL when the harness runs on the
+	// webhooks to. Distinct from ReceiverURL when the e2e suite runs on the
 	// host (127.0.0.1) but the twin runs in compose (receiver:8443).
 	ReceiverDeliveryURL string
 	SettlementURL       string
@@ -40,12 +40,12 @@ type Env struct {
 	// Lab seams for funding / handoff. On standalone this is plain
 	// INTERNAL_LISTEN (:8095), separate from the mTLS Connect surface on
 	// :8085 — the lab seams are deliberately not behind client certs
-	// BankingCircleURL so the harness presents mTLS like real Connect.
+	// BankingCircleURL so the e2e suite presents mTLS like real Connect.
 	BankingCircleInternalURL string
 	ACIURL                   string
 	// B4B's Oversight API and the keypair needed to sign its RS512 bearer
 	// token. Shared read-only from the same volume the b4b service
-	// generates into, so the harness signs with the key b4b itself
+	// generates into, so the e2e suite signs with the key b4b itself
 	// verifies against.
 	B4BURL               string
 	B4BJWTPrivateKeyPath string
@@ -59,7 +59,7 @@ type Env struct {
 	// corrections.md section 2): host/port for the SSH/SFTP dial, the
 	// configured lab password, and the PGP keypair directory worldline
 	// already generated into (shared read-only via a bind-mounted volume)
-	// so the harness can decrypt what it downloads without generating its
+	// so the e2e suite can decrypt what it downloads without generating its
 	// own key.
 	WorldlineSFTPHost          string
 	WorldlineSFTPPort          string
@@ -70,7 +70,7 @@ type Env struct {
 
 func EnvFromOS() (*Env, error) {
 	// Where the lab generated its keys (the Makefile's LAB_KEYS_DIR), so a
-	// harness run against a lab keeping them elsewhere needs one variable,
+	// run against a lab keeping them elsewhere needs one variable,
 	// not five.
 	keys := env("LAB_KEYS_DIR", "keys")
 	client, err := NewTLSClient(
@@ -79,7 +79,7 @@ func EnvFromOS() (*Env, error) {
 		env("CLIENT_KEY", filepath.Join(keys, "certs/client-key.pem")),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("harness: tls client: %w", err)
+		return nil, fmt.Errorf("e2e: tls client: %w", err)
 	}
 	return &Env{
 		PaymentAPIURL:       env("PAYMENT_API_URL", "http://127.0.0.1:8080"),

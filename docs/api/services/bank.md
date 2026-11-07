@@ -18,7 +18,7 @@ puts every balance back to the seed.
 | --- | --- |
 | Listens | `:8081`, plain HTTP: the ledger's own API. Compose service `bank` (`http://bank:8081`); host `http://127.0.0.1:8081`.<br>`:9081`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://bank:9081` |
 | Auth | None, on every route. Who may credit it is decided on the sending side: Banking Circle checks `BANK_CREDIT_URL` against its own `WEBHOOK_ALLOWLIST`, which lists `bank` and `bank:8081`.<br>The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
-| Found with | `BANK_URL` (`http://bank:8081`) on payment-api, settlement and the harness.<br>`BANK_CREDIT_URL` on banking-circle: the full `http://bank:8081/internal/credit`; empty turns crediting off.<br>`CONSOLE_URL_BANK` (`http://bank:8081`) on the lab API, which takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_BANK` names it |
+| Found with | `BANK_URL` (`http://bank:8081`) on payment-api, settlement and the e2e suite.<br>`BANK_CREDIT_URL` on banking-circle: the full `http://bank:8081/internal/credit`; empty turns crediting off.<br>`CONSOLE_URL_BANK` (`http://bank:8081`) on the lab API, which takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_BANK` names it |
 | Activity logs | `GET /sim/activity` keeps two, in this order.<br>`credits` (*Payouts credited*): every `POST /internal/credit`, refusals included, op `credit`.<br>`ledger` (*Accounts and transfers*): every `POST /accounts` and `POST /sim/accounts` (op `account.open`) and `POST /transfers` (op `transfer`) |
 | Configuration | `LISTEN` (`:8081`).<br>`SIM_CONTROL_LISTEN` (`:9081`, `LISTEN`'s port plus 1000) and `SIM_CONTROL_ALLOW` (unset: anyone who can reach it): the control port.<br>`LAB_CLOCK_URL` (unset: the wall clock; compose: `http://clock:8096/clock`): every ledger entry's `at` is on the [lab clock](clock.md).<br>No config file. The seeded accounts are in code (below) |
 | Design record | [catalogue.md](../../catalogue.md), [services/fake-bank.md](../../services/fake-bank.md) (older: no credit route, no InfinitePay accounts), [console.md](../../console.md#banks), [scenarios/payment-to-webhook.md](../../scenarios/payment-to-webhook.md) |
@@ -294,7 +294,7 @@ platform never calls the bank, so nothing here was set up once.
   `POST /sim/reset`; `GET /v1/logs` and `GET /v1/services/bank/logs` read
   `GET /sim/logs`; `GET /v1/lab` and `POST /v1/services/bank/probe` probe
   the control port's `GET /health`.
-- **harness**: `payment-api-to-webhook` reads `GET /accounts/acc_alice`
+- **e2e suite**: `payment-api-to-webhook` reads `GET /accounts/acc_alice`
   and `GET /accounts/acc_merchant` before and after its payment, to prove
   exactly one debit and one credit.
 - **by hand**: [payment-to-webhook.md](../../scenarios/payment-to-webhook.md)

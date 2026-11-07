@@ -46,7 +46,7 @@ Control ports are the vendor port plus 1000. In the podman pod every
 container shares one network namespace, so the ports have to be unique
 across the whole lab, and this rule keeps them unique.
 
-`harness` does not change. It still talks to the vendor surfaces directly
+`e2e` does not change. It still talks to the vendor surfaces directly
 and needs neither `lab-api` nor `console`.
 
 ## 2. Three kinds of traffic

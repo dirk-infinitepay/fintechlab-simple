@@ -14,10 +14,10 @@ Receiver speaks HTTPS only. Banking Circle's `:8085` listener requires
 **both** a trusted client certificate at the TLS handshake **and** a
 Bearer token on every route after `authorize` — mTLS is not a substitute
 for the auth flow, it's an additional layer real Banking Circle also
-enforces. Its `:8095` listener (the B4B bridge and the harness's other
+enforces. Its `:8095` listener (the B4B bridge and the e2e suite's other
 lab-only test hooks) is deliberately plain HTTP, no TLS, no auth — see
 `docs/ARCHITECTURE-vendor-corrections.md` Addendum section C for why the
-two can't share one listener. Notifier and the harness both load
+two can't share one listener. Notifier and the e2e suite both load
 `CA_FILE=/keys/certs/ca.pem` so they will not accept a random public cert for
 `receiver`/`banking-circle`.
 

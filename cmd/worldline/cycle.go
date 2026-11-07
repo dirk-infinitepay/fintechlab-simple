@@ -48,7 +48,7 @@ type settlementApp struct {
 }
 
 // CycleRun records one execution of the settlement cycle, so an operator
-// (or the harness) can see what was cut without reading the SFTP root.
+// (or the e2e suite) can see what was cut without reading the SFTP root.
 type CycleRun struct {
 	At        time.Time           `json:"at"`
 	Slot      string              `json:"slot"`

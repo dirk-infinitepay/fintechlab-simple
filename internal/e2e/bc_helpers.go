@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -126,7 +126,7 @@ func bcFundSGA(ctx context.Context, env *Env, amountMajor, reference string) err
 
 // bcHandoffPayout creates an outgoing payment on the pod twin (POST
 // /internal/handoff). Standalone receives this from B4B over
-// /internal/payments — the harness only drives handoff when observing the pod,
+// /internal/payments — the e2e suite only drives handoff when observing the pod,
 // until compose rewires standalone B4B at the pod handoff URL.
 func bcHandoffPayout(ctx context.Context, env *Env, settlementID, toAccount, amountMajor string) error {
 	if !env.UsesPodBankRails() {
@@ -159,11 +159,11 @@ func bcHandoffPayout(ctx context.Context, env *Env, settlementID, toAccount, amo
 // Host harness + compose twin defaults to the compose DNS name so the
 // container can reach receiver; override with RECEIVER_DELIVERY_URL.
 // ReceiverDeliveryBase is where a *vendor* should post, which is not always
-// where the harness reads from.
+// where the e2e suite reads from.
 //
-// The harness runs on the host and reaches the receiver on loopback. The
+// The e2e suite runs on the host and reaches the receiver on loopback. The
 // vendor posting the notification runs in a container, where 127.0.0.1 is
-// itself — so registering the harness's own URL as a destination produces a
+// itself — so registering the e2e suite's own URL as a destination produces a
 // subscription that can never deliver. Translate it to the name the
 // compose network uses. RECEIVER_DELIVERY_URL overrides both.
 func (e *Env) ReceiverDeliveryBase() string {

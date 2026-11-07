@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -190,15 +190,15 @@ func B4BOversightGates() Scenario {
 func b4bBearer(env *Env) (string, error) {
 	pem, err := os.ReadFile(env.B4BJWTPrivateKeyPath)
 	if err != nil {
-		return "", fmt.Errorf("harness: read B4B private key %s: %w", env.B4BJWTPrivateKeyPath, err)
+		return "", fmt.Errorf("e2e: read B4B private key %s: %w", env.B4BJWTPrivateKeyPath, err)
 	}
 	block, _ := pemDecode(pem)
 	if block == nil {
-		return "", fmt.Errorf("harness: %s holds no PEM block", env.B4BJWTPrivateKeyPath)
+		return "", fmt.Errorf("e2e: %s holds no PEM block", env.B4BJWTPrivateKeyPath)
 	}
 	key, err := parseRSAPrivateKey(block.Bytes)
 	if err != nil {
-		return "", fmt.Errorf("harness: parse B4B private key: %w", err)
+		return "", fmt.Errorf("e2e: parse B4B private key: %w", err)
 	}
 	return b4b.SignBearerToken(key, env.B4BJWTKeyID)
 }
@@ -206,7 +206,7 @@ func b4bBearer(env *Env) (string, error) {
 func pemDecode(b []byte) (*pem.Block, []byte) { return pem.Decode(b) }
 
 // parseRSAPrivateKey accepts either PKCS#1 or PKCS#8, because which one a
-// key file holds depends on how it was generated and a harness that only
+// key file holds depends on how it was generated and a client that only
 // reads one of them fails for reasons nobody will guess.
 func parseRSAPrivateKey(der []byte) (*rsa.PrivateKey, error) {
 	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {

@@ -6,7 +6,7 @@ retries, a hard destination allowlist, and a subscription that is marked
 failed once a delivery runs out of retries.
 [catalogue.md](../../catalogue.md) files it as **scaffolding**, a demo
 stand-in: a generic shape, not any vendor's. Only payment-api enqueues
-anything, for `make demo-payment` and the harness's first scenario.
+anything, for `make demo-payment` and the e2e suite's first scenario.
 Nothing on the settle path calls it, and nothing should depend on it.
 
 ## At a glance
@@ -15,7 +15,7 @@ Nothing on the settle path calls it, and nothing should depend on it.
 | --- | --- |
 | Listens | `:8082`, plain HTTP: the notifier's own routes. Compose service `notifier` (`http://notifier:8082`); host `http://127.0.0.1:8082`. Delivers out over HTTPS to its subscription URL.<br>`:9082`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://notifier:9082` |
 | Auth | None inbound. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. Outbound, each delivery carries the lab HMAC (`X-Sim-Signature`) keyed with `HMAC_SECRET`, and TLS is verified against `CA_FILE` |
-| Found with | `NOTIFIER_URL` (`http://notifier:8082`) on payment-api; the harness sets it too but no scenario uses it.<br>`CONSOLE_URL_NOTIFIER` on the console |
+| Found with | `NOTIFIER_URL` (`http://notifier:8082`) on payment-api; the e2e suite sets it too but no scenario uses it.<br>`CONSOLE_URL_NOTIFIER` on the console |
 | Activity logs | `deliveries` (*Webhooks delivered*): one event per delivery attempt, op `delivery`, `ok` on a `2xx` and `warn` on a failed attempt; then `delivery.failed` (`bad`) when the retries run out and the subscription is marked failed. Enqueues are not logged, only the attempts |
 | Configuration | `WEBHOOK_URL` (`https://receiver:8443/webhooks`): the default subscription. It must pass the allowlist or the service does not start.<br>`WEBHOOK_ALLOWLIST` (`receiver,receiver:8443,localhost,127.0.0.1`): hostnames, `host:port` pairs or CIDRs; `http` and `https` only, no userinfo; empty denies everything.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the receiver's.<br>`CA_FILE` (`/keys/certs/ca.pem`): trusted for HTTPS; waited for 30 s, then system roots.<br>`RETRY_BACKOFF` (`1s,2s,4s`): the wait before attempts 2, 3, 4…, the last value repeating.<br>`MAX_ATTEMPTS` (`4`).<br>`LISTEN` (`:8082`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9082`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Everything is in memory. It does not follow the lab clock: `createdAt` and the signing timestamp are wall-clock time |
 | Design record | [services/webhooks.md](../../services/webhooks.md), [security/allowlists.md](../../security/allowlists.md), [scenarios/payment-to-webhook.md](../../scenarios/payment-to-webhook.md) |
@@ -201,7 +201,7 @@ active again) and, with `all`, `subscription` (1 when one set with
   `POST /v1/services/notifier/reset` call `POST /sim/reset`;
   `GET /v1/logs` and `GET /v1/services/notifier/logs` read
   `GET /sim/logs`.
-- **harness**: nothing directly. `payment-api-to-webhook` goes through it
+- **e2e suite**: nothing directly. `payment-api-to-webhook` goes through it
   (payment-api → notifier → receiver) and checks the receiver.
 - **by hand**: `make demo-payment`, through payment-api. Nothing in the repo
   calls `GET /subscriptions`, `POST /subscriptions` or `GET /deliveries`.

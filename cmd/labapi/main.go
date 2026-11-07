@@ -5,7 +5,7 @@
 // the same HTTP call a human with curl would make against a service's own
 // public surface, or the lab's own state (the merchant registry, the plugin
 // registrations); so nothing in this lab can only be reached through it, and
-// it being down must never be why a scenario cannot run. The harness does
+// it being down must never be why a scenario cannot run. The e2e suite does
 // not know it exists.
 //
 // The console is a page served elsewhere (cmd/console) that calls this API

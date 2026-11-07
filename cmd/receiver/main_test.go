@@ -92,7 +92,7 @@ func TestResetEmptiesBothStores(t *testing.T) {
 // TestTheControlPortServesEverySimRoute: the control contract is on the
 // control port and nothing a sender posts to is; the HTTPS port still
 // answers the old /sim paths the same way until phase 4. What the stores
-// hold stays on the HTTPS port, where the harness reads it.
+// hold stays on the HTTPS port, where the e2e suite reads it.
 func TestTheControlPortServesEverySimRoute(t *testing.T) {
 	s := &store{}
 	svc, ctl := surfaces(t, s)

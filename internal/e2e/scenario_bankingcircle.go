@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -67,7 +67,7 @@ func bankingCircleBearer(ctx context.Context, env *Env) (map[string]string, erro
 // "awaiting_funding" on this stack's first-ever payout -- this scenario
 // simulates Worldline's lump sum landing (POST /internal/incoming-payments)
 // and retries (POST .../retry-payout) exactly as a developer demoing this
-// would. A repeat harness run against the same long-lived stack finds
+// would. A repeat e2e run against the same long-lived stack finds
 // funds already left over from the previous run and skips straight past
 // this step -- both paths are exercised across two consecutive runs, not
 // just one. Once funded, B4B drives its own lifecycle to B4BTMApproved;
@@ -129,7 +129,7 @@ func BankingCirclePayout() Scenario {
 
 			if payout.PayoutState == "awaiting_funding" {
 				// Simulate Worldline's lump sum landing in the SGA -- the
-				// harness's "something has landed" trigger (docs section
+				// e2e suite's "something has landed" trigger (docs section
 				// 1). Funded generously so neither this nor a later run
 				// ever re-hits this gate. Pod twin: POST /sim/funding;
 				// standalone: POST /internal/incoming-payments.
@@ -168,7 +168,7 @@ func BankingCirclePayout() Scenario {
 
 			// Hop 2: B4B -> Banking Circle (Connect surface under test).
 			// Compose still bridges standalone B4B → standalone :8095.
-			// When the harness observes pod-bank-rails, drive the twin's
+			// When the e2e suite observes pod-bank-rails, drive the twin's
 			// handoff ourselves (same body shape oversight would POST) and
 			// fund the pod SGA so booking can succeed.
 			const payoutMajor = "150.00" // worldline seeds 10000+5000 cents

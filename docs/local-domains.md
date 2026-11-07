@@ -1,7 +1,7 @@
 # Local domain names, for demoing
 
 By default every service is reachable at `localhost:<port>` — that's what
-`make up` and the harness use, and nothing below is required for the lab
+`make up` and the e2e suite use, and nothing below is required for the lab
 itself to work. This is for the other direction: pointing a **real buddy
 service**, running on the host (`pnpm nx serve ...`), at this lab's mocks
 using config values shaped like the ones it would use against a real

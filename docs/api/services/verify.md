@@ -168,8 +168,8 @@ platform set up once.
   `/v1/services/verify/sim/*` forwards to `/sim/*`.
   `GET /v1/connect/env/verify` hands out the variables without calling this
   service.
-- **harness**: no scenario calls it directly; `banking-circle-payout`
-  (`internal/harness/scenario_bankingcircle.go`) passes through it via
+- **e2e suite**: no scenario calls it directly; `banking-circle-payout`
+  (`internal/e2e/scenario_bankingcircle.go`) passes through it via
   settlement's payout gate.
 - **The platform** under test, optionally, in place of its own
   verification-service, through `VERIFICATION_SERVICE_API_URL` and

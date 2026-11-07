@@ -64,7 +64,7 @@ moves these files by SFTP).
 or forwarding. The host key is ed25519, its public half published at
 `WORLDLINE_SFTP_HOST_KEY_PUB_PATH` (compose: `keys/wlsftp-keys/host_key.pub`)
 so a client can pin it. Any username is accepted; it is recorded in the
-activity log. The settlement stand-in logs in as `infinitepay`, the harness
+activity log. The settlement stand-in logs in as `infinitepay`, the e2e suite
 as `harness`.
 
 **SFTP: what a session may do.** Every path is jailed under
@@ -472,9 +472,9 @@ and refusals, and the same file written.
   `POST /sim/settlement-cycle/run` (`POST /v1/actions/worldline-cycle`,
   passing `slot` and `date`); `GET /sim/config` (`GET /v1/config`);
   `PUT /sim/config` (`PUT /v1/config/worldline-channel`).
-- **The harness**, on `:8084` (`WORLDLINE_URL`), through the old paths:
+- **The e2e suite**, on `:8084` (`WORLDLINE_URL`), through the old paths:
   `worldline-settlement-to-sftp`
-  (`internal/harness/scenario_worldline.go`) seeds two transactions with
+  (`internal/e2e/scenario_worldline.go`) seeds two transactions with
   `POST /sim/transactions`, runs
   `POST /sim/settlement-cycle/run?slot=morning&date=…`, then logs in over
   SFTP as `harness`, downloads the file from `download/` and decrypts and

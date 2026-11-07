@@ -50,7 +50,7 @@ coverage.out
 /bank
 /bankingcircle
 /console
-/harness
+/e2e
 /notifier
 /paymentapi
 /receiver

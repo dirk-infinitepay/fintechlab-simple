@@ -88,7 +88,7 @@ graph LR
     ST["settlement"] -->|"POST :8086/oversight/v1/payments\nRS512 bearer JWT"| B4B(("b4b"))
     B4B -->|"POST callback_url (caller-supplied)\nplain JSON, retried"| ST
     B4B -->|"POST :8095/internal/payments\nonce B4BTMApproved"| BC["banking-circle"]
-    HN["harness"] -->|"RS512 bearer JWT :8086\nregister beneficiary, create payment, poll payment status"| B4B
+    HN["e2e"] -->|"RS512 bearer JWT :8086\nregister beneficiary, create payment, poll payment status"| B4B
 ```
 
 Callbacks resolve their destination in two steps: the record's own

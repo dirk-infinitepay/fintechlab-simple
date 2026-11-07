@@ -292,7 +292,7 @@ func loadVerificationKey(keysDir, pubKeyPath, kid string) (*rsa.PublicKey, error
 		return nil, err
 	}
 	// Printed to stdout (not the log package, which defaults to stderr) so
-	// an operator/harness reading this service's stdout can pick it up.
+	// an operator or the e2e suite reading this service's stdout can pick it up.
 	fmt.Printf("b4b: JWT public key (kid=%s):\n%s\n", kid, pubPEM)
 	return &key.PublicKey, nil
 }

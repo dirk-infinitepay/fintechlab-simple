@@ -8,7 +8,7 @@ check and the beneficiary's sanctions status. Beside that it keeps the
 platform's own internal settlement reports, state machine and
 reconciliation API over the business bank's ledger, which pay nobody.
 [catalogue.md](../../catalogue.md) files it as **scaffolding**, a platform
-stand-in: it exists so `make harness` can prove each vendor hop is
+stand-in: it exists so `make e2e` can prove each vendor hop is
 connected, and it is not a model of any real platform. Replace it with
 your own. Nothing in a real integration should call it, and a plugged-in
 platform should disconnect it (`POST /sim/connected`), or both of them pay
@@ -20,7 +20,7 @@ the same outlets.
 | --- | --- |
 | Listens | `:8083`, plain HTTP. Compose service `settlement` (`http://settlement:8083`); host `http://127.0.0.1:8083`. Outbound it speaks SFTP to `worldline:2222` and HTTP to b4b, verify, banking-circle's bridge (`:8095`) and the bank.<br>`:9083`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://settlement:9083` |
 | Auth | None on its own routes. Outbound: an RS512 JWT for B4B signed with B4B's private key, `x-internal-api-key` for verify, SFTP password or key for Worldline, nothing for Banking Circle's bridge or the bank.<br>The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
-| Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the harness.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` (`http://settlement:8083`) on the lab API, which takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_SETTLEMENT` names it |
+| Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the e2e suite.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` (`http://settlement:8083`) on the lab API, which takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_SETTLEMENT` names it |
 | Activity logs | None. There is no `GET /sim/activity`, the lab's catalogue declares no activity path, and `GET /v1/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout, and kept for `GET /sim/logs` |
 | Configuration | The variables that change behaviour most: `SETTLEMENT_CONNECTED` (`true`), `WORLDLINE_SFTP_HOST` (unset: no pull at all), `CUTOFF_TIME` (`00:00`), `BC_SAFEGUARDING_ACCOUNT_ID_EUR`/`_GBP`. Everything below |
 | Design record | [ARCHITECTURE-reconciliation-api.md](../../ARCHITECTURE-reconciliation-api.md), [ARCHITECTURE-settlement-state-machine.md](../../ARCHITECTURE-settlement-state-machine.md), [ARCHITECTURE-settlement-report.md](../../ARCHITECTURE-settlement-report.md), [ARCHITECTURE-sftp-staging.md](../../ARCHITECTURE-sftp-staging.md), [ARCHITECTURE-phase3-corrections.md §5](../../ARCHITECTURE-phase3-corrections.md#5-settlement-wire-in-verification-and-the-sga-balance-gate), [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md), [structure/worldline.md](../../structure/worldline.md), [scenarios/settlement-to-payout.md](../../scenarios/settlement-to-payout.md), [plugins.md](../../plugins.md#stand-ins) (stand-ins) |
@@ -315,7 +315,7 @@ contract](../README.md#the-control-contract)). The same `/sim/*` paths
 still answer on `:8083` until phase 4 of
 [the plan](../../lab-api/plan.md) retires them. `GET /worldline/files`,
 `POST /worldline/pull` and the two payout routes stay on `:8083`, where the
-harness and a person call them.
+e2e suite and a person call them.
 
 ### `GET /health`
 
@@ -527,7 +527,7 @@ again.
 
 - **b4b**: `POST /internal/b4b-webhook` on every status change of a payout
   settlement submitted (`callback_url` from `B4B_CALLBACK_URL`), and of
-  the harness's own gate-test payments, which name this URL too and are
+  the e2e suite's own gate-test payments, which name this URL too and are
   answered `ignored`.
 - **lab API**, on the control port only (`http://settlement:9083`), never
   the stand-in's own routes: `POST /v1/actions/settlement-pull` calls
@@ -541,7 +541,7 @@ again.
   `GET /health`.
   `GET /v1/services/settlement/activity` answers `501` without calling
   it.
-- **harness**: `worldline-settlement-to-sftp` posts `/worldline/pull` until
+- **e2e suite**: `worldline-settlement-to-sftp` posts `/worldline/pull` until
   the published file is processed, then reads
   `GET /reports/settlement/{id}`; `worldline-confirmation-file` reads
   `GET /worldline/files` and pulls again, expecting the afternoon file to

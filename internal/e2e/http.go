@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"bytes"
@@ -71,16 +71,16 @@ func GetJSONWithHeaders(ctx context.Context, client *http.Client, url string, he
 func GetBytes(ctx context.Context, client *http.Client, url string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return 0, nil, fmt.Errorf("harness: build request: %w", err)
+		return 0, nil, fmt.Errorf("e2e: build request: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, nil, fmt.Errorf("harness: GET %s: %w", url, err)
+		return 0, nil, fmt.Errorf("e2e: GET %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return resp.StatusCode, nil, fmt.Errorf("harness: read response: %w", err)
+		return resp.StatusCode, nil, fmt.Errorf("e2e: read response: %w", err)
 	}
 	return resp.StatusCode, raw, nil
 }
@@ -90,13 +90,13 @@ func doJSON(ctx context.Context, client *http.Client, method, url string, header
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return 0, fmt.Errorf("harness: marshal request: %w", err)
+			return 0, fmt.Errorf("e2e: marshal request: %w", err)
 		}
 		reader = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, reader)
 	if err != nil {
-		return 0, fmt.Errorf("harness: build request: %w", err)
+		return 0, fmt.Errorf("e2e: build request: %w", err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -106,16 +106,16 @@ func doJSON(ctx context.Context, client *http.Client, method, url string, header
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("harness: %s %s: %w", method, url, err)
+		return 0, fmt.Errorf("e2e: %s %s: %w", method, url, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return resp.StatusCode, fmt.Errorf("harness: read response: %w", err)
+		return resp.StatusCode, fmt.Errorf("e2e: read response: %w", err)
 	}
 	if out != nil && len(raw) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
-			return resp.StatusCode, fmt.Errorf("harness: %s %s: decode response %q: %w", method, url, truncate(raw, 200), err)
+			return resp.StatusCode, fmt.Errorf("e2e: %s %s: decode response %q: %w", method, url, truncate(raw, 200), err)
 		}
 	}
 	return resp.StatusCode, nil
@@ -143,9 +143,9 @@ func PollUntil(ctx context.Context, timeout, interval time.Duration, check func(
 		lastErr = err
 		if time.Now().After(deadline) {
 			if lastErr != nil {
-				return fmt.Errorf("harness: timed out after %s: %w", timeout, lastErr)
+				return fmt.Errorf("e2e: timed out after %s: %w", timeout, lastErr)
 			}
-			return fmt.Errorf("harness: timed out after %s waiting for condition", timeout)
+			return fmt.Errorf("e2e: timed out after %s waiting for condition", timeout)
 		}
 		select {
 		case <-ctx.Done():

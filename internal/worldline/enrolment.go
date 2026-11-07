@@ -261,7 +261,7 @@ func checksum(s string) int {
 
 // ParseReceipt reads a receipt back.
 //
-// Exported because anything reading one — a test, a harness assertion, an
+// Exported because anything reading one — a test, an e2e assertion, an
 // operator tool — needs the same charset handling the declaration demands,
 // and plain xml.Unmarshal refuses the file this package just wrote.
 func ParseReceipt(b []byte) (*Receipt, error) {

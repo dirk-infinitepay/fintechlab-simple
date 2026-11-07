@@ -276,7 +276,7 @@ The lab's **stand-ins** played the platform's part before one plugged in:
 `settlement` pulls Worldline's files on a timer and pays outlets at the
 daily cutoff; `receiver` is where Banking Circle's seeded subscription and
 ACI deliver. `payment-api` and `notifier` are stand-ins nothing calls on its
-own — only `make demo-payment` and the harness do. Their cards start
+own — only `make demo-payment` and the e2e suite do. Their cards start
 hidden in the console (Configuration → *Stand-ins* has the switches); their
 wiring starts connected, so the lab runs end to end with no platform at
 all. A platform that replaces them says so:

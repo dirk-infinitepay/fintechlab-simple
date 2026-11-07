@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -34,9 +34,9 @@ type simPayments struct {
 	} `json:"payments"`
 }
 
-// harnessIBAN is a fake IBAN of this run's own, so a trap matching it
+// e2eIBAN is a fake IBAN of this run's own, so a trap matching it
 // catches only the payout this scenario sends.
-func harnessIBAN(tag string) string {
+func e2eIBAN(tag string) string {
 	return fmt.Sprintf("GB00SIM%013d", (time.Now().UnixNano()/1000+int64(len(tag))*7919)%1e13)
 }
 
@@ -98,9 +98,9 @@ func BankingCircleTrapPaths() Scenario {
 				map[string]string{"currency": "EUR", "amount": "1000.00", "reference": "harness trap paths"}, nil); err != nil || status != http.StatusAccepted {
 				return fmt.Errorf("fund the safeguarding account: %d %v", status, err)
 			}
-			ibanA, ibanB := harnessIBAN("a"), harnessIBAN("bb")
+			ibanA, ibanB := e2eIBAN("a"), e2eIBAN("bb")
 			reversed, err := armTrap(ctx, env, map[string]any{
-				"label": "harness: processed, then reversed", "hook": "payment.outgoing",
+				"label": "e2e: processed, then reversed", "hook": "payment.outgoing",
 				"match": map[string]any{"creditor.iban": ibanA},
 				"effect": map[string]any{"path": []map[string]any{
 					{"to": "OutgoingPaymentProcessed", "after": "100ms"},
@@ -111,7 +111,7 @@ func BankingCircleTrapPaths() Scenario {
 				return err
 			}
 			rejected, err := armTrap(ctx, env, map[string]any{
-				"label": "harness: rejected", "hook": "payment.outgoing",
+				"label": "e2e: rejected", "hook": "payment.outgoing",
 				"match": map[string]any{"creditor.iban": ibanB},
 				"effect": map[string]any{"path": []map[string]any{
 					{"to": "OutgoingPaymentRejected", "reason_code": "AC01", "reason_description": "Incorrect account number"},
@@ -166,9 +166,9 @@ func BankingCircleResetDropsAPayoutInFlight() Scenario {
 	return Scenario{
 		Name: "banking-circle-reset-drops-a-payout-in-flight",
 		Run: func(ctx context.Context, env *Env, state *State) error {
-			iban := harnessIBAN("reset")
+			iban := e2eIBAN("reset")
 			trap, err := armTrap(ctx, env, map[string]any{
-				"label": "harness: processed in three seconds", "hook": "payment.outgoing",
+				"label": "e2e: processed in three seconds", "hook": "payment.outgoing",
 				"match":  map[string]any{"creditor.iban": iban},
 				"effect": map[string]any{"path": []map[string]any{{"to": "OutgoingPaymentProcessed", "after": "3s"}}},
 			})

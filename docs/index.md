@@ -30,7 +30,7 @@ Use it to:
   only way to reach a state.
 
 **The repo is the vendors, not the platform.** `settlement` and `receiver`
-are stand-ins for your side, kept only so the harness can prove each vendor
+are stand-ins for your side, kept only so the e2e suite can prove each vendor
 hop is really connected — see
 [catalogue.md](catalogue.md#which-half-is-which).
 Your real platform is not in this repo at all: it registers its own card in

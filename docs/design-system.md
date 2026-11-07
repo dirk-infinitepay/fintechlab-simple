@@ -605,7 +605,7 @@ agent reads before calling anything.
   `#docs/api:banking-circle` the reference with that service's card open.
 - **A diagram first**, drawn with the guide's own boxes, chips and arrows:
   who calls which API. The callers (the console page, scripts and agents,
-  the harness, the platform) are on the left, the console in the middle and
+  the e2e suite, the platform) are on the left, the console in the middle and
   the services on the right, each with its three surfaces. The system under
   test is in the identity colour.
 - **Which to call comes before any route.** A table maps intent to surface

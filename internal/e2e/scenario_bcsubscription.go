@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -68,7 +68,7 @@ func BankingCircleSubscription() Scenario {
 			base := env.BankingCircleURL + "/api/v1/notificationselfservice"
 
 			// Delivery URL must be reachable from the twin process (compose
-			// DNS). Capture matching uses the path only, so host harness
+			// DNS). Capture matching uses the path only, so a host e2e run
 			// still lists via ReceiverURL.
 			endpoint := env.ReceiverDeliveryBase() + "/raw-events?sub=harness-batching"
 			const key = "harness-bc-notification-key-32ch"
@@ -568,7 +568,7 @@ func decryptEnvelope(e capturedEvent, key string) (bankingcircle.Envelope, error
 	}
 	plain := utf16LEToString(plain16)
 	// The Checksum header is SHA-256 of the decrypted UTF-8 JSON. Verifying
-	// it is what a real consumer must do, so the harness does it too.
+	// it is what a real consumer must do, so the e2e suite does it too.
 	if e.Checksum != "" {
 		sum := sha256.Sum256([]byte(plain))
 		if base64.StdEncoding.EncodeToString(sum[:]) != e.Checksum {

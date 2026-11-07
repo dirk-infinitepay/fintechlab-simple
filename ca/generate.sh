@@ -104,7 +104,7 @@ EOF
 fi
 
 # Mutual-TLS client cert: Banking Circle's mTLS listener requires every
-# caller to present one (the harness, standing in for "Infinite"), so this
+# caller to present one (the e2e suite, standing in for "Infinite"), so this
 # is no longer optional -- unconditional, same as the receiver/banking-circle
 # server certs above.
 if need "$CERTS/client.pem" || need "$CERTS/client-key.pem"; then

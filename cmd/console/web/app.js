@@ -1023,7 +1023,7 @@ const EMPTY_HINTS = {
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
   'bank:credits': 'Nothing yet. A payout lands here a couple of seconds after Banking Circle processes it — run a settlement and watch the outlets\' accounts open.',
   'bank:ledger': 'Nothing yet. make demo-payment moves money between two demo accounts here, through payment-api; the settle path never does.',
-  'payment-api:payments': 'Nothing yet, which is normal: nothing in the settle path calls this. make demo-payment, or the harness, lands a payment here.',
+  'payment-api:payments': 'Nothing yet, which is normal: nothing in the settle path calls this. make demo-payment, or the e2e suite, lands a payment here.',
   'notifier:deliveries': 'Nothing yet, which is normal: only payment-api enqueues webhooks here, and only make demo-payment calls payment-api.',
 };
 
@@ -2094,7 +2094,7 @@ const API_INTENTS = [
   ['Keep your platform’s business dates on the lab’s',
     'The clock', 'GET /clock every second — docs/plugins.md, The clock'],
   ['Prove every hop is connected',
-    'make harness', 'calls the services directly; it needs neither the lab API nor the console'],
+    'make e2e', 'calls the services directly; it needs neither the lab API nor the console'],
 ];
 
 const API_KIND_TITLES = [
@@ -2244,7 +2244,7 @@ function apiDiagram() {
     </g>`;
   };
   return `<svg class="gd" viewBox="0 0 1000 470" role="img"
-      aria-label="Callers on both sides — the console page, scripts and agents, the harness, the platform — and the lab API and services they call">
+      aria-label="Callers on both sides — the console page, scripts and agents, the e2e suite, the platform — and the lab API and services they call">
     ${gdBox(20, 20, 210, 60, 'is-lab', 'Console page', 'your browser · served on :8090')}
     ${gdBox(20, 110, 210, 230, 'is-lab', 'Scripts and agents', 'curl, a test suite, an LLM')}
     <text class="gd-note" x="36" y="180">read GET /v1 first:</text>
@@ -2264,7 +2264,7 @@ function apiDiagram() {
     ${gdChip(396, 400, 208, 'clock :8096 — GET /clock')}
 
     ${gdBox(770, 20, 210, 290, 'is-sut', 'Your platform', 'a registered plugin')}
-    ${gdBox(770, 340, 210, 100, 'is-lab', 'Harness', 'make harness')}
+    ${gdBox(770, 340, 210, 100, 'is-lab', 'End-to-end tests', 'make e2e')}
     <text class="gd-note" x="786" y="400">black-box scenarios;</text>
     <text class="gd-note" x="786" y="418">needs no lab API</text>
 

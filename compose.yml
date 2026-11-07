@@ -145,7 +145,7 @@ services:
       # balance check only -- settlement never holds Banking Circle's
       # mTLS+bearer credentials, matching real settle-processing (docs
       # section 1 and 5). Not the mTLS-credentialed :8085 surface, and
-      # deliberately NOT named BANKING_CIRCLE_URL like the harness's own
+      # deliberately NOT named BANKING_CIRCLE_URL like the e2e suite's own
       # (different) env var of that name (mTLS :8085) -- same literal
       # name, different meaning, different process would be confusing.
       BC_INTERNAL_URL: http://banking-circle:8095
@@ -320,7 +320,7 @@ services:
       CA_FILE: /keys/certs/ca.pem
       TLS_CERT: /keys/certs/banking-circle.pem
       TLS_KEY: /keys/certs/banking-circle-key.pem
-      # mTLS is optional. Real integrations vary, and the harness presents
+      # mTLS is optional. Real integrations vary, and the e2e suite presents
       # a client certificate, so "require" is the default here. Set "off"
       # to match a deployment that does not use client certificates, or
       # "optional" to accept both. Bearer auth applies in every mode: this
@@ -340,7 +340,7 @@ services:
       BC_TIME_SCALE: "86400"
       # Batch size is a per-subscription setting a client chooses. The
       # seeded convenience subscription uses the documented minimum so the
-      # harness sees batching happen rather than one-notification messages.
+      # e2e suite sees batching happen rather than one-notification messages.
       BC_SEED_BATCH_SIZE: "5"
       BC_SEED_SUBSCRIPTION_EMAIL: alerts@fintechlab-simple.local
     volumes:
@@ -384,9 +384,9 @@ services:
       # is unconfirmed -- turn it on to find out what your client does if
       # it does. See internal/b4b/beneficiary.go CheckCompany.
       B4B_ENFORCE_BENEFICIARY_COMPANY: "false"
-      # The harness registers beneficiaries with its own callback_url;
+      # The e2e suite registers beneficiaries with its own callback_url;
       # settlement's own host is the only one it uses, and localhost covers
-      # a local (non-compose) harness run. host.containers.internal is what
+      # a local (non-compose) e2e run. host.containers.internal is what
       # a client running on the host (not in this compose network) needs.
       WEBHOOK_ALLOWLIST: settlement,settlement:8083,localhost,127.0.0.1,host.containers.internal
       # Bridge target once a payment reaches B4BTMApproved -- Banking
@@ -408,7 +408,7 @@ services:
   # it is the *sender* of a webhook a real buddy settle-aci-webhook (or
   # its gateway proxy) receives, not something this lab's own services
   # call into. ACI_WEBHOOK_TARGET_URL here points at receiver's raw
-  # capture sink (docs section 6) so the harness/demo observes a real,
+  # capture sink (docs section 6) so the e2e suite/demo observes a real,
   # fast delivery within this lab's own network by default -- cmd/aci's
   # own code default is buddy's real local-dev address
   # (http://localhost:3013/api/v1/webhook); point a real buddy

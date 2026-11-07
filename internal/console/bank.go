@@ -203,7 +203,7 @@ func (b *BankingCircleBank) OpenAccount(ctx context.Context, holder, currency, o
 
 // --- tiny JSON helpers ------------------------------------------------
 //
-// internal/harness has its own; these stay separate because the harness's
+// internal/e2e has its own; these stay separate because the e2e suite's
 // are shaped for assertions (they return the status code so a scenario can
 // insist on a 422) and these are shaped for a UI (an error carries the
 // server's own message so it can be shown verbatim).

@@ -1,4 +1,4 @@
-package harness
+package e2e
 
 import (
 	"context"
@@ -60,7 +60,7 @@ type pulledFilesResp struct {
 // submerchant out.
 //
 // The point of this scenario is that the platform has no other route to
-// the file. Nothing is asserted from a shared directory, and the harness
+// the file. Nothing is asserted from a shared directory, and the e2e suite
 // independently dials the same SFTP server itself and re-parses the same
 // bytes, so a passing run means the protocol really worked -- SSH auth,
 // SFTP transfer, PGP decryption, CSV parse -- rather than that two
@@ -159,7 +159,7 @@ func WorldlineSettlementToSFTP() Scenario {
 				return fmt.Errorf("no EUR lump sum was credited to the safeguarding account: %+v", run.LumpSums)
 			}
 
-			// 3. The harness dials the acquirer's SFTP server itself and
+			// 3. The e2e suite dials the acquirer's SFTP server itself and
 			// re-parses the file. This is the independent check: it proves
 			// the bytes are really out there, really encrypted, and really
 			// say what the cycle claimed.

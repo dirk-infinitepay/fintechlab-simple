@@ -219,4 +219,4 @@ subscriber had it stopped answering.
 That is `worldline-settlement-to-sftp`, `worldline-confirmation-file`,
 `banking-circle-payout`, `banking-circle-subscription`,
 `banking-circle-retry-deactivation` and `b4b-oversight-gates` in
-`make harness` — this walkthrough is the same assertions, by hand.
+`make e2e` — this walkthrough is the same assertions, by hand.

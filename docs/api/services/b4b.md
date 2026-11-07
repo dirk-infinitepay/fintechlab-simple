@@ -961,7 +961,7 @@ Puts b4b back to a known state.
   `/sim/*` route through.
   `GET /v1/connect/env/b4b` and `GET /v1/connect/files/b4b/{name}` hand
   out the signing key without calling b4b; the lab API signs nothing.
-- **harness** (`internal/harness`): `b4b-oversight-gates`
+- **e2e suite** (`internal/e2e`): `b4b-oversight-gates`
   (`scenario_b4b.go`) registers a beneficiary, sends mismatched and matching
   payments, polls `GET /oversight/v1/payments/{id}`, blocks the payee with
   `PUT /sim/beneficiaries/{id}/sanctions` on `:8086`, signed (the old path,

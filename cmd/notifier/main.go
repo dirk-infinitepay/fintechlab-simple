@@ -89,7 +89,7 @@ func newApp(dest string, list *allowlist.List, secret []byte, client *http.Clien
 		backs:  backs,
 		maxTry: maxTry,
 		log: activity.New("deliveries", "Webhooks delivered",
-			"Each signed webhook payment-api enqueued, and how its delivery to "+dest+" went — attempts, the status it got, retries. Only make demo-payment and the harness enqueue anything."),
+			"Each signed webhook payment-api enqueued, and how its delivery to "+dest+" went — attempts, the status it got, retries. Only make demo-payment and the e2e suite enqueue anything."),
 	}
 	a.ctx, a.cancel = context.WithCancel(context.Background())
 	return a

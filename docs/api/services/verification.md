@@ -396,7 +396,7 @@ and `portfolios` created.
   `/v1/services/verification/sim/outcome`.
   `GET /v1/connect/env/verification` hands out the variables without
   calling this service.
-- **harness**: no scenario calls this service.
+- **e2e suite**: no scenario calls this service.
 - **An operator or agent**: `GET` and `POST /sim/outcome` to arm a failure,
   through the lab API or on the control port.
 

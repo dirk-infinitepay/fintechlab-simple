@@ -113,7 +113,7 @@ notification.
 ### `POST /internal/simulate-payment`
 
 `POST /sim/payments` on `:8087`, until phase 4: the same handler, so the
-same body, answers and side effects. The harness calls this one.
+same body, answers and side effects. The e2e suite calls this one.
 
 ### `GET /sim/sent`
 
@@ -150,7 +150,7 @@ One notification: the plaintext, the wire material and how delivery went.
 ### `GET /internal/sent/{id}`
 
 `GET /sim/sent/{id}` on `:8087`, until phase 4. The same answers. The
-harness polls this one.
+e2e suite polls this one.
 
 ### `GET /sim/connected`
 
@@ -207,8 +207,8 @@ set up once.
 
 ## Called by
 
-- **The harness**: `aci-payment-notification`
-  (`internal/harness/scenario_aci.go`) posts
+- **The e2e suite**: `aci-payment-notification`
+  (`internal/e2e/scenario_aci.go`) posts
   `POST /internal/simulate-payment` on `:8087`, polls
   `GET /internal/sent/{id}` until the delivery settles, and requires
   `delivered` with non-empty ciphertext, IV and tag and the payload fields
