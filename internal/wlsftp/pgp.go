@@ -135,8 +135,8 @@ func persistKeypair(e *openpgp.Entity, pubPath, privPath string) error {
 	}
 	// 644, not 600: this is lab-only fake key material (gitignored, never
 	// a real Worldline key) shared across a UID boundary -- worldline
-	// writes it as one (possibly rootless-remapped) UID, but settlement's
-	// harness and a host-side `make harness` both need to read it back to
+	// writes it as one (possibly rootless-remapped) UID, but settlement,
+	// the e2e container and a host-side `make e2e` all need to read it back to
 	// decrypt what they download. Same tradeoff as ca/generate.sh's cert
 	// permissions (see docs/security/ca-and-tls.md).
 	if err := os.WriteFile(privPath, priv.Bytes(), 0o644); err != nil {

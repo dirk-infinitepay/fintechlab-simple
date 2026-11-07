@@ -1,9 +1,9 @@
-# Plugins: putting your platform in the lab's console
+# Plugins: putting your platform in the lab
 
 The lab simulates vendors. The system under test is somebody else's, so
 its card in the console is too: a platform **registers itself** with the
-console, and the console draws its card, forwards its buttons and puts it
-in the Dashboard's diagram. The lab knows no platform by name. A new
+lab API, which forwards its buttons and reads its logs, and the console
+draws its card and puts it in the Dashboard's diagram. The lab knows no platform by name. A new
 button on a platform is a change to that platform, never a release of the
 lab.
 
@@ -18,19 +18,28 @@ Two things a platform does with the lab, both outbound from the platform:
 
 | | Call | Why |
 | --- | --- | --- |
-| Register | `POST {console}/api/plugins`, renewed every `renew_seconds` | its card, buttons and diagram |
-| Follow the clock | `GET {clock}/clock`, every second | its business dates agree with the vendors' |
+| Register | `POST {lab}/v1/plugins`, renewed every `renew_seconds` | its card, buttons and diagram |
+| Follow the clock | `GET {lab}/v1/clock`, every second | its business dates agree with the vendors' |
 
 Neither needs the lab to reach the platform first, so both work from a
 laptop to a lab on another machine. What does need the lab to reach the
 platform is the card's live parts — its health, its logs, its buttons —
-which the console calls at the `base_url` the plugin gave (see *Reaching the
+which the lab API calls at the `base_url` the plugin gave (see *Reaching the
 platform*).
+
+`{lab}` is the lab API, `http://127.0.0.1:8097` from the host
+([api/lab-api.md](api/lab-api.md#plugins)): one address, and, when the lab
+asks for one, one token (`Authorization: Bearer …`). Every route below also
+answers at the console's old path, `{console}/api/plugins…` on `:8090`,
+which the console forwards to the lab API with the token added, and the
+clock service still answers `GET /clock` on `:8096`: a runner that knows
+only those addresses keeps working, until phase 4 of
+[the lab API plan](lab-api/plan.md) retires the old paths.
 
 ## Register
 
 ```http
-POST /api/plugins
+POST /v1/plugins
 Content-Type: application/json
 
 { …descriptor… }
@@ -46,11 +55,11 @@ registration not renewed within `ttl_seconds` is **lapsed**; the card stays,
 grey. On a clean shutdown:
 
 ```http
-DELETE /api/plugins/{id}          → 204
+DELETE /v1/plugins/{id}          → 204
 ```
 
 and the card goes grey at once, **stopped**, showing the plugin's
-`start_hint`. The console keeps registrations in memory: after a console
+`start_hint`. The lab API keeps registrations in memory: after a lab API
 restart the card is back within one renewal.
 
 `400` carries the reason for a descriptor it refuses.
@@ -65,7 +74,7 @@ drawn from.
 | `id` | required | lower-case letters, digits, dashes; not one of the lab's own service ids |
 | `name` | required | the card title |
 | `summary` | | one paragraph: what this platform is |
-| `base_url` | required | where **the console** reaches the platform (http/https) |
+| `base_url` | required | where **the lab API** reaches the platform (http/https) |
 | `browse_url` | | where a **person's browser** does; the card's *Open* link |
 | `health_path` | required | a `2xx` here is *up* |
 | `activity_path` | | logs in the lab's activity shape (below); one panel per log |
@@ -79,7 +88,7 @@ drawn from.
 | `stand_ins` | | how the lab's stand-ins should be, below |
 
 Every path is **a path on `base_url`**: absolute, no `..`, no host. The
-console appends it to `base_url` and calls nothing else, which is what
+lab API appends it to `base_url` and calls nothing else, which is what
 makes forwarding a button safe. Every string is text; the console escapes
 it. A plugin cannot bring markup — if it needs a component the console
 does not have, the component goes into
@@ -104,7 +113,7 @@ does not have, the component goes into
 
 | `fields` | inputs asked for first, in a form — below |
 
-The button calls `POST /api/plugins/{id}/actions/{action}`; the console
+The button calls `POST /v1/plugins/{id}/actions/{action}`; the lab API
 forwards the body to `method base_url+path` and answers with the platform's
 status and body, verbatim. Buttons show only while the platform is up. At
 most eight.
@@ -165,8 +174,8 @@ and is the platform the Dashboard's diagram draws:
 }
 ```
 
-`GET files_path` (the console proxies it at
-`GET /api/plugins/{id}/files`):
+`GET files_path` (the lab API proxies it at
+`GET /v1/plugins/{id}/files`):
 
 ```json
 {"dir": "apps/settle-ingest/local",
@@ -193,18 +202,18 @@ the last word.
 
 **Files from anywhere** (optional; no `upload_path`, no upload button):
 
-| Console | Forwarded to | |
+| Lab API | Forwarded to | |
 | --- | --- | --- |
-| `POST /api/plugins/{id}/files?name=<file>` | `POST upload_path?name=` | the raw bytes, streamed — the console holds none of it and caps it at `CONSOLE_UPLOAD_MAX_MB` (512). Answer `201 {"name", "bytes", "note"}`; `name` is what it was kept as, `note` the toast |
-| `DELETE /api/plugins/{id}/files?name=` | `DELETE upload_path?name=` | forget an uploaded file; `204` |
-| `GET /api/plugins/{id}/files/preview?name=&lines=` | `GET preview_path?name=&lines=` | the head of any listed file, `lines` clamped to 1–1000: `{"name", "lines": […], "truncated", "long_lines", "bytes"}` |
+| `POST /v1/plugins/{id}/files?name=<file>` | `POST upload_path?name=` | the raw bytes, streamed — the lab API holds none of it and caps it at `CONSOLE_UPLOAD_MAX_MB` (512). Answer `201 {"name", "bytes", "note"}`; `name` is what it was kept as, `note` the toast |
+| `DELETE /v1/plugins/{id}/files?name=` | `DELETE upload_path?name=` | forget an uploaded file; `204` |
+| `GET /v1/plugins/{id}/files/preview?name=&lines=` | `GET preview_path?name=&lines=` | the head of any listed file, `lines` clamped to 1–1000: `{"name", "lines": […], "truncated", "long_lines", "bytes"}` |
 
 **Delete and open location** (both optional; no path, no button):
 
-| Console | Forwarded to | |
+| Lab API | Forwarded to | |
 | --- | --- | --- |
-| `DELETE /api/plugins/{id}/files?name=` | `DELETE delete_path?name=` | delete a listed file the platform marked `deletable` — its generated files, say, never a fixture its repo tracks. `204`; `403` with the platform's reason for one it will not delete; `404` for a name it does not list. Without `delete_path` this goes to `upload_path` and only uploads can be removed |
-| `POST /api/plugins/{id}/files/reveal` | `POST reveal_path` `{"name"}` | *Open location*: show the file in the file manager **of the machine the platform runs on**. Only the platform can — the console may be in a container, and a web page may not open a local folder. `200 {"path", "dir", "note"}`, the `note` being the toast; `409` with the path when there is no desktop to show it on (a server, an SSH session) |
+| `DELETE /v1/plugins/{id}/files?name=` | `DELETE delete_path?name=` | delete a listed file the platform marked `deletable` — its generated files, say, never a fixture its repo tracks. `204`; `403` with the platform's reason for one it will not delete; `404` for a name it does not list. Without `delete_path` this goes to `upload_path` and only uploads can be removed |
+| `POST /v1/plugins/{id}/files/reveal` | `POST reveal_path` `{"name"}` | *Open location*: show the file in the file manager **of the machine the platform runs on**. Only the platform can — the lab API may be in a container, and a web page may not open a local folder. `200 {"path", "dir", "note"}`, the `note` being the toast; `409` with the path when there is no desktop to show it on (a server, an SSH session) |
 
 `fintechlab-runner` has both: `deleteHandler` (the platform says which
 files may go, and why not) and `revealHandler` (`open -R` on macOS,
@@ -217,8 +226,8 @@ safe, free name), `uploadHandler` and `previewHandler` (reads no further
 than the lines it returns). buddy's runner keeps them in
 `infinite-local-runner/.runs/uploads/`.
 
-`POST run_path` with `{"files": ["…csv", …]}` — the console's
-`POST /api/plugins/{id}/run` forwards it — answers `202`
+`POST run_path` with `{"files": ["…csv", …]}` — the lab API's
+`POST /v1/plugins/{id}/run` forwards it — answers `202`
 `{"runs": [{"currency", "run"}]}`, or the platform's own `409` for a
 currency already running.
 
@@ -269,7 +278,7 @@ The lab's **stand-ins** played the platform's part before one plugged in:
 `settlement` pulls Worldline's files on a timer and pays outlets at the
 daily cutoff; `receiver` is where Banking Circle's seeded subscription and
 ACI deliver. `payment-api` and `notifier` are stand-ins nothing calls on its
-own — only `make demo-payment` and the harness do. Their cards start
+own — only `make demo-payment` and the e2e suite do. Their cards start
 hidden in the console (Configuration → *Stand-ins* has the switches); their
 wiring starts connected, so the lab runs end to end with no platform at
 all. A platform that replaces them says so:
@@ -293,7 +302,7 @@ vendor. The console applies `stand_ins` when the plugin first registers and
 whenever the value changes, **not on every renewal**, so a developer's
 *Reconnect* in the console holds until the plugin's wishes change. Each
 stand-in card says who set it last. The same switches are
-`POST /api/stand-ins/{id}` for anyone else (see [console.md](console.md)).
+`POST /v1/stand-ins/{id}` for anyone else (see [console.md](console.md)).
 
 buddy's runner sends it when `infinite-local-runner/fintechlab.json` exists
 (`cp fintechlab.example.json fintechlab.json`: both stand-ins disconnected
@@ -305,7 +314,8 @@ The lab owns one business clock: the `clock` service, `:8096`. Every
 vendor follows its offset, so a payout booked "on Monday" by the platform
 books on Monday at the bank.
 
-- **`"clock": "follows"`** — the platform polls `GET /clock` and applies
+- **`"clock": "follows"`** — the platform polls `GET {lab}/v1/clock` (the
+  clock service's `GET /clock`, through the lab API) and applies
   `offset_ms` (always whole milliseconds, so `Date.now()` plus it is still
   an integer) to its own business time (buddy's runner writes it to the
   file its clock shim, `@fintechlab/runner/clock-shim`, watches). Only the offset changes hands, so a
@@ -316,23 +326,24 @@ books on Monday at the bank.
 
 A lab deployed for such a platform usually runs **without a clock** at all
 (the cloud profile, [deploy-cloud.md](deploy-cloud.md)): there is no
-`:8096`, the console's `GET /api/clock` answers `{"absent": true, "mode":
-"real", "offset_ms": 0, "now": …}`, and a move is a `501`. A follower that
-finds no clock keeps the real time, which is right. Register with `"wall"`.
+`:8096`, `GET {lab}/v1/clock` answers `{"absent": true, "mode": "real",
+"offset_ms": 0, "now": …}`, a move or a hold is a `501` and a release a
+`404`. A follower reads offset zero and keeps the real time, which is right.
+Register with `"wall"`.
 
 A platform that must not have the clock moved under it — a settlement run
 in flight — **holds** it:
 
 ```http
-POST /clock/holds   {"holder": "infinite-local-runner", "reason": "settlement in flight: EUR …", "ttl_seconds": 900}
-DELETE /clock/holds/infinite-local-runner
+POST {lab}/v1/clock/holds   {"holder": "infinite-local-runner", "reason": "settlement in flight: EUR …", "ttl_seconds": 900}
+DELETE {lab}/v1/clock/holds/infinite-local-runner
 ```
 
 Moves are refused with `409` and the holder's reason until it is released
 or the hold lapses (at most an hour), so a platform killed mid-run cannot
 freeze the lab.
 
-`GET /clock`:
+`GET {lab}/v1/clock`:
 
 ```json
 {"offset_ms": -225000000, "offset_hours": -62.5, "now": "2026-09-25T09:00:00Z",
@@ -344,8 +355,8 @@ freeze the lab.
 `POST /clock` takes one of `{"at": "<RFC 3339>"}`, `{"advance": "1h"}`,
 `{"mode": "real"}` or `{"mode": "auto-business-day"}` (the most recent
 instant that is a business day on every calendar, recomputed as time
-passes). The console's clock card makes the same calls through
-`/api/clock`.
+passes). The console's clock card makes the same calls through the lab
+API's `/v1/clock`.
 
 ## Reaching the platform
 
@@ -354,21 +365,25 @@ runner:
 
 | Who dials | Variable (runner) | Default |
 | --- | --- | --- |
-| the platform → the console | `FINTECH_SIM_LAB_CONSOLE_URL` | `http://127.0.0.1:8090` |
-| the platform → the clock | `FINTECH_SIM_LAB_CLOCK_URL` | `http://127.0.0.1:8096/clock` |
-| the console → the platform | `RUNNER_ADVERTISED_URL` → `base_url` | `http://host.containers.internal:3109` |
+| the platform → the lab API: registration, the clock, lab hooks | `FINTECH_SIM_LAB_URL`, and `FINTECH_SIM_LAB_TOKEN` (or `LAB_API_TOKEN`) when the lab asks for one | `http://127.0.0.1:8097` |
+| the lab API → the platform | `RUNNER_ADVERTISED_URL` → `base_url` | `http://host.containers.internal:3109` |
 | a browser → the platform | `RUNNER_BROWSE_URL` → `browse_url` | `http://127.0.0.1:3109` |
 
-`host.containers.internal` is how the containerised console reaches the
-host. With the lab on another machine, the first two point at that machine
+`host.containers.internal` is how the containerised lab API reaches the
+host. With the lab on another machine, the first points at that machine
 and `base_url` must be an address it can reach — a tunnel (cloudflared,
 ngrok, pinggy) to the platform's control port does it. Registration and
 the clock need no tunnel; only the card's live parts do.
 
 ## Trust
 
-The console has no authentication, like every lab service. Anyone who can
-reach it can register a plugin, and the console will then call that
-plugin's `base_url` — only on the declared paths, only with the methods
-above. Run the lab where only the people using it can reach it
+The lab API has no authentication by default, like every lab service.
+Anyone who can reach it — or the console, which forwards to it — can
+register a plugin, and the lab API will then call that plugin's
+`base_url` — only on the declared paths, only with the methods above.
+`LAB_API_TOKEN` on the lab API makes it ask every caller for a bearer
+token (`LAB_API_TOKEN=… make up`, or `make pod-up`); the console adds the
+token for whoever reaches the console, so that is the address to keep
+private. A platform registering through the console, as the runner does,
+needs no token of its own. Run the lab where only the people using it can reach it
 ([deploy-pod.md](deploy-pod.md)).

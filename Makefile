@@ -6,11 +6,11 @@ COMPOSE ?= $(shell if docker compose version >/dev/null 2>&1; then echo "docker 
 	elif command -v docker-compose >/dev/null 2>&1; then echo "docker-compose"; \
 	else echo "docker compose"; fi)
 
-# Plain single-container engine (not compose) for `make harness-docker`,
+# Plain single-container engine (not compose) for `make e2e-docker`,
 # which attaches one container to the already-running compose network
 # instead of being a compose service itself — compose "profiles" would be
 # the normal way to keep a batch job out of `make up`, but podman-compose
-# (a real target here) does not implement profiles at all, so a harness
+# (a real target here) does not implement profiles at all, so an e2e
 # compose service would either always run on `up` or need profiles it
 # can't see. A plain `run --network` sidesteps that entirely.
 ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
@@ -20,19 +20,19 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild pod-images pod-up pod-down pod-bundle cloud-manifest cloud-bundle
+.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console e2e e2e-docker tidy rebuild pod-images pod-up pod-down pod-bundle cloud-manifest cloud-bundle
 
 help:
 	@echo "make up             build, replace the containers, start the lab"
 	@echo "make console        open the control panel (http://127.0.0.1:8090)"
 	@echo "make demo-payment   create a payment and wait for the webhook"
-	@echo "make harness        run the full scenario harness locally (go run)"
-	@echo "make harness-docker build+run the harness as one container against the compose network"
+	@echo "make e2e            run the end-to-end scenarios locally (go run)"
+	@echo "make e2e-docker     build+run the e2e suite as one container against the compose network"
 	@echo "make test           unit tests + vet + gofmt check (no Docker required)"
 	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
 	@echo "make keys-regenerate new PKI and keypairs in LAB_KEYS_DIR ($(LAB_KEYS_DIR)), lab restarted"
-	@echo "make rebuild        no-cache rebuild of the console image"
+	@echo "make rebuild        no-cache rebuild of the lab-api and console images"
 	@echo ""
 	@echo "make pod-images     build every image, tagged $(IMAGE_PREFIX)/<service>:$(LAB_VERSION)"
 	@echo "make pod-up         run the whole lab as one podman pod (podman kube play);"
@@ -44,7 +44,8 @@ help:
 	@echo "make cloud-bundle   that manifest + images + deploy/host/play.sh in dist/fintechlab-cloud.tgz"
 	@echo "make aws-infra      create/update the AWS stack (deploy/aws/lab.sh; config in deploy/aws/lab.env)"
 	@echo "make aws-deploy     build the cloud bundle and play it on the AWS host"
-	@echo "make aws-status | aws-console | aws-env | aws-shell | aws-stop | aws-start | aws-destroy"
+	@echo "make aws-e2e         run the e2e suite inside the deployed pod"
+	@echo "make aws-status | aws-console | aws-env | aws-token | aws-shell | aws-stop | aws-start | aws-destroy"
 	@echo "                    see docs/deploy-cloud.md"
 
 # Where the lab generates every key and certificate, one subdirectory per
@@ -122,7 +123,7 @@ sftp-dirs:
 # (docs/ARCHITECTURE-vendor-corrections.md Addendum sections D/E): b4b
 # generates its JWT keypair into b4b-keys/, settlement reads it back to
 # sign outgoing calls; worldline generates its SSH host key + PGP keypair
-# into wlsftp-keys/, and settlement and the harness read the PGP private
+# into wlsftp-keys/, and settlement and the e2e suite read the PGP private
 # key back to decrypt what they download over the real SFTP+PGP channel.
 # World-writable, non-secret (lab-only, gitignored, never real key material)
 # -- same tradeoff as certs/.
@@ -178,14 +179,16 @@ up: certs sftp-dirs key-dirs console-dir b4b-dir
 	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088  clock :8096"
 	@echo ""
 	@echo "control panel: http://127.0.0.1:8090   (make console)"
-	@echo "next: make demo-payment  (or: make harness)"
+	@echo "lab API:       http://127.0.0.1:8097/v1 (docs/api/lab-api.md)$(if $(LAB_API_TOKEN), -- asks for LAB_API_TOKEN)"
+	@echo "next: make demo-payment  (or: make e2e)"
 
 
-# The console embeds a Go binary and its web assets. --no-cache is for when
-# a warm layer cache means `up --build` quietly reuses the old one.
+# The console embeds its web assets, and the lab API serves the routes the
+# page calls, so the two are rebuilt together. --no-cache is for when a warm
+# layer cache means `up --build` quietly reuses the old ones.
 rebuild:
-	$(COMPOSE) build --no-cache console
-	@echo "rebuilt console (no cache). next: make up"
+	$(COMPOSE) build --no-cache lab-api console
+	@echo "rebuilt lab-api and console (no cache). next: make up"
 
 # start is `up` without the build step: it still replaces the containers,
 # so the lab reaches a known state, but it does not recompile anything. Use
@@ -245,7 +248,7 @@ LAB_VERSION ?= v1
 IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
-POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
+POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification lab-api console
 # [a-z0-9-]: b4b has a digit in its name, and [a-z-]* left it on localhost.
 POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z0-9-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
 
@@ -270,12 +273,28 @@ pod-images:
 # the init container discards the keys volume's contents and the pod starts
 # on a new PKI and new keypairs.
 REGENERATE_KEYS ?= false
-POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml)
+# POD_NETWORK=slirp4netns plays the pod without a bridge network: for a host
+# where podman's bridge fails with "netavark: create veth pair: Operation
+# not supported" (the veth kernel module is not loaded; `sudo modprobe veth`
+# fixes that for good). docs/deploy-pod.md, The podman quirks.
+POD_NETWORK ?=
+POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml) $(if $(POD_NETWORK),--network=$(POD_NETWORK))
+
+# LAB_API_TOKEN=… has the lab API ask every caller for it, as under compose.
+# The pod reads it from the ConfigMap deploy/pod/lab-api-token.yaml
+# defines; pod-up appends one, holding the token, to the manifest it pipes
+# to the play, so the token is never written to a file. YAML single quotes:
+# a ' in the token doubles.
+POD_TOKEN_CONFIGMAP = if [ -n "$$LAB_API_TOKEN" ]; then \
+	printf '%s\n' '---' 'apiVersion: v1' 'kind: ConfigMap' 'metadata:' '  name: fintechlab-lab-api-token' 'data:'; \
+	printf "  lab-api-token: '%s'\n" "$$(printf '%s' "$$LAB_API_TOKEN" | sed "s/'/''/g")"; \
+	fi
 
 pod-up:
-	$(POD_RENDER) | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
+	@{ $(POD_RENDER); $(POD_TOKEN_CONFIGMAP); } | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
 	@echo ""
 	@echo "lab is up as pod 'fintechlab'. control panel: http://127.0.0.1:8090"
+	@echo "lab API: http://127.0.0.1:8097/v1$(if $(LAB_API_TOKEN), (asks for LAB_API_TOKEN))"
 	@echo "platform env + keys: Configuration -> Connect your platform"
 
 # Keeps the volumes, keys included. New keys are `make pod-up
@@ -286,12 +305,13 @@ pod-down:
 # Everything a machine without this checkout needs, in dist/:
 #   podman load -i fintechlab-$(LAB_VERSION)-images.tar
 #   podman kube play --replace fintechlab-$(LAB_VERSION).yaml
-#   (add --configmap regenerate-keys.yaml to issue new keys)
+#   (add --configmap regenerate-keys.yaml to issue new keys, and
+#    --configmap lab-api-token.yaml, with a token in it, to ask for one)
 pod-bundle: pod-images
 	@mkdir -p dist
 	podman save -m -o dist/fintechlab-$(LAB_VERSION)-images.tar $(foreach s,$(POD_SERVICES),$(IMAGE_PREFIX)/$(s):$(LAB_VERSION))
 	@$(POD_RENDER) > dist/fintechlab-$(LAB_VERSION).yaml
-	@cp deploy/pod/regenerate-keys.yaml dist/
+	@cp deploy/pod/regenerate-keys.yaml deploy/pod/lab-api-token.yaml dist/
 	@echo "dist/fintechlab-$(LAB_VERSION)-images.tar + dist/fintechlab-$(LAB_VERSION).yaml -- see docs/deploy-pod.md"
 
 # --- the lab deployed somewhere ------------------------------------------
@@ -316,7 +336,9 @@ LAB_SANS ?=
 LAB_WEBHOOK_ALLOW ?=
 LAB_SET ?=
 CLOUD_SERVICES := $(filter-out clock,$(POD_SERVICES))
-BUNDLE_SERVICES = $(if $(filter cloud,$(LAB_PROFILE)),$(CLOUD_SERVICES),$(POD_SERVICES))
+# The pod's images, and the e2e suite's: deploy/host/e2e.sh runs it inside
+# the pod after a deploy (lab.sh e2e).
+BUNDLE_SERVICES = $(if $(filter cloud,$(LAB_PROFILE)),$(CLOUD_SERVICES),$(POD_SERVICES)) e2e
 CLOUD_RENDER = go run ./deploy/pod/render -profile '$(LAB_PROFILE)' -public-host '$(LAB_PUBLIC_HOST)' \
 	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)')
 
@@ -330,34 +352,35 @@ cloud-bundle:
 	@rm -rf dist/cloud && mkdir -p dist/cloud
 	@$(CLOUD_RENDER) > dist/cloud/fintechlab.yaml
 	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1)
-	@cp deploy/pod/regenerate-keys.yaml deploy/host/play.sh dist/cloud/
+	@cp deploy/pod/regenerate-keys.yaml deploy/host/play.sh deploy/host/e2e.sh dist/cloud/
 	@echo "$$(git describe --always --dirty 2>/dev/null || echo unknown) $(LAB_PROFILE) built $$(date -u +%FT%TZ) by $$(git config user.name 2>/dev/null || whoami)" > dist/cloud/REVISION
 	@tar -czf dist/fintechlab-cloud.tgz -C dist/cloud .
 	@echo "dist/fintechlab-cloud.tgz ($$(du -h dist/fintechlab-cloud.tgz | cut -f1)): $$(cat dist/cloud/REVISION)"
 
-AWS_COMMANDS := infra deploy status outputs env console shell stop start destroy
+AWS_COMMANDS := infra deploy status outputs env token e2e console shell stop start destroy
 .PHONY: $(addprefix aws-,$(AWS_COMMANDS))
 $(addprefix aws-,$(AWS_COMMANDS)):
 	@deploy/aws/lab.sh $(@:aws-%=%)
 
-harness:
-	@go run ./cmd/harness
+e2e:
+	@go run ./cmd/e2e
 
-harness-docker:
-	$(ENGINE) build -f docker/Dockerfile.harness -t fintechlab-simple_harness .
-	$(ENGINE) run --rm --network fintechlab-simple_default \
+# The compose network the lab runs on: <project>_default.
+E2E_NETWORK ?= fintechlab-simple_default
+
+e2e-docker:
+	$(ENGINE) build -f docker/Dockerfile.e2e -t fintechlab-simple_e2e .
+	$(ENGINE) run --rm --network $(E2E_NETWORK) \
 		-e PAYMENT_API_URL=http://payment-api:8080 \
 		-e BANK_URL=http://bank:8081 \
 		-e NOTIFIER_URL=http://notifier:8082 \
 		-e RECEIVER_URL=https://receiver:8443 \
 		-e RECEIVER_DELIVERY_URL=https://receiver:8443 \
 		-e SETTLEMENT_URL=http://settlement:8083 \
-		-e WORLDLINE_URL=http://worldline:8084 \
-		-e BANKING_CIRCLE_URL=https://pod-bank-rails:9085 \
-		-e BANKING_CIRCLE_INTERNAL_URL=https://pod-bank-rails:9085 \
-		-e BANKING_CIRCLE_TARGET=pod \
-		-e ACI_URL=http://aci:8087 \
+		-e BANKING_CIRCLE_URL=https://banking-circle:8085 \
 		-e B4B_URL=http://b4b:8086 \
+		-e LAB_API_URL=http://lab-api:8097 \
+		-e LAB_API_TOKEN \
 		-e B4B_JWT_PRIVATE_KEY_PATH=/keys/b4b-keys/private.pem \
 		-e B4B_JWT_KEY_ID=b4b-mock-1 \
 		-e CA_FILE=/keys/certs/ca.pem \
@@ -367,4 +390,4 @@ harness-docker:
 		-e WORLDLINE_SFTP_PASSWORD=sim-sftp-dev-only \
 		-e WORLDLINE_PGP_PRIVATE_KEY_PATH=/keys/wlsftp-keys/worldline_private.asc \
 		-v "$(LAB_KEYS_DIR)":/keys:ro \
-		fintechlab-simple_harness
+		fintechlab-simple_e2e

@@ -104,6 +104,32 @@ not on a pod restart, so the new keys are not quietly replaced again the
 next time the machine reboots. Every copy of the old keys a platform holds
 stops working: download its `.env` again.
 
+## Asking for a token
+
+The lab API is open by default. Give the play a token and it asks every
+caller but `GET /health` for `Authorization: Bearer <token>`:
+
+```sh
+make pod-up LAB_API_TOKEN=$(openssl rand -hex 32)   # from a checkout
+podman kube play --replace --configmap lab-api-token.yaml fintechlab-v1.yaml
+```
+
+`lab-api-token.yaml` (in `deploy/pod/`, and copied into `dist/` by
+`make pod-bundle`) is the ConfigMap the lab API and the console read
+`LAB_API_TOKEN` from. It ships empty — an open lab — so put the token in
+before playing it. `make pod-up` writes no file: it appends that ConfigMap,
+with the token, to the manifest it pipes to the play. A token with a `$` in
+it goes through the environment (`LAB_API_TOKEN=… make pod-up`), not the
+make command line, where make would expand it.
+
+Like the keys flag, it applies to that play: a play without it runs an open
+lab API. Agents, scripts and the e2e suite send the token themselves
+(`LAB_API_TOKEN` in their environment). The console adds it to everything
+it forwards, so its page needs none — which means `:8090` is as open as
+ever: keep it on a network you trust, or in front of it put an auth proxy
+([lab-api/open.md](lab-api/open.md), question 4). A platform registers
+through the console and follows the clock directly, so it needs no token.
+
 ## How it differs from compose, and why it does not matter
 
 - **One network namespace.** Every container is on the pod's loopback. The
@@ -129,7 +155,8 @@ stops working: download its `.env` again.
   play with `regenerate-keys.yaml` to reissue. See [security/ca-and-tls.md](security/ca-and-tls.md).
 - **Links.** The console's "open in a browser" links use
   `CONSOLE_BROWSE_HOST` (127.0.0.1 in the manifest). The `.env` downloads do
-  not: they follow the host you opened the console on.
+  not: they follow the host you opened the console on, unless the lab API's
+  `CONSOLE_CONNECT_HOST` names the lab's address (the cloud profile sets it).
 - **The clock and the platform's card.** The lab owns its clock (the
   `clock` container, `:8096`); the platform follows it from wherever it
   runs, outbound, so a laptop against a remote lab needs nothing extra. The
@@ -139,11 +166,29 @@ stops working: download its `.env` again.
   (cloudflared, ngrok, pinggy). A platform deployed where its clock cannot
   move registers with `"clock": "wall"`, and the console then keeps the lab
   on the real time.
-- **No authentication.** Anyone who can reach `:8090` can drive the lab and
-  download its keys. Every one of them is fake, which is the only reason
-  that is acceptable — keep it on a network you trust.
+- **Authentication is one token, on the lab API.** With one set
+  ([Asking for a token](#asking-for-a-token)), `:8097` refuses a caller
+  without it. `:8090` does not: anyone who can reach the console can drive
+  the lab and download its keys. Every one of them is fake, which is the
+  only reason that is acceptable — keep it on a network you trust.
 
-## The one podman quirk
+## The podman quirks
+
+**A bridge podman cannot make.** `make pod-up` failing with
+`netavark: create veth pair: Netlink error: Operation not supported` means
+the host's `veth` kernel module is not loaded, and rootless podman cannot
+load it — common after a kernel update without a reboot. Either load it
+once (`sudo modprobe veth`), or play the pod without a bridge:
+
+```sh
+make pod-up POD_NETWORK=slirp4netns
+podman kube play --replace --network slirp4netns fintechlab-v1.yaml
+```
+
+The containers share one network namespace either way, so the lab behaves
+the same; only the published ports are forwarded differently.
+
+**Where the play runs.**
 
 `kube play` looks in its working directory for a directory named like each
 image, to build it from — and podman 4.9 does so even with `--build=false`.

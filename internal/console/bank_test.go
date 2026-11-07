@@ -7,19 +7,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 )
 
 func TestCoreLedgerBankListsAndOpens(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/accounts":
+		case r.Method == http.MethodGet && r.URL.Path == "/sim/accounts":
 			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{
 				{"id": "acc_b", "iban": "GB00SIM2", "holder": "Bob", "currency": "EUR", "balance": "50.00"},
 				{"id": "acc_a", "iban": "GB00SIM1", "holder": "Alice", "currency": "EUR", "balance": "10.00"},
 			}})
-		case r.Method == http.MethodPost && r.URL.Path == "/accounts":
+		case r.Method == http.MethodPost && r.URL.Path == "/sim/accounts":
 			var req map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&req)
 			w.WriteHeader(201)
@@ -72,47 +71,33 @@ func TestBankErrorsCarryTheServersOwnMessage(t *testing.T) {
 	}
 }
 
-func TestBankingCircleUsesRealCredentialsAndCachesTheToken(t *testing.T) {
-	var authorizes int64
+// The lab reads Banking Circle's books over its control port, with no
+// vendor login: the platform's credentials are the platform's.
+func TestBankingCircleIsReadOverItsControlPortWithNoCredentials(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" || r.TLS != nil {
+			http.Error(w, "the control port takes no vendor credentials", 400)
+			return
+		}
 		switch r.URL.Path {
-		case "/api/v1/authorizations/authorize":
-			if u, p, ok := r.BasicAuth(); !ok || u == "" || p == "" {
-				http.Error(w, "basic auth required", 401)
-				return
-			}
-			atomic.AddInt64(&authorizes, 1)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"access_token": "tok", "expires_in": 900, "token_type": "bearer",
-			})
-		case "/accounts":
-			if r.Header.Get("Authorization") != "Bearer tok" {
-				http.Error(w, "unauthorized", 401)
-				return
-			}
+		case "/sim/accounts":
 			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{
 				{"id": "bc_acc_sga_eur", "viban": "BC00SIM1", "holder": "SGA", "currency": "EUR", "balance": "1000.00"},
 			}})
+		case "/sim/payments/p1/return":
+			http.Error(w, `{"error":"payment p1 is not processed"}`, 409)
 		default:
 			http.Error(w, "no", 404)
 		}
 	}))
 	defer srv.Close()
-
-	b := &BankingCircleBank{BaseURL: srv.URL, Client: srv.Client(), User: "sim", Password: "sim"}
-	for i := 0; i < 3; i++ {
-		got, err := b.Accounts(context.Background())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(got) != 1 || got[0].Number != "BC00SIM1" {
-			t.Fatalf("accounts = %+v", got)
-		}
+	b := &BankingCircleBank{BaseURL: srv.URL, Client: srv.Client()}
+	got, err := b.Accounts(context.Background())
+	if err != nil || len(got) != 1 || got[0].Number != "BC00SIM1" {
+		t.Fatalf("accounts = %+v, %v", got, err)
 	}
-	// One exchange for three reads: re-authorizing per request would be a
-	// different thing from what a real client does.
-	if n := atomic.LoadInt64(&authorizes); n != 1 {
-		t.Fatalf("authorize called %d times, want 1", n)
+	if err := b.Post(context.Background(), "/sim/payments/p1/return", nil); err == nil || !strings.Contains(err.Error(), "not processed") {
+		t.Errorf("a refusal = %v, want the bank's own words", err)
 	}
 }
 

@@ -6,14 +6,12 @@ RUN go mod download
 COPY . .
 # The UI is embedded (//go:embed web) rather than mounted or fetched: the
 # console has to work on a laptop with no network, which is the situation
-# this whole lab exists for.
+# this whole lab exists for. Everything else it does is forward /v1 to the
+# lab API (Dockerfile.lab-api).
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/console ./cmd/console
 
 FROM docker.io/library/alpine:3.20
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/console /usr/local/bin/console
-# Same file banking-circle bakes in, read as the fallback when the service
-# cannot be asked what schedule it runs. Compose mounts ./config over it.
-COPY config/banking-circle.json /config/banking-circle.json
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/console"]

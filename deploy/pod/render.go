@@ -33,13 +33,13 @@ type Options struct {
 	// Profile is ProfileLocal or ProfileCloud. The cloud profile leaves the
 	// lab clock out: no clock container, no LAB_CLOCK_URL on any vendor
 	// (each then dates what it does by its own wall clock, which is what it
-	// does with no clock to follow), and CONSOLE_URL_CLOCK=off so the
-	// console says the lab is on the real time instead of showing a clock
-	// that is down. A deployed platform cannot follow a lab clock, so a lab
+	// does with no clock to follow), and CONSOLE_URL_CLOCK=off so the lab
+	// API says the lab is on the real time instead of showing a clock that
+	// is down. A deployed platform cannot follow a lab clock, so a lab
 	// it talks to must not move.
 	Profile string
 	// PublicHost is the name or address a platform reaches the lab at. It
-	// becomes the console's CONSOLE_CONNECT_HOST (the .env downloads) and
+	// becomes the lab API's CONSOLE_CONNECT_HOST (the .env downloads) and
 	// CONSOLE_BROWSE_HOST (its links), and a SAN on the certificates a
 	// client outside the pod dials.
 	PublicHost string
@@ -58,11 +58,21 @@ type Options struct {
 	Version     string
 }
 
-// Container names Render needs to find.
+// Container names Render needs to find. Everything else it changes, it
+// finds by the variable: the clock and public-host settings go to whichever
+// containers read them (the lab API today; the console before it), so a
+// service that moves takes its settings with it.
 const (
-	clockContainer   = "clock"
-	consoleContainer = "console"
-	initContainer    = "init"
+	clockContainer = "clock"
+	initContainer  = "init"
+)
+
+// The variables Render sets, and so the ones a container must already carry
+// for Render to set them there.
+const (
+	clockURLVar    = "CONSOLE_URL_CLOCK"
+	browseHostVar  = "CONSOLE_BROWSE_HOST"
+	connectHostVar = "CONSOLE_CONNECT_HOST"
 )
 
 var imagePattern = regexp.MustCompile(`^localhost/fintechlab/([a-z0-9-]+):v1$`)
@@ -91,12 +101,14 @@ func Render(src []byte, o Options) ([]byte, error) {
 		spec:       spec,
 		containers: append(items(get(spec, "initContainers")), items(get(spec, "containers"))...),
 	}
-	if m.find(consoleContainer) == nil || m.find(initContainer) == nil {
-		return nil, fmt.Errorf("manifest: no %s or %s container", consoleContainer, initContainer)
+	if m.find(initContainer) == nil {
+		return nil, fmt.Errorf("manifest: no %s container", initContainer)
 	}
 
 	if o.Profile == ProfileCloud {
-		m.dropClock()
+		if err := m.dropClock(); err != nil {
+			return nil, err
+		}
 	}
 	if err := m.publicHost(o.PublicHost, o.ExtraSANs); err != nil {
 		return nil, err
@@ -149,7 +161,22 @@ func (m *manifest) find(name string) *yaml.Node {
 	return nil
 }
 
-func (m *manifest) dropClock() {
+// readers is every container that carries key in its environment.
+func (m *manifest) readers(key string) []*yaml.Node {
+	var out []*yaml.Node
+	for _, c := range m.containers {
+		if _, ok := env(c, key); ok {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (m *manifest) dropClock() error {
+	clockReaders := m.readers(clockURLVar)
+	if len(clockReaders) == 0 {
+		return fmt.Errorf("manifest: no container reads %s, so nothing would be told the clock is gone", clockURLVar)
+	}
 	cs := get(m.spec, "containers")
 	kept := cs.Content[:0]
 	for _, c := range cs.Content {
@@ -176,7 +203,10 @@ func (m *manifest) dropClock() {
 	for _, c := range m.containers {
 		delEnv(c, "LAB_CLOCK_URL")
 	}
-	setEnv(m.find(consoleContainer), "CONSOLE_URL_CLOCK", "off")
+	for _, c := range clockReaders {
+		setEnv(c, clockURLVar, "off")
+	}
+	return nil
 }
 
 func (m *manifest) publicHost(host string, extra []string) error {
@@ -190,9 +220,14 @@ func (m *manifest) publicHost(host string, extra []string) error {
 		} else {
 			sans = append(sans, "DNS:"+host)
 		}
-		console := m.find(consoleContainer)
-		setEnv(console, "CONSOLE_CONNECT_HOST", host)
-		setEnv(console, "CONSOLE_BROWSE_HOST", host)
+		readers := m.readers(browseHostVar)
+		if len(readers) == 0 {
+			return fmt.Errorf("manifest: no container reads %s, so nothing would hand out the public host", browseHostVar)
+		}
+		for _, c := range readers {
+			setEnv(c, connectHostVar, host)
+			setEnv(c, browseHostVar, host)
+		}
 	}
 	for _, s := range extra {
 		s = strings.TrimSpace(s)

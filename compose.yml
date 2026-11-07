@@ -145,7 +145,7 @@ services:
       # balance check only -- settlement never holds Banking Circle's
       # mTLS+bearer credentials, matching real settle-processing (docs
       # section 1 and 5). Not the mTLS-credentialed :8085 surface, and
-      # deliberately NOT named BANKING_CIRCLE_URL like the harness's own
+      # deliberately NOT named BANKING_CIRCLE_URL like the e2e suite's own
       # (different) env var of that name (mTLS :8085) -- same literal
       # name, different meaning, different process would be confusing.
       BC_INTERNAL_URL: http://banking-circle:8095
@@ -320,7 +320,7 @@ services:
       CA_FILE: /keys/certs/ca.pem
       TLS_CERT: /keys/certs/banking-circle.pem
       TLS_KEY: /keys/certs/banking-circle-key.pem
-      # mTLS is optional. Real integrations vary, and the harness presents
+      # mTLS is optional. Real integrations vary, and the e2e suite presents
       # a client certificate, so "require" is the default here. Set "off"
       # to match a deployment that does not use client certificates, or
       # "optional" to accept both. Bearer auth applies in every mode: this
@@ -340,7 +340,7 @@ services:
       BC_TIME_SCALE: "86400"
       # Batch size is a per-subscription setting a client chooses. The
       # seeded convenience subscription uses the documented minimum so the
-      # harness sees batching happen rather than one-notification messages.
+      # e2e suite sees batching happen rather than one-notification messages.
       BC_SEED_BATCH_SIZE: "5"
       BC_SEED_SUBSCRIPTION_EMAIL: alerts@fintechlab-simple.local
     volumes:
@@ -384,9 +384,9 @@ services:
       # is unconfirmed -- turn it on to find out what your client does if
       # it does. See internal/b4b/beneficiary.go CheckCompany.
       B4B_ENFORCE_BENEFICIARY_COMPANY: "false"
-      # The harness registers beneficiaries with its own callback_url;
+      # The e2e suite registers beneficiaries with its own callback_url;
       # settlement's own host is the only one it uses, and localhost covers
-      # a local (non-compose) harness run. host.containers.internal is what
+      # a local (non-compose) e2e run. host.containers.internal is what
       # a client running on the host (not in this compose network) needs.
       WEBHOOK_ALLOWLIST: settlement,settlement:8083,localhost,127.0.0.1,host.containers.internal
       # Bridge target once a payment reaches B4BTMApproved -- Banking
@@ -408,7 +408,7 @@ services:
   # it is the *sender* of a webhook a real buddy settle-aci-webhook (or
   # its gateway proxy) receives, not something this lab's own services
   # call into. ACI_WEBHOOK_TARGET_URL here points at receiver's raw
-  # capture sink (docs section 6) so the harness/demo observes a real,
+  # capture sink (docs section 6) so the e2e suite/demo observes a real,
   # fast delivery within this lab's own network by default -- cmd/aci's
   # own code default is buddy's real local-dev address
   # (http://localhost:3013/api/v1/webhook); point a real buddy
@@ -474,18 +474,32 @@ services:
       LISTEN: ":8089"
 
 
-  console:
+  # The lab's one API (/v1): every lab-level call the console page, a
+  # script or an agent makes lands here (docs/api/lab-api.md). It holds
+  # what the console's server used to: the merchant registry, the plugin
+  # registrations, the health monitor and the credentials to reach each
+  # vendor. The variable names keep their CONSOLE_ prefix so an existing
+  # .env or deployment keeps working.
+  lab-api:
     build:
       context: .
-      dockerfile: docker/Dockerfile.console
+      dockerfile: docker/Dockerfile.lab-api
     ports:
-      - "8090:8090"
+      - "8097:8097"
     environment:
-      LISTEN: ":8090"
-      # Reached over the compose network by service name. The catalogue's
-      # own port list is what builds the "open in a browser" links, which
-      # have to point at the published host ports instead -- CONSOLE_BROWSE_HOST
-      # names the host those are published on.
+      LISTEN: ":8097"
+      # Asked of every caller but GET /health when set (docs/api/README.md),
+      # taken from the host: `LAB_API_TOKEN=… make up`. Empty, the lab API
+      # is open, as a local lab usually is.
+      LAB_API_TOKEN: ${LAB_API_TOKEN:-}
+      # Reached over the compose network by service name. The lab API steers
+      # each one on its control port -- this URL's port plus 1000, plain
+      # HTTP, no vendor login (internal/simctl) -- and holds no vendor
+      # credentials: those are the platform's. CONSOLE_CONTROL_URL_<ID>
+      # overrides a control address. The catalogue's own port list is what
+      # builds the "open in a browser" links, which have to point at the
+      # published host ports instead -- CONSOLE_BROWSE_HOST names the host
+      # those are published on.
       CONSOLE_URL_WORLDLINE: http://worldline:8084
       CONSOLE_URL_B4B: http://b4b:8086
       CONSOLE_URL_BANKING_CIRCLE: https://banking-circle:8085
@@ -500,30 +514,13 @@ services:
       CONSOLE_URL_CLOCK: http://clock:8096
       CONSOLE_BROWSE_HOST: 127.0.0.1
       CONSOLE_PROBE_INTERVAL: 5s
-      # Banking Circle's internal bridge: "Fund safeguarding accounts" on
-      # its card credits the platform's SGAs there, as Worldline's wire does.
-      CONSOLE_BC_INTERNAL_URL: http://banking-circle:8095
       CONSOLE_STATE_FILE: /console-data/registry.json
       CONSOLE_BC_DELIVERY_CONFIG: /config/banking-circle.json
-      # Banking Circle's API requires mTLS by default (BC_MTLS above), so
-      # the console presents the same client certificate the harness does.
-      # Basic credentials are not checked by the simulator, but the
-      # exchange is: the console gets a real bearer token like any client.
-      CA_FILE: /keys/certs/ca.pem
-      CLIENT_CERT: /keys/certs/client.pem
-      CLIENT_KEY: /keys/certs/client-key.pem
-      BC_USER: console
-      BC_PASSWORD: sim-bc-dev-only
-      # Registering a merchant outlet as a B4B beneficiary needs the RS512
-      # signing key b4b generates -- read-only, same shared volume
-      # settlement already uses for exactly this.
-      B4B_JWT_PRIVATE_KEY_PATH: /keys/b4b-keys/private.pem
-      B4B_JWT_KEY_ID: "b4b-mock-1"
-      # Where the console finds the keys and certificates it hands out: the
-      # "connect your platform" downloads on each vendor card. Every key
-      # the lab generates, read-only -- the console serves only the files a
-      # client needs (never a server's private key or the CA's), from a
-      # fixed list in internal/console/connect.go.
+      # Where the lab API finds the keys and certificates it hands out: the
+      # "connect your platform" downloads on each vendor card. Files for a
+      # platform to use, never used by the lab API itself; read-only, and
+      # only the files a client needs (never a server's private key or the
+      # CA's), from a fixed list in internal/console/connect.go.
       CONSOLE_KEYS_DIR: /keys
     volumes:
       - ${LAB_KEYS_DIR:-./keys}:/keys:ro
@@ -537,6 +534,25 @@ services:
       banking-circle:
         condition: service_started
       settlement:
+        condition: service_started
+
+  # The control panel: the page, and a forward of /v1 (and the old /api
+  # paths a running plugin registers at) to the lab API. No state, no
+  # credentials, no vendor knowledge.
+  console:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.console
+    ports:
+      - "8090:8090"
+    environment:
+      LISTEN: ":8090"
+      LAB_API_URL: http://lab-api:8097
+      # The same token: the console adds it to everything it forwards, so
+      # the page needs none -- and whoever reaches :8090 drives the lab.
+      LAB_API_TOKEN: ${LAB_API_TOKEN:-}
+    depends_on:
+      lab-api:
         condition: service_started
 
 volumes:

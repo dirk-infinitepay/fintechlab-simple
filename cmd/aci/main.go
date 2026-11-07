@@ -10,6 +10,12 @@
 // merchant-onboarding REST client and its separate SFTP+PGP file-exchange
 // channel are explicitly out of scope (section 2) -- this binary is the
 // webhook only.
+//
+// The lab steers it on a control port of its own, LISTEN's port + 1000
+// (:9087, SIM_CONTROL_LISTEN; internal/simctl): POST /sim/payments,
+// GET /sim/sent[/{id}], the delivery switch and the control contract. The
+// /internal/* trigger and reads and the old /sim paths still answer on
+// LISTEN until phase 4 of docs/lab-api/plan.md retires them.
 package main
 
 import (
@@ -24,7 +30,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/aci"
@@ -32,7 +37,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/labswitch"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 type app struct {
@@ -43,7 +50,7 @@ type app struct {
 	maxTry    int
 	targetURL string
 	bodyMode  string
-	sent      *sentStore
+	sent      *aci.SentLog
 	// wiring is the delivery to targetURL. Off, a simulated payment is
 	// still recorded — held, saying why — and nothing is sent: the lab's
 	// receiver stand-in is disconnected once a platform listens itself.
@@ -51,6 +58,7 @@ type app struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8087")
 	labclock.FollowEnv(context.Background(), "aci")
 	// Default is a fake-obvious *valid* 64-hex-char value -- hex-decodes to
@@ -99,11 +107,57 @@ func main() {
 		maxTry:    envInt("MAX_ATTEMPTS", 4),
 		targetURL: targetURL,
 		bodyMode:  bodyMode,
-		sent:      newSentStore(),
+		sent:      aci.NewSentLog(),
 		wiring: labswitch.FromEnv("aci", "delivers webhooks to ACI_WEBHOOK_TARGET_URL",
 			env("ACI_WEBHOOK_CONNECTED", "true")).Target(targetURL),
 	}
 
+	ctl, err := a.control(addr)
+	if err != nil {
+		log.Fatalf("aci: %v", err)
+	}
+	ctl.Start()
+
+	log.Printf("aci listening on %s target=%s body_mode=%s allowlist=%s", addr, targetURL, bodyMode, spec)
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(ctl.Mux))))
+}
+
+// control is ACI's control surface (internal/simctl), on a port of its own:
+// the control contract and simRoutes. addr is the vendor listener, for
+// GET /sim/info and the control port's default (its port + 1000).
+func (a *app) control(addr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "aci", Kind: "vendor", Simulates: "ACI payment notification webhooks",
+		Listeners: []string{addr},
+		// Both scopes, and they do the same: ACI holds nothing a platform
+		// set up once. Both are offered so a lab-wide all reset reaches it.
+		Scopes: []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			return a.reset(), nil
+		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, err
+	}
+	a.simRoutes(ctl.Mux)
+	return ctl, nil
+}
+
+// simRoutes are ACI's own lab hooks, on the control port's mux: make a card
+// payment happen, see what was sent, and the delivery switch. The first
+// three are POST /internal/simulate-payment and GET /internal/sent[/{id}]
+// under their control-port names (docs/lab-api/sim-control.md §7).
+func (a *app) simRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /sim/payments", a.simulatePayment)
+	mux.HandleFunc("GET /sim/sent", a.listSent)
+	mux.HandleFunc("GET /sim/sent/{id}", a.getSent)
+	a.wiring.Routes(mux, "/sim/connected")
+}
+
+// routes is ACI's own listener. ctl is the control surface's mux: the /sim
+// paths here delegate to it, and the /internal routes stay, until phase 4
+// of docs/lab-api/plan.md retires them.
+func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "aci"})
@@ -111,10 +165,20 @@ func main() {
 	mux.HandleFunc("POST /internal/simulate-payment", a.simulatePayment)
 	mux.HandleFunc("GET /internal/sent", a.listSent)
 	mux.HandleFunc("GET /internal/sent/{id}", a.getSent)
-	a.wiring.Routes(mux, "/sim/connected")
+	mux.Handle("/sim/", ctl)
+	return mux
+}
 
-	log.Printf("aci listening on %s target=%s body_mode=%s allowlist=%s", addr, targetURL, bodyMode, spec)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6): the sent log
+// emptied and every delivery in flight dropped, first attempts and retries
+// alike. The delivery switch stays as it was: it is live wiring -- whether
+// a platform listens itself -- not something a run made.
+func (a *app) reset() simctl.ResetResult {
+	sent, deliveries := a.sent.Reset()
+	return simctl.ResetResult{
+		Cleared: map[string]int{"sent": sent, "deliveries_in_flight": deliveries},
+		Kept:    []string{"connected_switch"},
+	}
 }
 
 // simulateReq is this lab's own trigger shape (snake_case) -- not ACI's
@@ -135,11 +199,12 @@ type simulateResp struct {
 	ID string `json:"id"`
 }
 
-// simulatePayment implements POST /internal/simulate-payment: builds ACI's
-// real notification payload from this lab's trigger shape, encrypts it, and
-// queues fire-and-retry delivery. It never blocks on delivery -- the
-// response is 202 with the generated event id as soon as encryption
-// succeeds, matching every other sender in this lab.
+// simulatePayment implements POST /sim/payments and its alias
+// POST /internal/simulate-payment: builds ACI's real notification payload
+// from this lab's trigger shape, encrypts it, and queues fire-and-retry
+// delivery. It never blocks on delivery -- the response is 202 with the
+// generated event id as soon as encryption succeeds, matching every other
+// sender in this lab.
 func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 	var req simulateReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -182,7 +247,7 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rec := &sentRecord{
+	rec := &aci.Record{
 		ID:             "aci_evt_" + shortID(),
 		Notification:   notif,
 		CiphertextHex:  ciphertextHex,
@@ -197,13 +262,11 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		// Said where the silence lands: the record is there, held.
 		rec.DeliveryStatus = "held"
 		rec.DeliveryError = "not delivered: the webhook target is disconnected in the lab (GET /sim/connected)"
-		a.sent.put(rec)
+		a.sent.Put(rec)
 		httputilx.WriteJSON(w, 202, simulateResp{ID: rec.ID})
 		return
 	}
-	a.sent.put(rec)
-
-	go a.deliver(rec)
+	a.sent.Go(a.sent.Put(rec), func(started uint64) { a.deliver(rec, started) })
 
 	httputilx.WriteJSON(w, 202, simulateResp{ID: rec.ID})
 }
@@ -213,24 +276,36 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 // every other webhook sender in this lab (cmd/b4b/main.go's
 // deliverWebhook). Runs in its own goroutine so a down or slow
 // ACI_WEBHOOK_TARGET_URL never stalls the HTTP handler that queued it.
-func (a *app) deliver(rec *sentRecord) {
+//
+// started is the epoch rec was put in. Every attempt goes through the sent
+// log's gate: after a reset the rest of the delivery is dropped, not raced.
+func (a *app) deliver(rec *aci.Record, started uint64) {
 	var last int
 	var lastErr error
 	for attempt := 1; attempt <= a.maxTry; attempt++ {
 		if wait := retry.SleepBeforeAttempt(attempt, a.backs); wait > 0 {
 			time.Sleep(wait)
 		}
-		st, err := a.postWebhook(rec)
+		var st int
+		var err error
+		if !a.sent.Do(started, func() {
+			st, err = a.postWebhook(rec)
+			if err == nil {
+				log.Printf("aci: webhook event=%s attempt=%d http=%d delivered", rec.ID, attempt, st)
+				deliveredAt := time.Now().UTC()
+				a.sent.Update(rec.ID, func(r *aci.Record) {
+					r.DeliveryStatus = "delivered"
+					r.HTTPStatus = st
+					r.DeliveryError = ""
+					r.DeliveredAt = &deliveredAt
+				})
+			}
+		}) {
+			log.Printf("aci: webhook event=%s dropped before attempt %d: aci was reset", rec.ID, attempt)
+			return
+		}
 		last, lastErr = st, err
 		if err == nil {
-			log.Printf("aci: webhook event=%s attempt=%d http=%d delivered", rec.ID, attempt, st)
-			deliveredAt := time.Now().UTC()
-			a.sent.update(rec.ID, func(r *sentRecord) {
-				r.DeliveryStatus = "delivered"
-				r.HTTPStatus = st
-				r.DeliveryError = ""
-				r.DeliveredAt = &deliveredAt
-			})
 			return
 		}
 		log.Printf("aci: webhook event=%s attempt=%d http=%d err=%v", rec.ID, attempt, st, err)
@@ -238,13 +313,15 @@ func (a *app) deliver(rec *sentRecord) {
 			break
 		}
 	}
-	log.Printf("aci: webhook event=%s failed after retries: http=%d err=%v", rec.ID, last, lastErr)
-	a.sent.update(rec.ID, func(r *sentRecord) {
-		r.DeliveryStatus = "failed"
-		r.HTTPStatus = last
-		if lastErr != nil {
-			r.DeliveryError = lastErr.Error()
-		}
+	a.sent.Do(started, func() {
+		log.Printf("aci: webhook event=%s failed after retries: http=%d err=%v", rec.ID, last, lastErr)
+		a.sent.Update(rec.ID, func(r *aci.Record) {
+			r.DeliveryStatus = "failed"
+			r.HTTPStatus = last
+			if lastErr != nil {
+				r.DeliveryError = lastErr.Error()
+			}
+		})
 	})
 }
 
@@ -254,7 +331,7 @@ func (a *app) deliver(rec *sentRecord) {
 // leading '{' to tell them apart (aci-webhook.controller.ts:70), so both
 // must be real options, not just the default. IV and auth tag always travel
 // as hex in headers, never in the body.
-func (a *app) postWebhook(rec *sentRecord) (int, error) {
+func (a *app) postWebhook(rec *aci.Record) (int, error) {
 	if err := a.list.Allowed(rec.TargetURL); err != nil {
 		return 0, err
 	}
@@ -291,82 +368,15 @@ func (a *app) postWebhook(rec *sentRecord) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// --- sent-notification introspection (GET /internal/sent[/{id}]) -------
-
-// sentRecord is one simulated notification: the plaintext payload (echoed
-// back for introspection -- this lab already holds it, no need to decrypt
-// its own ciphertext), the encrypted wire material, and delivery outcome.
-type sentRecord struct {
-	ID             string            `json:"id"`
-	Notification   *aci.Notification `json:"notification"`
-	CiphertextHex  string            `json:"ciphertext_hex"`
-	IVHex          string            `json:"iv_hex"`
-	TagHex         string            `json:"tag_hex"`
-	TargetURL      string            `json:"target_url"`
-	BodyMode       string            `json:"body_mode"`
-	CreatedAt      time.Time         `json:"created_at"`
-	DeliveryStatus string            `json:"delivery_status"`
-	HTTPStatus     int               `json:"http_status,omitempty"`
-	DeliveryError  string            `json:"delivery_error,omitempty"`
-	DeliveredAt    *time.Time        `json:"delivered_at,omitempty"`
-}
-
-type sentStore struct {
-	mu      sync.Mutex
-	records map[string]*sentRecord
-	order   []string
-}
-
-func newSentStore() *sentStore {
-	return &sentStore{records: map[string]*sentRecord{}}
-}
-
-func (s *sentStore) put(r *sentRecord) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.records[r.ID] = r
-	s.order = append(s.order, r.ID)
-}
-
-// update mutates the record in place under lock -- rec, held by the
-// delivering goroutine, and the store's map entry are the same pointer, so
-// this is the only place delivery status is ever written after put.
-func (s *sentStore) update(id string, fn func(*sentRecord)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if r, ok := s.records[id]; ok {
-		fn(r)
-	}
-}
-
-func (s *sentStore) get(id string) (*sentRecord, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.records[id]
-	if !ok {
-		return nil, false
-	}
-	cp := *r
-	return &cp, true
-}
-
-func (s *sentStore) list() []*sentRecord {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*sentRecord, 0, len(s.order))
-	for _, id := range s.order {
-		cp := *s.records[id]
-		out = append(out, &cp)
-	}
-	return out
-}
+// --- sent-notification introspection (GET /sim/sent[/{id}], and
+// GET /internal/sent[/{id}] on the vendor port) ---
 
 func (a *app) listSent(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"result": a.sent.list()})
+	httputilx.WriteJSON(w, 200, map[string]any{"result": a.sent.List()})
 }
 
 func (a *app) getSent(w http.ResponseWriter, r *http.Request) {
-	rec, ok := a.sent.get(r.PathValue("id"))
+	rec, ok := a.sent.Get(r.PathValue("id"))
 	if !ok {
 		httputilx.Error(w, 404, "notification not found")
 		return
@@ -433,9 +443,13 @@ func envInt(k string, def int) int {
 	return n
 }
 
+// logReq logs every request but the reads of the log itself: a reader
+// polling GET /sim/logs would otherwise fill the ring with its own polls.
 func logReq(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/sim/logs" {
+			log.Printf("%s %s", r.Method, r.URL.Path)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

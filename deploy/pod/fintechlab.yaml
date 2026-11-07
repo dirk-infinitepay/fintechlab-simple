@@ -22,7 +22,7 @@
 #   fintechlab-sftp             /sftp   the SFT channel tree
 #   fintechlab-settlement-data  /data   settlement's state
 #   fintechlab-b4b-data         /b4b-data
-#   fintechlab-console-data     /console-data
+#   fintechlab-console-data     /console-data   the lab API's merchant registry
 # and the config files a checkout mounts are baked into the images.
 apiVersion: v1
 kind: Pod
@@ -48,6 +48,7 @@ spec:
         - aci
         - verify
         - verification
+        - lab-api
         - console
   initContainers:
     # Lays out the volumes and issues the PKI (deploy/pod/init.sh). Existing
@@ -415,14 +416,25 @@ spec:
       env:
         - name: LISTEN
           value: ":8089"
-    - name: console
-      image: localhost/fintechlab/console:v1
+    - name: lab-api
+      image: localhost/fintechlab/lab-api:v1
       ports:
-        - containerPort: 8090
-          hostPort: 8090
+        - containerPort: 8097
+          hostPort: 8097
       env:
         - name: LISTEN
-          value: ":8090"
+          value: ":8097"
+        # Asked of every caller but GET /health when set. Not set here: it
+        # comes from a ConfigMap passed at play time, so the default is an
+        # open lab and asking for a token is a flag, not an edit --
+        #   podman kube play --replace --configmap lab-api-token.yaml fintechlab.yaml
+        # (make pod-up LAB_API_TOKEN=… does the same).
+        - name: LAB_API_TOKEN
+          valueFrom:
+            configMapKeyRef:
+              name: fintechlab-lab-api-token
+              key: lab-api-token
+              optional: true
         - name: CONSOLE_URL_WORLDLINE
           value: "http://worldline:8084"
         - name: CONSOLE_URL_B4B
@@ -451,26 +463,10 @@ spec:
           value: "127.0.0.1"
         - name: CONSOLE_PROBE_INTERVAL
           value: "5s"
-        - name: CONSOLE_BC_INTERNAL_URL
-          value: "http://banking-circle:8095"
         - name: CONSOLE_STATE_FILE
           value: "/console-data/registry.json"
         - name: CONSOLE_BC_DELIVERY_CONFIG
           value: "/config/banking-circle.json"
-        - name: CA_FILE
-          value: "/keys/certs/ca.pem"
-        - name: CLIENT_CERT
-          value: "/keys/certs/client.pem"
-        - name: CLIENT_KEY
-          value: "/keys/certs/client-key.pem"
-        - name: BC_USER
-          value: "console"
-        - name: BC_PASSWORD
-          value: "sim-bc-dev-only"
-        - name: B4B_JWT_PRIVATE_KEY_PATH
-          value: "/keys/b4b-keys/private.pem"
-        - name: B4B_JWT_KEY_ID
-          value: "b4b-mock-1"
         - name: CONSOLE_KEYS_DIR
           value: "/keys"
       volumeMounts:
@@ -479,6 +475,23 @@ spec:
           readOnly: true
         - name: console-data
           mountPath: /console-data
+    - name: console
+      image: localhost/fintechlab/console:v1
+      ports:
+        - containerPort: 8090
+          hostPort: 8090
+      env:
+        - name: LISTEN
+          value: ":8090"
+        - name: LAB_API_URL
+          value: "http://lab-api:8097"
+        # The same token, added to everything the console forwards.
+        - name: LAB_API_TOKEN
+          valueFrom:
+            configMapKeyRef:
+              name: fintechlab-lab-api-token
+              key: lab-api-token
+              optional: true
   volumes:
     - name: keys
       persistentVolumeClaim:

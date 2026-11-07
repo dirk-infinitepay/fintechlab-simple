@@ -19,7 +19,8 @@ func (a *app) createPerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Extra = extra
-	person, err := a.dir.AddPerson(r.PathValue("id"), p)
+	var person *b4b.Person
+	started := a.engine.Gate().Begin(func() { person, err = a.dir.AddPerson(r.PathValue("id"), p) })
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -35,7 +36,7 @@ func (a *app) createPerson(w http.ResponseWriter, r *http.Request) {
 	// Screening is reported asynchronously, not in this response. A client
 	// has to be built to receive it: under continuous screening the answer
 	// can change again long after boarding finished.
-	go a.deliverPersonCallback(person)
+	a.later(started, func(started uint64) { a.deliverPersonCallback(started, person) })
 	httputilx.WriteJSON(w, 201, person)
 }
 
@@ -67,13 +68,18 @@ func (a *app) setPersonSanctions(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	person, changed, err := a.dir.SetPersonSanctions(r.PathValue("id"), req.SanctionsStatus, req.PepSanctionsStatus)
+	var person *b4b.Person
+	var changed bool
+	var err error
+	started := a.engine.Gate().Begin(func() {
+		person, changed, err = a.dir.SetPersonSanctions(r.PathValue("id"), req.SanctionsStatus, req.PepSanctionsStatus)
+	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		go a.deliverPersonCallback(person)
+		a.later(started, func(started uint64) { a.deliverPersonCallback(started, person) })
 	}
 	httputilx.WriteJSON(w, 200, person)
 }
@@ -93,8 +99,8 @@ type personCallback struct {
 	PepSanctionsStatus string `json:"pep_sanctions_status"`
 }
 
-func (a *app) deliverPersonCallback(p *b4b.Person) {
-	a.deliverCallback("person "+p.ID, a.callbackTarget(""), personCallback{
+func (a *app) deliverPersonCallback(started uint64, p *b4b.Person) {
+	a.deliverCallback(started, "person "+p.ID, a.callbackTarget(""), personCallback{
 		ID:                 p.ID,
 		SanctionsStatus:    p.SanctionsStatus,
 		PepSanctionsStatus: p.PepSanctionsStatus,

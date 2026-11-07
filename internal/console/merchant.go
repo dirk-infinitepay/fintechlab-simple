@@ -448,6 +448,24 @@ func (r *Registry) DeleteMerchant(merchantID string) error {
 	return r.save()
 }
 
+// Clear puts the registry back as it was on first start — the seeded
+// distributor and partner and nothing else — and returns how many merchants
+// and batches it held. What the merchants were registered as at the
+// vendors stays there: the vendors reset themselves.
+func (r *Registry) Clear() (merchants, batches int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	merchants, batches = len(r.merchants), len(r.batches)
+	r.seq = 0
+	r.distributors = map[string]*Distributor{}
+	r.partners = map[string]*Partner{}
+	r.merchants = map[string]*Merchant{}
+	r.batches = map[string]*Batch{}
+	d := r.addDistributorLocked("Simulator Distribution Ltd", "GB")
+	r.addPartnerLocked(d.ID, "Northwind Partner Services", "NL")
+	return merchants, batches, r.save()
+}
+
 // Merchant returns one merchant by id.
 func (r *Registry) Merchant(id string) (Merchant, error) {
 	r.mu.RLock()

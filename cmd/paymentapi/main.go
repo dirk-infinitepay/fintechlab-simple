@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 type payment struct {
@@ -38,32 +41,83 @@ type store struct {
 	mu    sync.Mutex
 	byID  map[string]*payment
 	byKey map[string]*payment
+	// epoch is what a reset moves: a POST /payments still talking to the
+	// bank and the notifier when a reset lands does not store its payment
+	// after it.
+	epoch simctl.Epoch
+}
+
+func newStore() *store {
+	return &store{byID: map[string]*payment{}, byKey: map[string]*payment{}}
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8080")
 	bankURL := strings.TrimRight(env("BANK_URL", "http://bank:8081"), "/")
 	notifierURL := strings.TrimRight(env("NOTIFIER_URL", "http://notifier:8082"), "/")
-	s := &store{byID: map[string]*payment{}, byKey: map[string]*payment{}}
 	client := &http.Client{Timeout: 10 * time.Second}
+	mux, ctl, err := routes(newStore(), client, bankURL, notifierURL, addr)
+	if err != nil {
+		log.Fatalf("payment-api: %v", err)
+	}
+	ctl.Start()
+	log.Printf("payment-api listening on %s bank=%s notifier=%s", addr, bankURL, notifierURL)
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// routes is payment-api's two surfaces: the payment routes on addr, and
+// the lab's control surface on a port of its own (internal/simctl) — the
+// activity log, the sim control contract and its own GET /health. addr
+// still answers the /sim paths until phase 4 of docs/lab-api/plan.md
+// retires them.
+func routes(s *store, client *http.Client, bankURL, notifierURL, addr string) (*http.ServeMux, *simctl.Control, error) {
+	// What reached it, for the console: nothing in the settle path calls
+	// this service, so an empty log is the normal state and a row here is
+	// make demo-payment, the e2e suite or somebody's curl.
+	payLog := activity.New("payments", "Payments received",
+		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the e2e suite call this.")
+
+	// Both scopes do the same: a payment and its idempotency key are what a
+	// run made, and nothing here is set up once.
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "payment-api", Kind: "stand-in", Simulates: "a payment API of the platform's own (demo)",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			cleared := s.reset()
+			cleared["activity"] = int(payLog.Clear())
+			return simctl.ResetResult{Cleared: cleared}, nil
+		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(payLog))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "payment-api"})
 	})
-	// What reached it, for the console: nothing in the settle path calls
-	// this service, so an empty log is the normal state and a row here is
-	// make demo-payment, the harness or somebody's curl.
-	payLog := activity.New("payments", "Payments received",
-		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the harness call this.")
 	mux.HandleFunc("POST /payments", payLog.Watch("payment.create", summarizePayment, func(w http.ResponseWriter, r *http.Request) {
 		s.create(w, r, client, bankURL, notifierURL)
 	}))
 	mux.HandleFunc("GET /payments/{id}", s.get)
 	mux.HandleFunc("GET /payments", s.list)
-	mux.HandleFunc("GET /sim/activity", activity.Handler(payLog))
-	log.Printf("payment-api listening on %s bank=%s notifier=%s", addr, bankURL, notifierURL)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	// The old /sim paths on the service port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
+// reset forgets every payment and every Idempotency-Key, so a key seen
+// before the reset creates a new payment after it.
+func (s *store) reset() map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.epoch.Bump()
+	cleared := map[string]int{"payments": len(s.byID), "idempotency_keys": len(s.byKey)}
+	s.byID, s.byKey = map[string]*payment{}, map[string]*payment{}
+	return cleared
 }
 
 type createReq struct {
@@ -75,6 +129,7 @@ type createReq struct {
 }
 
 func (s *store) create(w http.ResponseWriter, r *http.Request, client *http.Client, bankURL, notifierURL string) {
+	started := s.epoch.Current()
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	var req createReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -122,7 +177,7 @@ func (s *store) create(w http.ResponseWriter, r *http.Request, client *http.Clie
 	if err := postJSON(client, bankURL+"/transfers", xfer, nil); err != nil {
 		p.Status = "rejected"
 		p.Notification = "not_enqueued"
-		s.put(p, key)
+		s.put(p, key, started)
 		httputilx.WriteJSON(w, 409, map[string]any{"error": "ledger rejected transfer: " + err.Error(), "payment": p})
 		return
 	}
@@ -136,18 +191,25 @@ func (s *store) create(w http.ResponseWriter, r *http.Request, client *http.Clie
 	}
 	if err := postJSON(client, notifierURL+"/enqueue", evt, nil); err != nil {
 		p.Notification = "enqueue_failed: " + err.Error()
-		s.put(p, key)
+		s.put(p, key, started)
 		httputilx.WriteJSON(w, 201, p)
 		return
 	}
 	p.Notification = "enqueued"
-	s.put(p, key)
+	s.put(p, key, started)
 	httputilx.WriteJSON(w, 201, p)
 }
 
-func (s *store) put(p *payment, key string) {
+// put stores p under its id and key, unless a reset happened since the
+// request that made it started: that payment belongs to the run the reset
+// cleared.
+func (s *store) put(p *payment, key string, started uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.epoch.Moved(started) {
+		log.Printf("payment-api: %s finished after a reset; not kept", p.ID)
+		return
+	}
 	s.byID[p.ID] = p
 	if key != "" {
 		s.byKey[key] = p

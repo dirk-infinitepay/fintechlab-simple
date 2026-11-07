@@ -70,6 +70,8 @@ func (a *app) recordNotification(sub *bankingcircle.Subscription, env bankingcir
 		"endpoint":     sub.Endpoint,
 		"events":       strconv.Itoa(len(env.Notifications)),
 		"http":         statusText(status),
+		// The traps whose steps made any of these, when a trap did.
+		"trap": trapIDs(env),
 	})
 	summary := fmt.Sprintf("batch of %d to %s — %s", len(env.Notifications), sub.Endpoint, strings.Join(kinds, ", "))
 	ev := activity.Event{Op: "notification", Peer: sub.Endpoint, Summary: summary, Detail: detail, Status: activity.StatusOK}
@@ -104,6 +106,7 @@ func (a *app) recordQueued(sub *bankingcircle.Subscription, env bankingcircle.En
 			"endpoint":     sub.Endpoint,
 			"events":       strconv.Itoa(len(env.Notifications)),
 			"waiting":      strconv.Itoa(a.dispatch.Queued(sub.ID)),
+			"trap":         trapIDs(env),
 		}),
 	})
 }

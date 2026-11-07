@@ -7,6 +7,8 @@
 #   deploy/aws/lab.sh deploy     build the cloud bundle, hand it to the host, play it
 #   deploy/aws/lab.sh status     the stack, the host, and what it is running
 #   deploy/aws/lab.sh env [svc]  download the platform's .env from the console
+#   deploy/aws/lab.sh token      print the lab API's token (FINTECH_SIM_LAB_TOKEN)
+#   deploy/aws/lab.sh e2e        run the e2e suite inside the deployed pod
 #   deploy/aws/lab.sh console    forward the console to 127.0.0.1:8090 over SSM
 #   deploy/aws/lab.sh shell      a root-capable shell on the host, over SSM
 #   deploy/aws/lab.sh logs <svc> the last lines of one container's log
@@ -24,7 +26,7 @@ cd "$root"
 # The environment wins over the file: remember what was set before sourcing.
 conf="${LAB_CONFIG:-deploy/aws/lab.env}"
 if [ -f "$conf" ]; then
-  saved="$(export -p | grep -E '^declare -x (AWS_PROFILE|AWS_REGION|LAB_[A-Z_]+|REGENERATE_KEYS)=' || true)"
+  saved="$(export -p | grep -E '^declare -x (AWS_PROFILE|AWS_REGION|LAB_[A-Z_]+|REGENERATE_KEYS|ROTATE_TOKEN|E2E_[A-Z]+)=' || true)"
   set -a
   # shellcheck disable=SC1090
   . "$conf"
@@ -44,7 +46,8 @@ UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64
 say() { printf '%s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# The header comment above, however long it grows.
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit "${1:-0}"; }
 
 account() {
   local acct
@@ -175,7 +178,7 @@ cmd_deploy() {
   url="$(aws s3 presign "s3://$bucket/$key" --expires-in 3600)"
 
   wait_ssm "$id"
-  say "playing $rev on $id${REGENERATE_KEYS:+ (REGENERATE_KEYS=$REGENERATE_KEYS)}"
+  say "playing $rev on $id${REGENERATE_KEYS:+ (REGENERATE_KEYS=$REGENERATE_KEYS)}${ROTATE_TOKEN:+ (ROTATE_TOKEN=$ROTATE_TOKEN)}"
   run_remote "$id" "fintechlab deploy $rev" "set -eu
 d=/opt/fintechlab/bundle
 rm -rf \"\$d\"
@@ -183,12 +186,15 @@ mkdir -p \"\$d\"
 curl -fsS --retry 3 -o /opt/fintechlab/bundle.tgz '$url'
 tar -xzf /opt/fintechlab/bundle.tgz -C \"\$d\"
 rm -f /opt/fintechlab/bundle.tgz
-DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' sh \"\$d/play.sh\""
+DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' ROTATE_TOKEN='${ROTATE_TOKEN:-false}' sh \"\$d/play.sh\""
 
   say ""
   say "console:  http://$host:8090   (from LAB_ALLOWED_CIDRS; otherwise 'lab.sh console')"
+  say "lab API:  http://$host:8097/v1 with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   say "platform: 'lab.sh env' downloads its .env, addressed to $host"
+  say "check:    'lab.sh e2e' runs the e2e suite inside the pod"
   [ "${REGENERATE_KEYS:-}" = true ] && say "new keys: every copy a platform held stops working -- download its .env again"
+  [ "${ROTATE_TOKEN:-}" = true ] && say "new token: every caller holding the old one is refused -- 'lab.sh token'"
   return 0
 }
 
@@ -210,7 +216,9 @@ cmd_env() {
   need_stack
   local host path name id b64
   host="$(output PublicHost)"
-  path="/api/connect/env${1:+/$1}"
+  # Through the console, which adds the lab API's token: the operator needs
+  # only what reaches :8090.
+  path="/v1/connect/env${1:+/$1}"
   name="fintechlab${1:+-$1}.env"
   # The file names $host however it is fetched: the console knows its own
   # address (CONSOLE_CONNECT_HOST).
@@ -234,6 +242,25 @@ rm -f /tmp/fintechlab.env")" || die "the console on the host did not answer: lab
   fi
   mv "$name.part" "$name"
   say "saved $name (addresses: $host)"
+}
+
+cmd_token() {
+  need_stack
+  local id
+  id="$(output InstanceId)"
+  wait_ssm "$id"
+  run_remote "$id" "fintechlab token" "cat /var/lib/fintechlab/lab-api-token"
+}
+
+cmd_e2e() {
+  need_stack
+  local id
+  id="$(output InstanceId)"
+  wait_ssm "$id"
+  [ -n "${E2E_ONLY:-}" ] && [[ ! "$E2E_ONLY" =~ ^[a-z0-9,_-]+$ ]] && die "E2E_ONLY is scenario names, comma-separated"
+  [ -n "${E2E_TIMEOUT:-}" ] && [[ ! "$E2E_TIMEOUT" =~ ^[0-9]+[smh]$ ]] && die "E2E_TIMEOUT is a duration, e.g. 10m"
+  say "running the e2e suite inside the pod${E2E_ONLY:+ ($E2E_ONLY)}"
+  run_remote "$id" "fintechlab e2e" "E2E_ONLY='${E2E_ONLY:-}' E2E_TIMEOUT='${E2E_TIMEOUT:-}' sh /opt/fintechlab/bundle/e2e.sh"
 }
 
 cmd_console() {
@@ -309,6 +336,8 @@ case "$cmd" in
   status) cmd_status ;;
   outputs) need_stack && cmd_outputs ;;
   env) cmd_env "$@" ;;
+  token) cmd_token ;;
+  e2e) cmd_e2e ;;
   console) cmd_console ;;
   shell) cmd_shell ;;
   logs) cmd_logs "$@" ;;

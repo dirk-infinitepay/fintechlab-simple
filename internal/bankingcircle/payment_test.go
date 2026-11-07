@@ -1,7 +1,10 @@
 package bankingcircle
 
 import (
+	"errors"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,55 +312,160 @@ func TestEngineCreditIncomingInvalidAmount(t *testing.T) {
 	}
 }
 
-// TestEngineForcedOutcomes: queued outcomes are taken by the next outgoing
-// payments in order — a rejection moves no money, a pending one never
-// leaves Booked — and payments past the queue take the normal path.
-func TestEngineForcedOutcomes(t *testing.T) {
-	ledger := NewLedger()
-	ledger.mustSeed("bc_acc_test_funded", "VBTESTFUNDED0000001", "Test Funded", "EUR", 50_000_000)
-	ledger.mustSeed("bc_acc_test_merchant", "VBTESTMERCHANT00001", "Test Merchant", "EUR", 0)
-	engine := NewEngine(ledger, time.Millisecond, nil)
+// stepRecorder keeps every transition the engine hands onTransition.
+type stepRecorder struct {
+	mu   sync.Mutex
+	seen []Payment
+}
 
-	if _, err := engine.ForceNext([]Outcome{"Lost"}); err == nil {
-		t.Fatal("an unknown outcome must be refused")
-	}
-	queued, err := engine.ForceNext([]Outcome{OutcomeRejected, OutcomePending})
-	if err != nil || len(queued) != 2 {
-		t.Fatalf("ForceNext = %v, %v", queued, err)
-	}
+func (r *stepRecorder) on(p *Payment) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, *p)
+}
 
-	for _, id := range []string{"bcp_rejected", "bcp_pending", "bcp_normal"} {
-		engine.Create(&Payment{ID: id, FromAccountID: "bc_acc_test_funded",
-			ToAccountID: "bc_acc_test_merchant", Amount: "10.00", Currency: "EUR"})
-	}
-	if left := engine.ForcedOutcomes(); len(left) != 0 {
-		t.Fatalf("queue should be drained, still has %v", left)
-	}
-
-	want := map[string]NotificationType{
-		"bcp_rejected": NotificationOutgoingPaymentRejected,
-		"bcp_pending":  NotificationOutgoingPaymentBooked,
-		"bcp_normal":   NotificationOutgoingPaymentProcessed,
-	}
-	deadline := time.Now().Add(time.Second)
-	for id, state := range want {
-		for {
-			got, _ := engine.Get(id)
-			if got.State == state {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("%s state = %s, want %s", id, got.State, state)
-			}
-			time.Sleep(5 * time.Millisecond)
+// of is what was notified about payment id, as "State" or "State@trap".
+func (r *stepRecorder) of(id string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, p := range r.seen {
+		if p.ID == id {
+			out = append(out, string(p.State)+map[bool]string{true: "@" + p.Trap(), false: ""}[p.Trap() != ""])
 		}
 	}
-	time.Sleep(20 * time.Millisecond)
-	if got, _ := engine.Get("bcp_pending"); got.State != NotificationOutgoingPaymentBooked {
-		t.Fatalf("a pending payment must stay booked, got %s", got.State)
+	return out
+}
+
+func stepTestEngine(t *testing.T, funded int64) (*Engine, *Ledger, *stepRecorder) {
+	t.Helper()
+	ledger := NewLedger()
+	ledger.mustSeed("bc_acc_test_funded", "VBTESTFUNDED0000001", "Test Funded", "EUR", funded)
+	ledger.mustSeed("bc_acc_test_merchant", "VBTESTMERCHANT00001", "Test Merchant", "EUR", 0)
+	rec := &stepRecorder{}
+	return NewEngine(ledger, time.Millisecond, rec.on), ledger, rec
+}
+
+func payout(id string) *Payment {
+	return &Payment{ID: id, FromAccountID: "bc_acc_test_funded", ToAccountID: "bc_acc_test_merchant", Amount: "10.00", Currency: "EUR"}
+}
+
+// TestABookingTakesATrapsStepsThroughTheEngine: a booking nobody processes
+// stays booked; each step a trap names is the engine's own transition, with
+// its money, its notifications (marked with the trap) and its reason.
+func TestABookingTakesATrapsStepsThroughTheEngine(t *testing.T) {
+	engine, ledger, rec := stepTestEngine(t, 100_00)
+	step := func(b *Booking, s Step) Payment {
+		t.Helper()
+		var got Payment
+		if err := b.Step(s, func(p Payment) { got = p }); err != nil {
+			t.Fatalf("%s: %v", s.To, err)
+		}
+		return got
 	}
-	if merchant, _ := ledger.Get("bc_acc_test_merchant"); merchant.Balance != "10.00" {
-		t.Fatalf("only the normal payment moves money, merchant balance = %s", merchant.Balance)
+
+	// Left alone: booked for good.
+	engine.Book(payout("bcp_held"))
+	time.Sleep(10 * time.Millisecond)
+	if got := mustGet(t, engine, "bcp_held").State; got != NotificationOutgoingPaymentBooked {
+		t.Fatalf("a booking nobody processes = %s, want it booked", got)
+	}
+
+	// Rejected, with the trap's reason on the payment and on the report.
+	got := step(engine.Book(payout("bcp_rej")), Step{To: string(NotificationOutgoingPaymentRejected),
+		ReasonCode: "AC01", ReasonDescription: "Incorrect account number", Trap: "trp_0001"})
+	if got.State != NotificationOutgoingPaymentRejected || got.RejectionReasonCode != "AC01" || got.Trap() != "trp_0001" {
+		t.Fatalf("rejected = %+v", got)
+	}
+	rows := Rejections(engine.List(), RejectionQuery{TransactionDate: BusinessDate(got.CreatedAt), IncludeReceived: true, IncludeMissingFunds: true})
+	reasons := map[string]string{}
+	for _, r := range rows {
+		reasons[*r.PaymentReferenceNumber] = *r.StatusReason
+	}
+	if reasons[got.ReferenceNumber] != "AC01 Incorrect account number" {
+		t.Errorf("the rejection report's reason = %q", reasons[got.ReferenceNumber])
+	}
+	if got := mustGet(t, engine, "bcp_rej"); got.Trap() != "" {
+		t.Errorf("the stored payment carries the trap %q: only what a step notifies does", got.Trap())
+	}
+
+	// Processed, then reversed: the money goes and comes back.
+	b := engine.Book(payout("bcp_rev"))
+	step(b, Step{To: string(NotificationOutgoingPaymentProcessed), Trap: "trp_0002"})
+	if got := balance(t, ledger, "bc_acc_test_merchant"); got != "10.00" {
+		t.Fatalf("merchant after processed = %s", got)
+	}
+	step(b, Step{To: string(NotificationReversed), Reason: "scheme", Trap: "trp_0002"})
+	if got := balance(t, ledger, "bc_acc_test_merchant"); got != "0.00" {
+		t.Fatalf("merchant after reversed = %s", got)
+	}
+	if got := mustGet(t, engine, "bcp_rev"); got.ReversalReason != "scheme" {
+		t.Errorf("reversal reason = %q", got.ReversalReason)
+	}
+	want := []string{"OutgoingPaymentBooked", "OutgoingPaymentProcessed@trp_0002", "OutgoingPaymentBooked@trp_0002", "Reversed@trp_0002"}
+	if got := rec.of("bcp_rev"); !slices.Equal(got, want) {
+		t.Errorf("notified %v, want %v", got, want)
+	}
+
+	// Processed, then returned: a return payment, wholly the trap's.
+	b = engine.Book(payout("bcp_ret"))
+	step(b, Step{To: string(NotificationOutgoingPaymentProcessed), Trap: "trp_0003"})
+	ret := step(b, Step{To: StepReturned, ReasonCode: "AC04", ReasonDescription: "Closed account number", Trap: "trp_0003"})
+	if !ret.Return || ret.ReturnOf != "bcp_ret" || ret.ReturnReasonCode != "AC04" {
+		t.Fatalf("return = %+v", ret)
+	}
+	engine.Wait()
+	want = []string{"IncomingPaymentBooked@trp_0003", "IncomingPaymentProcessed@trp_0003"}
+	if got := rec.of(ret.ID); !slices.Equal(got, want) {
+		t.Errorf("the return notified %v, want %v", got, want)
+	}
+	if got := mustGet(t, engine, "bcp_ret").State; got != NotificationOutgoingPaymentProcessed {
+		t.Errorf("a returned payout = %s, want it still processed", got)
+	}
+
+	// A step the books cannot follow: reversing what is no longer processed.
+	err := b.Step(Step{To: string(NotificationReversed)}, nil)
+	var d *Diverted
+	if !errors.As(err, &d) || !strings.Contains(d.Reason, "already been returned") {
+		t.Errorf("reversing a returned payout = %v, want it diverted", err)
+	}
+}
+
+// TestTheBooksComeFirst: processing with the safeguarding account short
+// ends the payout MissingFunding, as it would untouched, and says so.
+func TestTheBooksComeFirst(t *testing.T) {
+	engine, ledger, rec := stepTestEngine(t, 5_00)
+	err := engine.Book(payout("bcp_short")).Step(Step{To: string(NotificationOutgoingPaymentProcessed), Trap: "trp_0001"}, nil)
+	var d *Diverted
+	if !errors.As(err, &d) || !strings.Contains(d.Reason, "holds 5.00 EUR, short of 10.00") || !strings.Contains(d.Reason, "MissingFunding instead") {
+		t.Fatalf("processing short = %v", err)
+	}
+	if got := mustGet(t, engine, "bcp_short").State; got != NotificationMissingFunding {
+		t.Errorf("state = %s, want MissingFunding", got)
+	}
+	if got := balance(t, ledger, "bc_acc_test_funded"); got != "5.00" {
+		t.Errorf("funded = %s, want untouched", got)
+	}
+	if got := rec.of("bcp_short"); !slices.Equal(got, []string{"OutgoingPaymentBooked", "MissingFunding@trp_0001"}) {
+		t.Errorf("notified %v", got)
+	}
+}
+
+// TestAStepAfterAResetDoesNothing: a step due after a reset ended the run
+// its payout was booked in moves no money and notifies nothing.
+func TestAStepAfterAResetDoesNothing(t *testing.T) {
+	engine, ledger, rec := stepTestEngine(t, 100_00)
+	b := engine.Book(payout("bcp_gone"))
+	endRun(engine.run)
+	called := false
+	if err := b.Step(Step{To: string(NotificationOutgoingPaymentProcessed)}, func(Payment) { called = true }); !errors.Is(err, ErrReset) || called {
+		t.Fatalf("a step after the reset = %v (applied %v), want ErrReset", err, called)
+	}
+	if got := balance(t, ledger, "bc_acc_test_merchant"); got != "0.00" {
+		t.Errorf("merchant = %s, want nothing moved", got)
+	}
+	if got := rec.of("bcp_gone"); len(got) != 1 {
+		t.Errorf("notified %v, want the booking alone", got)
 	}
 }
 

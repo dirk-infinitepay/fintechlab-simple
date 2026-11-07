@@ -215,7 +215,11 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 	// the remittance information.
 	detail := paymentDetail(p)
 	for _, rec := range recipients {
-		a.dispatch.Enqueue(rec.Subscription, newNotification(rec, eventType, detail))
+		// From the payment's run: if a reset has cleared the payment, the
+		// dispatcher drops this rather than queue it.
+		n := newNotification(rec, eventType, detail)
+		n.Trap = p.Trap() // the lab's mark, for the notifications log; never sent
+		a.dispatch.EnqueueFrom(p.Epoch(), rec.Subscription, n)
 	}
 }
 
@@ -282,12 +286,13 @@ func syntheticEvent(sub *bankingcircle.Subscription, eventType string) *bankingc
 }
 
 // sendEncrypted is the dispatcher's Send: marshal the envelope, encrypt it
-// with this subscription's own key, and POST it.
+// with this subscription's own key, and POST it. ctx is the run's: a reset
+// aborts the POST.
 //
 // The key is per subscription, not per server. A client that changed its
 // encryption key with a PUT and kept decrypting successfully was being
 // told a lie about its own configuration.
-func (a *app) sendEncrypted(sub *bankingcircle.Subscription, env bankingcircle.Envelope) error {
+func (a *app) sendEncrypted(ctx context.Context, sub *bankingcircle.Subscription, env bankingcircle.Envelope) error {
 	body, err := json.Marshal(env)
 	if err != nil {
 		return fmt.Errorf("marshal notification batch: %w", err)
@@ -301,7 +306,7 @@ func (a *app) sendEncrypted(sub *bankingcircle.Subscription, env bankingcircle.E
 	if err != nil {
 		return fmt.Errorf("encrypt notification: %w", err)
 	}
-	status, err := a.postNotification(sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
+	status, err := a.postNotification(ctx, sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
 	a.recordNotification(sub, env, status, err)
 	return err
 }
@@ -350,11 +355,11 @@ func utf16LEBytes(s string) []byte {
 	return out
 }
 
-func (a *app) postNotification(dest string, ciphertext, nonce, tag, checksum []byte, version int) (int, error) {
+func (a *app) postNotification(ctx context.Context, dest string, ciphertext, nonce, tag, checksum []byte, version int) (int, error) {
 	if err := a.list.Allowed(dest); err != nil {
 		return 0, err
 	}
-	req, err := http.NewRequest(http.MethodPost, dest, bytes.NewReader(ciphertext))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(ciphertext))
 	if err != nil {
 		return 0, err
 	}
@@ -384,6 +389,10 @@ func (a *app) postNotification(dest string, ciphertext, nonce, tag, checksum []b
 //
 // Disabled when BANK_CREDIT_URL is empty, so a stack without a beneficiary
 // bank behaves exactly as it did before.
+//
+// The POST goes through the payment's run: if a reset has cleared the
+// payment by the time this goroutine gets to it, nothing is credited, and a
+// reset that lands while the POST is on the wire aborts it.
 func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 	if a.bankCreditURL == "" {
 		return
@@ -419,26 +428,28 @@ func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 		log.Printf("banking-circle: credit payload for %s: %v", p.ID, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.bankCreditURL, bytes.NewReader(body))
-	if err != nil {
-		log.Printf("banking-circle: credit request for %s: %v", p.ID, err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.client.Do(req)
-	if err != nil {
-		log.Printf("banking-circle: crediting beneficiary bank for %s: %v", p.ID, err)
-		return
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		log.Printf("banking-circle: beneficiary bank returned %s for payment %s", resp.Status, p.ID)
-		return
-	}
-	log.Printf("banking-circle: %s %s credited to %s at the beneficiary bank", p.Amount, p.Currency, beneficiary)
+	a.engine.Run().Do(p.Epoch(), func(run context.Context) {
+		ctx, cancel := context.WithTimeout(run, 5*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.bankCreditURL, bytes.NewReader(body))
+		if err != nil {
+			log.Printf("banking-circle: credit request for %s: %v", p.ID, err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := a.client.Do(req)
+		if err != nil {
+			log.Printf("banking-circle: crediting beneficiary bank for %s: %v", p.ID, err)
+			return
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		if resp.StatusCode < 200 || resp.StatusCode > 299 {
+			log.Printf("banking-circle: beneficiary bank returned %s for payment %s", resp.Status, p.ID)
+			return
+		}
+		log.Printf("banking-circle: %s %s credited to %s at the beneficiary bank", p.Amount, p.Currency, beneficiary)
+	})
 }
 
 func firstNonEmpty(vals ...string) string {

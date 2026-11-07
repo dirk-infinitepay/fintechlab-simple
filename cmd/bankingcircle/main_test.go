@@ -46,6 +46,13 @@ var (
 
 func newTestApp(t *testing.T) *app {
 	t.Helper()
+	return newTestAppLogging(t, t.Logf)
+}
+
+// newTestAppLogging is newTestApp with the dispatcher logging to logf: the
+// process log, for a test whose deliveries may finish after it has.
+func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app {
+	t.Helper()
 	list, err := allowlist.Parse("127.0.0.1,localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -73,11 +80,25 @@ func newTestApp(t *testing.T) *app {
 	}
 	a.notifLog = activity.New("notifications", "Notifications sent", "")
 	a.reportLog = activity.New("reports", "Reconciliation reads", "")
-	a.dispatch = bankingcircle.NewDispatcher(cfg, a.subs, a.mail, t.Logf)
+	a.dispatch = bankingcircle.NewDispatcher(cfg, a.subs, a.mail, logf)
 	a.dispatch.Send = a.sendEncrypted
 	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
+	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+	a.traps = newTraps(5 * time.Millisecond)
 	return a
+}
+
+// queueOutcomes queues outcomes for the next payouts, as
+// POST /internal/payments/outcomes does.
+func queueOutcomes(t *testing.T, a *app, outcomes ...string) {
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"outcomes": outcomes})
+	w := httptest.NewRecorder()
+	a.forceOutcomes(w, httptest.NewRequest("POST", "/internal/payments/outcomes", bytes.NewReader(body)))
+	if w.Code != 200 {
+		t.Fatalf("queue %v = %d %s", outcomes, w.Code, w.Body)
+	}
 }
 
 // subscribeAll registers a subscription for every event type this lab's
@@ -311,7 +332,7 @@ func TestTokenStoreIssueValidateExpire(t *testing.T) {
 
 func TestAuthorizeAndBearerGate(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 
 	// No credentials at all.
@@ -393,7 +414,7 @@ func TestAuthorizeAndBearerGate(t *testing.T) {
 
 func TestSubscriptionCRUDOverHTTP(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 
 	tok := a.tokens.issue(time.Hour)
@@ -817,7 +838,7 @@ func TestMTLSListenerRequiresClientCert(t *testing.T) {
 	defer ln.Close()
 
 	a := newTestApp(t)
-	go http.Serve(ln, a.mux())
+	go http.Serve(ln, vendorMux(t, a))
 	addr := ln.Addr().String()
 
 	serverPool := x509.NewCertPool()
@@ -872,7 +893,7 @@ func TestPauseQueuesNotificationsAndResumeReleasesThem(t *testing.T) {
 	sub := subscribeAll(t, a, receiver.URL)
 	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
 
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
@@ -962,7 +983,7 @@ func TestPauseQueuesNotificationsAndResumeReleasesThem(t *testing.T) {
 // pause that paused nothing.
 func TestPauseOnAnUnknownSubscriptionIs404(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 
 	for _, path := range []string{"/sim/subscription/sub_nope/pause", "/sim/subscription/sub_nope/resume"} {
@@ -984,7 +1005,7 @@ func TestPauseOnAnUnknownSubscriptionIs404(t *testing.T) {
 // endpoint reports it — behind the bearer gate, 404 for an unknown id.
 func TestPaymentStatusAndForcedOutcomesOverHTTP(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
@@ -1058,11 +1079,15 @@ func TestPaymentStatusAndForcedOutcomesOverHTTP(t *testing.T) {
 // caller asked for it.
 func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
 
+	// Held booked for good: the safeguarding account is empty, so left to
+	// itself the payout ends MissingFunding after the 5 ms delay and drops
+	// off the report before the reads below are done.
+	queueOutcomes(t, a, "Pending")
 	createBody := `{"paymentId":"bcp_report1","accountId":"` + merchantAccount + `","amount":"1.00","currency":"EUR"}`
 	resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
 	if err != nil {
@@ -1163,7 +1188,7 @@ func TestReturnHookOverHTTP(t *testing.T) {
 	receiver, deliveries := captureSubscriber(t)
 	subscribeAll(t, a, receiver.URL)
 	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
@@ -1276,7 +1301,7 @@ func TestWebhookTransactionReferenceIsTheBanks(t *testing.T) {
 // the same message. An unparseable flag is a 400 too.
 func TestRejectionReportValidatesOverHTTP(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	tok := a.tokens.issue(time.Hour)
 	get := func(query string) (int, map[string]any) {
@@ -1323,7 +1348,7 @@ func TestRejectionReportValidatesOverHTTP(t *testing.T) {
 // bearer as everything else there.
 func TestReturnAndReverseOnTheCredentialedListener(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	internalSrv := httptest.NewServer(a.internalMux())
 	defer internalSrv.Close()
@@ -1357,20 +1382,13 @@ func TestReturnAndReverseOnTheCredentialedListener(t *testing.T) {
 	if code := post("/sim/payments/bcp_sim1/return", ""); code != 401 {
 		t.Fatalf("return without a bearer = %d, want 401", code)
 	}
-	// Both payouts process after the engine's delay; wait on them.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		code1, code2 := post("/sim/payments/bcp_sim1/return", tok), 0
-		if code1 == 200 {
-			code2 = post("/sim/payments/bcp_sim2/reverse", tok)
-		}
-		if code1 == 200 && code2 == 200 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("return = %d, reverse = %d; want 200 once both payouts processed", code1, code2)
-		}
-		time.Sleep(10 * time.Millisecond)
+	// Both payouts process after the engine's delay; wait on them. (Polling
+	// the hooks instead raced: a return landing between the two payouts
+	// processing could never be retried.)
+	a.engine.Wait()
+	code1, code2 := post("/sim/payments/bcp_sim1/return", tok), post("/sim/payments/bcp_sim2/reverse", tok)
+	if code1 != 200 || code2 != 200 {
+		t.Fatalf("return = %d, reverse = %d; want 200 once both payouts processed", code1, code2)
 	}
 	if code := post("/sim/payments/bcp_sim1/return", tok); code != 409 {
 		t.Fatalf("second return = %d, want 409", code)
@@ -1456,9 +1474,7 @@ func TestWebhookAmountsFollowTheVendorShape(t *testing.T) {
 	p = raw(bankingcircle.NotificationReversed)
 	money("Reversed debtorInformation.debitAmount", under(p, "debtorInformation", "debitAmount"), 10)
 
-	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomeRejected}); err != nil {
-		t.Fatal(err)
-	}
+	queueOutcomes(t, a, "Rejected")
 	post("/internal/payments", `{"paymentId":"bcp_amt2","accountId":"`+merchantAccount+`","amount":"5.00","currency":"EUR"}`)
 	raw(bankingcircle.NotificationOutgoingPaymentBooked)
 	p = raw(bankingcircle.NotificationOutgoingPaymentRejected)
@@ -1543,7 +1559,7 @@ func TestWebhookShapeFollowsThePayloadExamples(t *testing.T) {
 // parameters it lacked — so the operator can see the sweep hit the bank.
 func TestReconciliationReadsAreLogged(t *testing.T) {
 	a := newTestApp(t)
-	srv := httptest.NewServer(a.mux())
+	srv := httptest.NewServer(vendorMux(t, a))
 	defer srv.Close()
 	tok := a.tokens.issue(time.Hour)
 	get := func(path string) {

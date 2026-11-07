@@ -30,11 +30,15 @@ Use it to:
   only way to reach a state.
 
 **The repo is the vendors, not the platform.** `settlement` and `receiver`
-are stand-ins for your side, kept only so the harness can prove each vendor
+are stand-ins for your side, kept only so the e2e suite can prove each vendor
 hop is really connected — see
 [catalogue.md](catalogue.md#which-half-is-which).
 Your real platform is not in this repo at all: it registers its own card in
 the console and follows the lab's clock — see [plugins.md](plugins.md).
+
+Every API the lab answers on — each vendor's surface, the lab-only hooks,
+the console's own `/api` — who calls which, and each route in full:
+[api/README.md](api/README.md).
 
 Do **not** use it to reconstruct a vendor's private API or to store real bank data.
 

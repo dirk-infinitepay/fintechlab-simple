@@ -9,7 +9,21 @@ That distinction was previously not written down anywhere, and the code had
 drifted across it — the platform side was generating the settlement file it
 was supposed to be *receiving*. Everything below is labelled, and the rule
 is: **a vendor simulation is the deliverable; scaffolding exists only so
-the harness can prove each vendor hop is really connected.**
+the e2e suite can prove each vendor hop is really connected.**
+
+Every simulated service is one of two kinds, and `GET /sim/info` says
+which (`kind`):
+
+- **vendor** — a third party's service, simulated: something the platform
+  will talk to in production and that someone else runs (Worldline, B4B,
+  Banking Circle, ACI, the verification vendors, the merchants' bank).
+- **stand-in** — a service the platform team would provide itself, simulated
+  because a test does not need the real one or it does not exist yet (the
+  settlement path, the webhook listener, the verification-service, the
+  demo payment API and notifier).
+
+The rest is the lab itself (`lab`: the clock, the lab API, the console),
+not a simulation of anything.
 
 | Service | Side | Swap for the real thing by |
 | --- | --- | --- |
@@ -17,18 +31,20 @@ the harness can prove each vendor hop is really connected.**
 | **b4b** | vendor | pointing `B4B_URL` at the real Oversight API |
 | **banking-circle** | vendor | pointing at the real Connect API |
 | **aci** | vendor | — it is a *sender*; point `ACI_WEBHOOK_TARGET_URL` at your listener |
-| **settlement** | scaffolding | replacing it with your own platform |
-| **receiver** | scaffolding | pointing the vendors' webhook URLs at your own listener |
-| **bank** (*business bank*) | the far end | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
-| **payment-api**, **notifier** | scaffolding (demo stand-ins) | — generic shapes, not vendor-specific; only `make demo-payment` and the harness call them |
-| **verify**, **verification** | verification | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
-| **clock** | platform | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
+| **settlement** | stand-in | replacing it with your own platform |
+| **receiver** | stand-in | pointing the vendors' webhook URLs at your own listener |
+| **bank** (*business bank*) | vendor (the far end) | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
+| **payment-api**, **notifier** | stand-in (demo) | — generic shapes, not vendor-specific; only `make demo-payment` and the e2e suite call them |
+| **verification** | vendor | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
+| **verify** | stand-in | your own verification-service: pointing the platform's verification-service URL at it replaces that service |
+| **clock** | lab | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
 | *a registered platform* | platform (plugin) | nothing — it *is* the platform; it registers its own card ([plugins.md](plugins.md)) |
 | **ca** | supporting | a real PKI |
-| **console** | control panel | — it is a client of the others; see [console.md](console.md) |
+| **lab-api** | lab | nothing — the one API over the lab (`/v1`), a client of the others; see [api/lab-api.md](api/lab-api.md) |
+| **console** | control panel | — a page that calls the lab API; see [console.md](console.md) |
 
 The scaffolding is deliberately kept, and deliberately not grown. It is
-what makes `make harness` able to fail loudly when a hop is disconnected,
+what makes `make e2e` able to fail loudly when a hop is disconnected,
 and it is a worked example of the consumer side — but it is a stand-in for
 your platform, not a model of it.
 
@@ -45,7 +61,8 @@ your platform, not a model of it.
 | **b4b** | B4B Payments: JWT(RS512)-authed Oversight API, both halves. **Boarding** — companies (422 on a repeated `external_ref`), addresses, people (natural and legal, screened on a callback carrying sanctions *and* PEP status separately), document uploads, the create-once extended profile, vIBANs. **Payout** — beneficiary registration with `pass`/`review`/`fail` sanctions and active/disabled status on a status-change callback, four 422 gates (sanctions, disabled, creditor-consistency, optionally paying company, all forwarding nothing), payout lifecycle (`B4BAccepted`→…→`B4BTMApproved`/`B4BFailed`) with a callback on every regulatory-phase change, `GET /payments/{id}` for a missed callback, and the bridge into Banking Circle once approved. All of it persisted to `b4b-data/state.json`, with an interrupted payment resuming after a restart | No real sanctions/PEP/KYB screening — everything boarded passes, on a delay, with lab-only `PUT /sim/...` endpoints to move any status and a configured force-fail list for payments. Documents are accepted, measured and **discarded**, never stored and never judged. No batch payments | B4B Oversight API shape end to end (byte-exact wire types: JSON-number amounts, `country` refs, `chargeBearer` `SHA`/`BEN`/`OUR`), the boarding rules a client actually trips over, its gates and its callback semantics — this lab's only real inbound-payment caller of Banking Circle |
 | **aci** | Online card-payment gateway: AES-256-GCM encrypted webhook notification (hex IV/tag/body, distinct key encoding from Banking Circle's), simulating "a card payment just happened" | No merchant-onboarding REST client, no SFTP+PGP file-exchange channel (both real but separate ACI surfaces, out of scope) | ACI's real webhook crypto envelope and notification payload shape (known-answer-tested against ACI's own published reference vector) |
 | **verify** | Merchant verification / compliance-check service gating a payout: always-approves by default, `x-internal-api-key` shared-secret auth | No real AML/sanctions/KYC vendor calls (explicitly a sample/stub, per product decision) | verification-service's real trigger-then-read-decision contract and decision-enum values |
-| **console** *(control panel)* | Nothing. It holds no vendor contract at all: it reads and drives the services above over exactly the public surfaces a human with `curl` would use, and owns only its own merchant registry (`console-data/registry.json`) | Not a dependency of anything — the harness does not know it exists, and nothing in this lab is reachable only through it | — a UI, not a simulation |
+| **lab-api** *(lab)* | Nothing. It holds no vendor contract at all: it reads and drives the services above on their control ports, passes their `/sim/*` hooks through with no vendor credentials, and owns only the lab's own state (the merchant registry, `console-data/registry.json`, and the plugin registrations) | Not a dependency of any service, and no vendor traffic goes through it. The console page, agents and the e2e suite steer the lab through it | — an API, not a simulation |
+| **console** *(control panel)* | Nothing: a page, served with a forward of `/v1` to the lab API. No state, no credentials | Not a dependency of anything | — a UI, not a simulation |
 
 Nothing in this table is a real clearing system.
 
@@ -92,9 +109,9 @@ services.
 | [b4b](structure/b4b.md) | File-by-file: RS512 JWT auth, the boarding chain, beneficiary gates, payout lifecycle, the Banking Circle bridge |
 | [worldline](structure/worldline.md) | File-by-file: split across `cmd/worldline` (acquirer) and `cmd/settlement` (consumer), the Bambora file format, the real SFTP+PGP transport |
 
-## Test harness
+## End-to-end tests
 
-`cmd/harness` runs black-box scenarios against the whole chain above:
+`cmd/e2e` runs black-box scenarios against the whole chain above:
 generic payment-api → ledger → webhook; a Worldline settlement batch
 staging both the WX report and the real Bambora file, retrieved through
 both the HTTP view and the real SFTP+PGP channel (SSH auth, file transfer,
@@ -102,10 +119,17 @@ PGP decryption all genuinely exercised); the real payout rail — settlement
 (gated on Banking Circle's safeguarding-account balance, simulating
 Worldline's lump sum landing and retrying when the gate first blocks it)
 → B4B (JWT-signed) → B4B's own lifecycle → Banking Circle (mTLS + bearer,
-AES-256-GCM notification model) — confirmed via Banking Circle's
-authenticated reconciliation and balance endpoints; and ACI's card-gateway
-webhook, confirming a genuinely AES-256-GCM-encrypted notification is
-built and delivery attempted. It fails loudly if any hop is disconnected.
-`make harness` runs it locally after `make up`; `make harness-docker` runs
-the same binary as one container attached to the compose network. See
-`docs/scenarios/`.
+AES-256-GCM notification model) — confirmed in Banking Circle's books;
+ACI's card-gateway webhook, confirming a genuinely AES-256-GCM-encrypted
+notification is built and delivery attempted; and Banking Circle's traps
+and reset. It fails loudly if any hop is disconnected.
+
+It plays the platform: every vendor is reached on its own surface with its
+own login. What a platform could not do — seed trading, run a cycle now,
+flip sanctions, land a wire, arm a trap, read a vendor's books — goes
+through the lab API (`LAB_API_URL`, `LAB_API_TOKEN`), as an agent's would.
+It never calls a control port or `/internal/*`.
+
+`make e2e` runs it locally after `make up`; `make e2e-docker` runs
+the same binary as one container attached to the compose network
+(`E2E_NETWORK`). `E2E_ONLY=name,name` runs a few. See `docs/scenarios/`.

@@ -10,6 +10,13 @@
 // plain JSON callbacks, and bridges an approved payment into the Banking
 // Circle mock. Everything it is told is written to one state file, so a
 // merchant boarded before a restart is still boarded after one.
+//
+// Two listeners. LISTEN (:8086) is the vendor's: the Oversight API, behind
+// the RS512 bearer JWT. Its port + 1000 (:9086, SIM_CONTROL_LISTEN) is the
+// control port the lab steers the simulation through: every /sim/* route,
+// with no vendor auth (internal/simctl). The old /sim paths still answer on
+// LISTEN, behind the JWT as they were, until phase 4 of docs/lab-api/plan.md
+// retires them.
 package main
 
 import (
@@ -27,6 +34,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
@@ -34,7 +42,10 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
 type app struct {
@@ -48,8 +59,14 @@ type app struct {
 	backs         []time.Duration
 	maxTry        int
 	bcURL         string
-	forceFails    map[string]bool
-	statePath     string
+	// traps is the payment.create hook's store (traps.go), with a standing
+	// trap per B4B_FORCE_FAILURE_BENEFICIARY_IDS entry.
+	traps     *trap.Store
+	statePath string
+	// persistMu makes each write of the state file one snapshot-and-save,
+	// so writes land in the order their snapshots were taken: a stale one
+	// can never overwrite a reset's.
+	persistMu sync.Mutex
 	// callbackURL is the client-account webhook endpoint: where a callback
 	// goes when the entity it is about carries no callback_url of its own.
 	// The real API has exactly this -- one endpoint agreed per client, not
@@ -72,6 +89,7 @@ type app struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8086")
 	labclock.FollowEnv(context.Background(), "b4b")
 	keysDir := env("B4B_JWT_KEYS_DIR", "/keys/b4b-keys")
@@ -113,7 +131,6 @@ func main() {
 		backs:          backs,
 		maxTry:         envInt("MAX_ATTEMPTS", 4),
 		bcURL:          bcURL,
-		forceFails:     parseForceFailSet(forceFailSpec),
 		statePath:      statePath,
 		callbackURL:    callbackURL,
 		enforceCompany: envBool("B4B_ENFORCE_BENEFICIARY_COMPANY", false),
@@ -123,6 +140,11 @@ func main() {
 			"Each lifecycle callback this vendor posted back, and whether the client took it."),
 	}
 	a.engine = b4b.NewEngine(delay, a.onTransition)
+	// The traps before the state: a payment a standing trap was walking
+	// when b4b stopped is caught by it again (resumeHeld).
+	if a.traps, err = newTraps(delay, parseForceFailIDs(forceFailSpec)); err != nil {
+		log.Fatalf("b4b traps: %v", err)
+	}
 
 	// Restore before anything can serve: a company that existed a second
 	// before the restart has to exist a second after it, and a payment
@@ -133,7 +155,7 @@ func main() {
 	}
 	a.dir.Restore(state)
 	a.beneficiaries.Restore(state)
-	a.engine.Restore(state)
+	a.resumeHeld(a.engine.Restore(state))
 	log.Printf("b4b: state %s restored: %d companies, %d people, %d beneficiaries, %d payments",
 		statePathLabel(statePath), len(state.Companies), len(state.People), len(state.Beneficiaries), len(state.Payments))
 
@@ -142,16 +164,66 @@ func main() {
 	a.dir.OnChange = a.persist
 	a.beneficiaries.OnChange = a.persist
 
+	ctl, err := a.control(addr)
+	if err != nil {
+		log.Fatalf("b4b: %v", err)
+	}
+	ctl.Start()
+
+	log.Printf("b4b listening on %s kid=%s allowlist=%s delay=%s banking_circle_url=%s state=%s callback_url=%q enforce_beneficiary_company=%t",
+		addr, kid, spec, delay, bcURL, statePathLabel(statePath), callbackURL, a.enforceCompany)
+	log.Fatal(http.ListenAndServe(addr, logReq(a.routes(ctl.Mux))))
+}
+
+// control is b4b's control surface (internal/simctl): every /sim/* route,
+// on a port of its own and with no bearer JWT. The JWT is for a platform
+// calling B4B; the lab steering its own simulation is not a B4B client, and
+// holds no B4B credential to do it. addr is the vendor listener, for
+// GET /sim/info and the control port's default (its port + 1000).
+func (a *app) control(addr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "b4b", Kind: "vendor", Simulates: "B4B Payments (Oversight API)",
+		Listeners: []string{addr},
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			return a.reset(req.Scope)
+		},
+		Traps: a.traps,
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, err
+	}
+	mux := ctl.Mux
+
+	// A read-only window onto a lab run: what the platform itself sent,
+	// what this service said back, and what the lab's traps did to it.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog, a.traps.Log()))
+
+	// Registering a payee exactly as POST /oversight/v1/beneficiaries does --
+	// the same handler, so the same body, refusals, answer, callback and
+	// state file -- for the lab API, which registers merchants' outlets and
+	// holds no B4B credential.
+	mux.HandleFunc("POST /sim/beneficiaries", a.registerBeneficiary)
+
+	// Real screening decides these, and they can change at any time under
+	// continuous screening. Exposing them lets a scenario exercise the paths
+	// a client has to handle -- a payee going from pass to fail, a clean
+	// payee that is nonetheless disabled, a PEP flagged separately from a
+	// sanctions hit -- instead of reading that it would.
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.setSanctions)
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.setBeneficiaryStatus)
+	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.setCompanySanctions)
+	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.setPersonSanctions)
+	return ctl, nil
+}
+
+// routes is b4b's vendor surface, the Oversight API a platform calls with
+// its bearer JWT. ctl is the control surface's mux: the old /sim paths here
+// delegate to it until phase 4 of docs/lab-api/plan.md retires them.
+func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "b4b"})
 	})
-
-	// Unauthenticated, like /health and for the same reason: the console
-	// holds no client credential, and this is a read-only window onto a lab
-	// run. It carries no key material -- only what the platform itself sent
-	// and what this service said back.
-	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog))
 
 	// Boarding: the chain a platform walks before it can pay anybody.
 	mux.HandleFunc("POST /oversight/v1/companies", a.requireAuth(a.createCompany))
@@ -177,25 +249,18 @@ func main() {
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", summarizePayment, a.createPayment)))
+	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", a.summarizeCreate, a.createPayment)))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
 	mux.HandleFunc("GET /oversight/v1/payments/{id}", a.requireAuth(a.getPayment))
 
-	// Lab-only. Real screening decides these, and they can change at any
-	// time under continuous screening. Exposing them lets a scenario
-	// exercise the paths a client has to handle -- a payee going from pass
-	// to fail, a clean payee that is nonetheless disabled, a PEP flagged
-	// separately from a sanctions hit -- instead of reading that it would.
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.requireAuth(a.setSanctions))
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.requireAuth(a.setBeneficiaryStatus))
-	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.requireAuth(a.setCompanySanctions))
-	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.requireAuth(a.setPersonSanctions))
-
-	log.Printf("b4b listening on %s kid=%s allowlist=%s delay=%s banking_circle_url=%s state=%s callback_url=%q enforce_beneficiary_company=%t",
-		addr, kid, spec, delay, bcURL, statePathLabel(statePath), callbackURL, a.enforceCompany)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	// The old /sim paths, answering as they did: behind the bearer JWT, but
+	// for GET /sim/activity, which never asked for one (the console held no
+	// client credential to read it with).
+	mux.Handle("GET /sim/activity", ctl)
+	mux.HandleFunc("/sim/", a.requireAuth(ctl.ServeHTTP))
+	return mux
 }
 
 // loadVerificationKey decides what this service verifies inbound tokens
@@ -227,7 +292,7 @@ func loadVerificationKey(keysDir, pubKeyPath, kid string) (*rsa.PublicKey, error
 		return nil, err
 	}
 	// Printed to stdout (not the log package, which defaults to stderr) so
-	// an operator/harness reading this service's stdout can pick it up.
+	// an operator or the e2e suite reading this service's stdout can pick it up.
 	fmt.Printf("b4b: JWT public key (kid=%s):\n%s\n", kid, pubPEM)
 	return &key.PublicKey, nil
 }
@@ -240,16 +305,53 @@ func loadVerificationKey(keysDir, pubKeyPath, kid string) (*rsa.PublicKey, error
 // is bad, but taking the service down mid-payment because a disk is full
 // is worse, and the in-memory state is still correct.
 func (a *app) persist() {
-	if a.statePath == "" {
-		return
+	if err := a.save(); err != nil {
+		log.Printf("b4b: persist state to %s: %v", a.statePath, err)
 	}
+}
+
+func (a *app) save() error {
+	if a.statePath == "" {
+		return nil
+	}
+	a.persistMu.Lock()
+	defer a.persistMu.Unlock()
 	var s b4b.State
 	a.dir.Snapshot(&s)
 	a.beneficiaries.Snapshot(&s)
 	a.engine.Snapshot(&s)
-	if err := b4b.SaveState(a.statePath, s); err != nil {
-		log.Printf("b4b: persist state to %s: %v", a.statePath, err)
+	return b4b.SaveState(a.statePath, s)
+}
+
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow drops the
+// payments, the callbacks in flight and both activity logs, and keeps the
+// boarding; all drops the boarding too, back to the empty state file of a
+// first start. Either way the state file is written before it answers, so
+// a restart cannot bring back -- or resume -- a payment it dropped. The
+// signing keys and B4B_FORCE_FAILURE_BENEFICIARY_IDS are configuration and
+// stay. The traps are not cleared here: simctl resets the store before
+// calling this, which disarms every trap, cancels the hops still waiting
+// and arms the standing ones again (internal/trap).
+func (a *app) reset(scope string) (simctl.ResetResult, error) {
+	var res simctl.ResetResult
+	var err error
+	a.engine.Gate().Hold(func(deliveries int) {
+		res = b4b.Reset(scope, a.engine, a.dir, a.beneficiaries)
+		res.Cleared["callbacks_in_flight"] = deliveries
+		res.Cleared["activity_events"] = int(a.payLog.Clear() + a.cbLog.Clear())
+		res.Kept = append(res.Kept, "jwt_keys", "force_failure_beneficiary_ids")
+		err = a.save()
+	})
+	if err != nil {
+		return res, fmt.Errorf("reset in memory, but the state file was not written, so a restart would bring it back: %w", err)
 	}
+	return res, nil
+}
+
+// later delivers in the background, counted as in flight until it is done,
+// under the epoch the work started in: a reset in between drops it.
+func (a *app) later(started uint64, deliver func(started uint64)) {
+	a.engine.Gate().Go(started, deliver)
 }
 
 // requireAuth verifies the inbound Authorization: Bearer <RS512 JWT> header
@@ -308,13 +410,27 @@ func (a *app) callbackTarget(override string) string {
 // no AES-GCM -- and are retried by the real vendor for about a day, which
 // is why every callback here goes through one retrying path rather than
 // some of them being best-effort single shots.
-func (a *app) deliverCallback(what, dest string, body any) {
+//
+// started is the epoch the work began in. Every attempt, and the activity
+// event it leaves, goes through the gate: after a reset the rest of the
+// delivery is dropped, not raced.
+func (a *app) deliverCallback(started uint64, what, dest string, body any) {
+	a.deliverMarked(started, what, dest, body, nil)
+}
+
+// deliverMarked is deliverCallback with mark added to the detail of every
+// activity event it records: the trap that made the transition a payment
+// callback reports (trapMark). Nothing of it goes on the wire.
+func (a *app) deliverMarked(started uint64, what, dest string, body any, mark map[string]string) {
+	gate := a.engine.Gate()
 	if dest == "" {
-		log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
-		a.cbLog.Record(activity.Event{
-			Op: "callback", Summary: what + " — nowhere to send it",
-			Status: activity.StatusWarn,
-			Detail: map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"},
+		gate.Do(started, func() {
+			log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
+			a.cbLog.Record(activity.Event{
+				Op: "callback", Summary: what + " — nowhere to send it",
+				Status: activity.StatusWarn,
+				Detail: marked(map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"}, mark),
+			})
 		})
 		return
 	}
@@ -329,34 +445,56 @@ func (a *app) deliverCallback(what, dest string, body any) {
 		if wait := retry.SleepBeforeAttempt(attempt, a.backs); wait > 0 {
 			time.Sleep(wait)
 		}
-		st, err := a.postWebhook(dest, payload)
-		last, lastErr = st, err
-		if err == nil {
-			log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
-			a.cbLog.Record(activity.Event{
-				Op: "callback", Peer: dest, Summary: what + " delivered",
-				Status: activity.StatusOK,
-				Detail: map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)},
-			})
+		var st int
+		var postErr error
+		if !gate.Do(started, func() {
+			st, postErr = a.postWebhook(dest, payload)
+			if postErr == nil {
+				log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
+				a.cbLog.Record(activity.Event{
+					Op: "callback", Peer: dest, Summary: what + " delivered",
+					Status: activity.StatusOK,
+					Detail: marked(map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)}, mark),
+				})
+			}
+		}) {
+			log.Printf("b4b: %s callback dropped before attempt %d: b4b was reset", what, attempt)
 			return
 		}
-		log.Printf("b4b: %s callback attempt=%d http=%d err=%v", what, attempt, st, err)
+		last, lastErr = st, postErr
+		if postErr == nil {
+			return
+		}
+		log.Printf("b4b: %s callback attempt=%d http=%d err=%v", what, attempt, st, postErr)
 		if !retry.ShouldRetry(st, attempt, a.maxTry) {
 			break
 		}
 	}
-	log.Printf("b4b: %s callback failed after retries: http=%d err=%v", what, last, lastErr)
 	// Recorded once, at the end, rather than per attempt: the retries are
 	// one event from the operator's point of view, and a panel that shows
 	// four rows for one refused callback buries the other three payouts.
-	detail := map[string]string{"attempts": strconv.Itoa(a.maxTry), "http": strconv.Itoa(last)}
-	if lastErr != nil {
-		detail["error"] = lastErr.Error()
-	}
-	a.cbLog.Record(activity.Event{
-		Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
-		Status: activity.StatusBad, Detail: detail,
+	gate.Do(started, func() {
+		log.Printf("b4b: %s callback failed after retries: http=%d err=%v", what, last, lastErr)
+		detail := map[string]string{"attempts": strconv.Itoa(a.maxTry), "http": strconv.Itoa(last)}
+		if lastErr != nil {
+			detail["error"] = lastErr.Error()
+		}
+		a.cbLog.Record(activity.Event{
+			Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
+			Status: activity.StatusBad, Detail: marked(detail, mark),
+		})
 	})
+}
+
+// marked is detail with mark's keys added; the "no destination" event's own
+// reason wins over a failure's.
+func marked(detail, mark map[string]string) map[string]string {
+	for k, v := range mark {
+		if _, taken := detail[k]; !taken {
+			detail[k] = v
+		}
+	}
+	return detail
 }
 
 // postWebhook does the plain JSON POST. The allowlist is enforced here as
@@ -381,17 +519,6 @@ func (a *app) postWebhook(dest string, body []byte) (int, error) {
 		return resp.StatusCode, fmt.Errorf("b4b: webhook destination returned %s", resp.Status)
 	}
 	return resp.StatusCode, nil
-}
-
-func parseForceFailSet(spec string) map[string]bool {
-	set := map[string]bool{}
-	for _, raw := range strings.Split(spec, ",") {
-		raw = strings.TrimSpace(raw)
-		if raw != "" {
-			set[raw] = true
-		}
-	}
-	return set
 }
 
 func statePathLabel(p string) string {
@@ -463,9 +590,13 @@ func envDuration(k string, def time.Duration) time.Duration {
 	return d
 }
 
+// logReq logs every request but the reads of the log itself: a reader
+// polling GET /sim/logs would otherwise fill the ring with its own polls.
 func logReq(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s %s", r.Method, r.URL.Path)
+		if r.Method != http.MethodGet || r.URL.Path != "/sim/logs" {
+			log.Printf("%s %s", r.Method, r.URL.Path)
+		}
 		next.ServeHTTP(w, r)
 	})
 }

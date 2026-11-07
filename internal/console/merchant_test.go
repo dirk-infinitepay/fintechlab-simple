@@ -166,3 +166,21 @@ func TestSetStatusRejectsInventedStates(t *testing.T) {
 		t.Fatalf("status = %q", got.Status)
 	}
 }
+
+func TestClearLeavesOnlyWhatAFirstStartSeeds(t *testing.T) {
+	r, err := NewRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := r.Partners()
+	if _, err := r.AddMerchant(NewMerchantParams{LegalName: "Acme Ltd", Country: "GB", Outlets: 2}); err != nil {
+		t.Fatal(err)
+	}
+	m, _, err := r.Clear()
+	if err != nil || m != 1 {
+		t.Fatalf("cleared %d merchants, %v", m, err)
+	}
+	if len(r.Merchants()) != 0 || len(r.Partners()) != len(first) || r.Partners()[0].ID != first[0].ID {
+		t.Errorf("after clear: %d merchants, partners %v; want none and %v", len(r.Merchants()), r.Partners(), first)
+	}
+}

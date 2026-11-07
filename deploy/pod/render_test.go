@@ -72,8 +72,13 @@ func TestTheCloudProfileRunsNoClock(t *testing.T) {
 			}
 		}
 	}
-	if got := envOf(cs["console"])["CONSOLE_URL_CLOCK"]; got != "off" {
-		t.Errorf("console CONSOLE_URL_CLOCK = %q, want off", got)
+	// The lab API is what reads the catalogue; the console is only a page
+	// that forwards to it, and a setting on it would change nothing.
+	if got := envOf(cs["lab-api"])["CONSOLE_URL_CLOCK"]; got != "off" {
+		t.Errorf("lab-api CONSOLE_URL_CLOCK = %q, want off", got)
+	}
+	if _, ok := envOf(cs["console"])["CONSOLE_URL_CLOCK"]; ok {
+		t.Error("CONSOLE_URL_CLOCK set on the console, which does not read it")
 	}
 }
 
@@ -93,8 +98,8 @@ func TestARenderingChangesOnlyWhatItWasAskedTo(t *testing.T) {
 	}
 	cloud := containers(render(t, o))
 	changed := map[string]bool{
-		"init.CERT_EXTRA_SANS": true, "console.CONSOLE_URL_CLOCK": true,
-		"console.CONSOLE_CONNECT_HOST": true, "console.CONSOLE_BROWSE_HOST": true,
+		"init.CERT_EXTRA_SANS": true, "lab-api.CONSOLE_URL_CLOCK": true,
+		"lab-api.CONSOLE_CONNECT_HOST": true, "lab-api.CONSOLE_BROWSE_HOST": true,
 		"aci.ACI_WEBHOOK_TARGET_URL": true,
 	}
 	for name, lc := range containers(local) {
@@ -149,9 +154,12 @@ func TestThePublicHostIsOnTheCertificatesAndInTheEnvDownloads(t *testing.T) {
 		if got := envOf(cs["init"])["CERT_EXTRA_SANS"]; got != tc.want {
 			t.Errorf("%s: CERT_EXTRA_SANS = %q, want %q", tc.host, got, tc.want)
 		}
-		console := envOf(cs["console"])
-		if console["CONSOLE_CONNECT_HOST"] != tc.host || console["CONSOLE_BROWSE_HOST"] != tc.host {
-			t.Errorf("%s: console hosts %q / %q", tc.host, console["CONSOLE_CONNECT_HOST"], console["CONSOLE_BROWSE_HOST"])
+		api := envOf(cs["lab-api"])
+		if api["CONSOLE_CONNECT_HOST"] != tc.host || api["CONSOLE_BROWSE_HOST"] != tc.host {
+			t.Errorf("%s: lab-api hosts %q / %q", tc.host, api["CONSOLE_CONNECT_HOST"], api["CONSOLE_BROWSE_HOST"])
+		}
+		if _, ok := envOf(cs["console"])["CONSOLE_CONNECT_HOST"]; ok {
+			t.Errorf("%s: CONSOLE_CONNECT_HOST set on the console, which does not read it", tc.host)
 		}
 		// The local profile keeps its clock: a remote lab that is not in
 		// the cloud profile is still a lab you can move.
@@ -203,6 +211,20 @@ func TestOptionsThatCannotBeRightAreRefused(t *testing.T) {
 		if _, err := Render(source(t), o); err == nil {
 			t.Errorf("%+v rendered without complaint", o)
 		}
+	}
+}
+
+// The settings follow the variables, not a container's name. A manifest in
+// which nothing reads them any more is refused rather than rendered into a
+// lab that ignores them -- the way they were once written onto the console
+// after the lab API took its place.
+func TestSettingsNobodyReadsAreRefused(t *testing.T) {
+	src := strings.NewReplacer("CONSOLE_URL_CLOCK", "SOMETHING_ELSE", "CONSOLE_BROWSE_HOST", "SOMETHING_MORE").Replace(string(source(t)))
+	if _, err := Render([]byte(src), Options{Profile: ProfileCloud}); err == nil {
+		t.Error("cloud profile rendered with no reader of CONSOLE_URL_CLOCK")
+	}
+	if _, err := Render([]byte(src), Options{PublicHost: "203.0.113.7"}); err == nil {
+		t.Error("public host rendered with no reader of CONSOLE_BROWSE_HOST")
 	}
 }
 

@@ -23,12 +23,13 @@
 // to prevent, because a client could pass against it while being wired
 // wrongly.
 //
-// Every outcome is flippable at POST /sim/outcome, so the unhappy paths are
-// reachable when somebody wants them. Defaulting to "pass" is a
-// convenience, not a limitation.
+// Every outcome is flippable at POST /sim/outcome on the control port, so
+// the unhappy paths are reachable when somebody wants them. Defaulting to
+// "pass" is a convenience, not a limitation.
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -40,6 +41,8 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 // outcomes holds the answer each vendor currently gives. One lock, because
@@ -96,6 +99,22 @@ func (o *outcomes) set(check, value string) error {
 	return fmt.Errorf("check %q cannot be %q (want: %s)", check, value, strings.Join(values, ", "))
 }
 
+// reset puts every check back to its default and says how many had been
+// flipped.
+func (o *outcomes) reset() int {
+	defaults := newOutcomes().m
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	flipped := 0
+	for check, v := range defaults {
+		if o.m[check] != v {
+			flipped++
+		}
+	}
+	o.m = defaults
+	return flipped
+}
+
 func (o *outcomes) snapshot() map[string]string {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
@@ -118,17 +137,43 @@ type app struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8089")
 	a := &app{out: newOutcomes()}
+	mux, ctl, err := a.routes(addr)
+	if err != nil {
+		log.Fatalf("verification: %v", err)
+	}
+	ctl.Start()
+	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome on %s to change one", addr, ctl.Addr())
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// routes is verification's two surfaces: the four vendors on addr, and the
+// lab's control surface on a port of its own (internal/simctl) — the
+// outcome switches, the sim control contract and its own GET /health, with
+// no vendor auth. The vendor port still answers the /sim paths until
+// phase 4 of docs/lab-api/plan.md retires them.
+func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "verification", Kind: "vendor", Simulates: "Creditsafe, iban.com, KYC6 and LexisNexis",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset:     a.reset,
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	// --- the lab seam -----------------------------------------------
+	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
+	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]any{"status": "ok", "service": "verification"})
 	})
-
-	// --- the lab seam -----------------------------------------------
-	mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
-	mux.HandleFunc("POST /sim/outcome", a.setOutcome)
+	// The old /sim paths on the vendor port, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
 
 	// --- Creditsafe: company data and UK bank verification ----------
 	mux.HandleFunc("POST /creditsafe/authenticate", a.creditsafeAuthenticate)
@@ -157,9 +202,29 @@ func main() {
 	mux.HandleFunc("POST /lexisnexis/oauth/token", a.lexisToken)
 	mux.HandleFunc("POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
 	mux.HandleFunc("POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
+	return mux, ctl, nil
+}
 
-	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome to change one", addr)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+// reset is POST /sim/reset. Every scope puts the outcomes back to their
+// defaults: a flipped check is a run's trap. flow keeps what a platform
+// obtained once and holds on to — the bearer tokens it was issued, the
+// monitoring portfolios it created — because taking them away mid-session
+// fails its next call with a 401 that no run caused. all is first start:
+// no token is valid and portfolio ids count from 1 again.
+func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+	cleared := map[string]int{"outcomes": a.out.reset()}
+	if req.Scope != simctl.ScopeAll {
+		return simctl.ResetResult{Cleared: cleared, Kept: []string{"tokens", "portfolios"}}, nil
+	}
+	tokens := 0
+	a.tokens.Range(func(k, _ any) bool {
+		a.tokens.Delete(k)
+		tokens++
+		return true
+	})
+	cleared["tokens"] = tokens
+	cleared["portfolios"] = int(a.portfolioIDs.Swap(0))
+	return simctl.ResetResult{Cleared: cleared}, nil
 }
 
 // --- the lab seam -------------------------------------------------------

@@ -7,9 +7,10 @@
 # docs/deploy-cloud.md is the walkthrough.
 #
 # Next to this script (one directory, the bundle unpacked):
-#   images.tar            every lab image, podman save -m
+#   images.tar            every lab image and the e2e suite's, podman save -m
 #   fintechlab.yaml       the manifest, rendered for this host (deploy/pod/render)
 #   regenerate-keys.yaml  the ConfigMap that asks for new keys
+#   e2e.sh                runs the e2e suite inside the pod (lab.sh e2e)
 #   REVISION              what was built, for `lab.sh status`
 #
 # Environment:
@@ -18,15 +19,25 @@
 #                    survive a replaced instance. Unset: podman's default storage.
 #   DATA_DIR         default /var/lib/fintechlab
 #   REGENERATE_KEYS  "true" issues a new PKI and keypairs on this play
+#   ROTATE_TOKEN     "true" issues a new lab API token on this play
+#   POD_NETWORK      e.g. slirp4netns, for a host whose podman cannot make a
+#                    bridge (docs/deploy-pod.md, The podman quirks)
+#
+# The lab API asks every caller for its token (LAB_API_TOKEN): a lab reached
+# over a network is not one to leave open. It is made once, kept on the data
+# volume at $DATA_DIR/lab-api-token (root only) and handed to the lab API and
+# the console as the ConfigMap deploy/pod/lab-api-token.yaml names; the
+# console adds it to what it forwards, so its page needs none.
 #
 # Idempotent: preparing the host is skipped once done, and a second play
 # replaces the containers and keeps the volumes -- the keys a platform was
-# configured with included.
+# configured with, and the token, included.
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
 DATA_DIR="${DATA_DIR:-/var/lib/fintechlab}"
 REGENERATE_KEYS="${REGENERATE_KEYS:-false}"
+ROTATE_TOKEN="${ROTATE_TOKEN:-false}"
 
 step() { echo "› $*"; }
 fail() { echo "error: $*" >&2; exit 1; }
@@ -113,13 +124,33 @@ step "loading images"
 podman load -q -i "$here/images.tar"
 rm -f "$here/images.tar" # the largest file; podman has it now
 
+# The lab API's token: made once, kept with the lab's state.
+token_file="$DATA_DIR/lab-api-token"
+if [ "$ROTATE_TOKEN" = true ] || [ ! -s "$token_file" ]; then
+  [ -s "$token_file" ] && step "with a new lab API token: every caller holding the old one is refused"
+  (umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \n' >"$token_file")
+fi
+(umask 077 && cat >"$DATA_DIR/lab-api-token.yaml" <<EOF
+# Written by play.sh from $token_file: the lab API asks for it.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fintechlab-lab-api-token
+data:
+  lab-api-token: "$(cat "$token_file")"
+EOF
+)
+
 # kube play looks in its working directory for a directory named like each
 # image, even with --build=false (docs/deploy-pod.md). This one holds files.
 cd "$here"
-set -- --replace --build=false
+set -- --replace --build=false --configmap "$DATA_DIR/lab-api-token.yaml"
 if [ "$REGENERATE_KEYS" = true ]; then
   step "with new keys: every copy of the old ones a platform holds stops working"
   set -- "$@" --configmap regenerate-keys.yaml
+fi
+if [ -n "${POD_NETWORK:-}" ]; then
+  set -- "$@" --network "$POD_NETWORK"
 fi
 step "playing the pod"
 podman kube play "$@" fintechlab.yaml
@@ -129,14 +160,19 @@ cp "$here/fintechlab.yaml" "$DATA_DIR/current.yaml"
 # Images no container uses any more: the previous play's.
 podman image prune --force >/dev/null
 
-step "waiting for the console"
-i=0
-until curl -fsS -o /dev/null http://127.0.0.1:8090/health 2>/dev/null; do
-  i=$((i + 1))
-  [ $i -le 30 ] || fail "the console did not answer on :8090 within a minute: podman logs fintechlab-console"
-  sleep 2
+step "waiting for the lab API and the console"
+for svc in lab-api:8097 console:8090; do
+  i=0
+  until curl -fsS -o /dev/null "http://127.0.0.1:${svc#*:}/health" 2>/dev/null; do
+    i=$((i + 1))
+    [ $i -le 30 ] || fail "${svc%%:*} did not answer on :${svc#*:} within a minute: podman logs fintechlab-${svc%%:*}"
+    sleep 2
+  done
 done
+# The token is asked for: an answer without it is a lab left open.
+code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8097/v1/services)"
+[ "$code" = 401 ] || fail "the lab API answered $code without its token, want 401: it is not asking for one"
 
-podman pod ps --filter name=fintechlab
+podman pod ps --filter name=^fintechlab$
 podman ps --pod --filter pod=fintechlab --format '{{.Names}}\t{{.Status}}'
 echo "fintechlab is up: $(cat "$DATA_DIR/current-revision" 2>/dev/null || echo 'unknown revision')"

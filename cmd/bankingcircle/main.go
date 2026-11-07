@@ -7,20 +7,28 @@
 // lifecycle/auth/HTTP-surface model — that doc's ledger/VIBAN seed shape is
 // the only part of it still in effect.
 //
-// Two listeners run in one process (Addendum section C): mTLS applies to an
-// entire http.Server, not per-route, so the real-shaped, credentialed API
-// and the lab-only B4B bridge cannot share a listener.
+// Three listeners run in one process. mTLS applies to an entire
+// http.Server, not per-route, so the real-shaped, credentialed API and the
+// lab's plain-HTTP surfaces cannot share a listener (Addendum section C).
 //   - LISTEN (default :8085, mTLS + bearer): every real-shaped endpoint,
 //     plus a few read-only debug endpoints (accounts/payments/reconciliation
-//     listings) this lab keeps for harness introspection — not part of the
+//     listings) this lab keeps for introspection — not part of the
 //     real contract, but still behind the same credentials as everything
-//     else on this listener.
+//     else on this listener. The old /sim paths answer here too, behind the
+//     bearer, until phase 4 of docs/lab-api/plan.md retires them.
 //   - INTERNAL_LISTEN (default :8095, plain HTTP, no auth): the B4B bridge
 //     (POST /internal/payments), the manual reversal and return test hooks
 //     (POST /internal/payments/{id}/reverse, .../return), the "Worldline
 //     lump sum landed" trigger (POST /internal/incoming-payments), and a
 //     no-auth balance proxy (GET /internal/accounts/{accountId}/balances) —
-//     lab-only, same-network trust.
+//     lab-only, same-network trust. b4b, worldline and settlement call it.
+//   - The control port (SIM_CONTROL_LISTEN, default LISTEN's port + 1000,
+//     :9085; plain HTTP, no vendor auth): every /sim route, the sim control
+//     contract (internal/simctl: /sim/info, /sim/logs, /sim/reset), the
+//     traps (/sim/traps, internal/trap; the payment.outgoing hook is in
+//     traps.go), and the lab's reads of what the vendor and bridge routes
+//     answer. The lab API calls only this, and holds no Banking Circle
+//     credentials.
 package main
 
 import (
@@ -48,7 +56,10 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -80,9 +91,20 @@ type app struct {
 	// reportLog is every reconciliation read: the two reports and a
 	// payment's status. See recordRead.
 	reportLog *activity.Log
+	// bank is the ledger, engine, dispatcher, mailbox and subscriptions
+	// together, for POST /sim/reset.
+	bank *bankingcircle.Bank
+	// traps is the payment.outgoing hook's trap store (traps.go), served on
+	// the control port and reset with it; outcomes is the outcome queue's
+	// traps, the shortcut that arms them.
+	traps    *trap.Store
+	outcomes outcomeQueue
+	// listeners are the vendor-facing addresses, for GET /sim/info.
+	listeners []string
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8085")
 	internalAddr := env("INTERNAL_LISTEN", ":8095")
 	delay := envDuration("PROCESSING_DELAY", 2*time.Second)
@@ -157,6 +179,9 @@ func main() {
 		tokenTTL: envDuration("TOKEN_TTL", time.Hour),
 		delivery: deliveryCfg,
 
+		listeners: []string{addr, internalAddr},
+		traps:     newTraps(delay),
+
 		bankCreditURL: bankCreditURL,
 		payLog: activity.New("payments", "Payments received",
 			"What arrived on the lab bridge: payouts from B4B, and money landing on the safeguarding accounts."),
@@ -205,6 +230,17 @@ func main() {
 	log.Printf("banking-circle: seeded subscription %s -> %s (batch=%d, retries=%d, time_scale=%g)",
 		seeded.ID, dest, seeded.MaxNotificationsPerMessage,
 		deliveryCfg.DeactivateAfterRetries, deliveryCfg.TimeScale)
+	// Taken after the seed, before any listener: the subscriptions as
+	// they stand now are what a reset of scope all puts back.
+	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+
+	// The control surface: the lab's /sim hooks on a port of their own,
+	// apart from the vendor's login (internal/simctl).
+	ctl, err := a.control(simctl.ControlAddr(addr))
+	if err != nil {
+		log.Fatalf("banking-circle: %v", err)
+	}
+	ctl.Start()
 
 	go func() {
 		log.Printf("banking-circle internal listening on %s (plain, no auth) — B4B bridge only", internalAddr)
@@ -225,7 +261,7 @@ func main() {
 		log.Fatalf("tls listener: %v", err)
 	}
 	log.Printf("banking-circle listening on %s mtls=%s dest=%s allowlist=%s delay=%s", addr, mode, dest, spec, delay)
-	log.Fatal(http.Serve(ln, logReq(a.mux())))
+	log.Fatal(http.Serve(ln, logReq(a.mux(ctl.Mux))))
 }
 
 // tlsListener builds the credentialed API's TLS listener. mode selects how
@@ -268,8 +304,9 @@ func tlsListener(addr, certFile, keyFile, caFile, mode string) (net.Listener, er
 	return tls.Listen("tcp", addr, cfg)
 }
 
-// mux is the real-shaped, mTLS + bearer credentialed API (LISTEN).
-func (a *app) mux() *http.ServeMux {
+// mux is the real-shaped, mTLS + bearer credentialed API (LISTEN). ctl is
+// the control surface's mux, whose /sim routes answer here too.
+func (a *app) mux(ctl http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "banking-circle"})
@@ -287,30 +324,12 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("PUT /api/v1/notificationselfservice/subscriptionEvent/{id}/targets", a.requireBearer(a.replaceSubscriptionEventTargets))
 	mux.HandleFunc("DELETE /api/v1/notificationselfservice/subscriptionEvent/{id}", a.requireBearer(a.deleteSubscriptionEvent))
 	mux.HandleFunc("POST /api/v1/notificationselfservice/clienttest/{subscriptionId}", a.requireBearer(a.clientTest))
-	// Lab-only: the warning and deactivation emails the retry schedule
-	// emits, so a failing subscription is observable rather than just
-	// eventually silent.
-	mux.HandleFunc("GET /sim/emails", a.requireBearer(a.listEmails))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/notifications", a.requireBearer(a.enqueueSyntheticNotifications))
-	mux.HandleFunc("GET /sim/subscription/{subscriptionId}/pending", a.requireBearer(a.pendingNotifications))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/pause", a.requireBearer(a.pauseNotifications))
-	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/resume", a.requireBearer(a.resumeNotifications))
-	// The delivery table this process is actually running, which is the
-	// file's plus whatever BC_TIME_SCALE overrode. Reading the file alone
-	// reports a schedule nobody is on.
-	mux.HandleFunc("GET /sim/delivery-config", a.requireBearer(a.deliveryConfig))
-	// The return and reversal test hooks again, for the console: the same
-	// handlers as on the internal listener, here because this is the
-	// surface the console holds a token for.
-	mux.HandleFunc("POST /sim/payments/{id}/return", a.requireBearer(a.returnInternalPayment))
-	mux.HandleFunc("POST /sim/payments/{id}/reverse", a.requireBearer(a.reverseInternalPayment))
-	// The console reads this one. It sits on the credentialed API
-	// rather than the bridge because that is the surface the console
-	// already holds a token for, and an observability endpoint is not
-	// a reason to open a second unauthenticated door.
-	mux.HandleFunc("GET /sim/activity", a.requireBearer(activity.Handler(a.payLog, a.notifLog, a.reportLog)))
+	// The old /sim paths, behind the bearer they always had, until phase 4
+	// of docs/lab-api/plan.md retires them. They are the control surface's
+	// own routes, so they answer exactly what it answers.
+	mux.Handle("/sim/", a.requireBearer(ctl.ServeHTTP))
 	// Debug/introspection endpoints kept from the old surface — not part of
-	// the real Banking Circle contract, but useful for the harness and kept
+	// the real Banking Circle contract, but useful for the e2e suite and kept
 	// behind the same credentials as everything else on this listener.
 	mux.HandleFunc("GET /accounts", a.requireBearer(a.listAccounts))
 	mux.HandleFunc("GET /accounts/{id}", a.requireBearer(a.getAccount))
@@ -334,6 +353,99 @@ func (a *app) deliveryConfig(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, a.delivery)
 }
 
+// control builds the control surface (internal/simctl) for a listener of
+// its own, at SIM_CONTROL_LISTEN or else defaultAddr: the sim control
+// contract, the trap routes, GET /health, and every route in simRoutes.
+//
+// It carries none of Banking Circle's authentication. mTLS and the
+// Basic→Bearer exchange are for the platform calling the bank's API;
+// reversing a payout, reading a log or resetting is the lab steering its
+// own simulation, and the lab API that does it holds no Banking Circle
+// credentials. The port is trusted by where it is: compose does not
+// publish it, and SIM_CONTROL_ALLOW narrows it further.
+func (a *app) control(defaultAddr string) (*simctl.Control, error) {
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "banking-circle", Kind: "vendor", Simulates: "Banking Circle Connect",
+		Listeners: a.listeners,
+		Reset:     a.reset,
+		Traps:     a.traps,
+	}, defaultAddr)
+	if err != nil {
+		return nil, err
+	}
+	for pattern, h := range a.simRoutes() {
+		ctl.Mux.HandleFunc(pattern, h)
+	}
+	return ctl, nil
+}
+
+// simRoutes are the lab's own routes on the control surface, by pattern.
+// None is Banking Circle's. Where one answers what a vendor or bridge
+// route answers, it is that route's handler, so the two cannot drift.
+func (a *app) simRoutes() map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		// Everything this vendor has done, as the console's activity view
+		// and the lab API's flow read it, and what its traps did.
+		"GET /sim/activity": activity.Handler(a.payLog, a.notifLog, a.reportLog, a.trapLog()),
+		// The warning and deactivation emails the retry schedule emits, so
+		// a failing subscription is observable rather than just eventually
+		// silent.
+		"GET /sim/emails": a.listEmails,
+		// The delivery table this process is actually running, which is
+		// the file's plus whatever BC_TIME_SCALE overrode. Reading the file
+		// alone reports a schedule nobody is on.
+		"GET /sim/delivery-config": a.deliveryConfig,
+
+		// Subscriptions: the vendor's list, its clienttest and its
+		// activate/deactivate (here without If-Match), and the lab's tap on
+		// the notification pipe.
+		"GET /sim/subscriptions":                                a.simListSubscriptions,
+		"POST /sim/subscription/{subscriptionId}/test":          a.clientTest,
+		"POST /sim/subscription/{subscriptionId}/activate":      a.simActivateSubscription,
+		"POST /sim/subscription/{subscriptionId}/deactivate":    a.simDeactivateSubscription,
+		"POST /sim/subscription/{subscriptionId}/notifications": a.enqueueSyntheticNotifications,
+		"GET /sim/subscription/{subscriptionId}/pending":        a.pendingNotifications,
+		"POST /sim/subscription/{subscriptionId}/pause":         a.pauseNotifications,
+		"POST /sim/subscription/{subscriptionId}/resume":        a.resumeNotifications,
+
+		// The ledger and the payments, as GET /accounts and GET /payments
+		// on LISTEN and the bridge's balance read answer them.
+		"GET /sim/accounts":                      a.listAccounts,
+		"GET /sim/accounts/{accountId}/balances": a.internalAccountBalances,
+		"GET /sim/payments":                      a.listPayments,
+		"POST /sim/incoming-payments":            a.incomingPayments(),
+		"GET /sim/payments/outcomes":             a.forcedOutcomes,
+		"POST /sim/payments/outcomes":            a.forceOutcomes,
+		"POST /sim/payments/{id}/return":         a.returnInternalPayment,
+		"POST /sim/payments/{id}/reverse":        a.reverseInternalPayment,
+	}
+}
+
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow clears
+// what a run makes -- payments, balances, notifications not yet delivered,
+// pauses, emails, activity -- and keeps what a platform set up once: its
+// subscriptions and the accounts its payouts opened. all also puts the bank
+// back as it was on first start: the seeded subscription only, the
+// safeguarding accounts only, references from the first. The traps, the
+// outcome queue's among them, are reset by simctl before this runs.
+//
+// Issued bearer tokens survive both. A lab reset must never log the
+// platform's Banking Circle client out, and nothing the lab does needs one.
+// Work in flight is dropped, not raced (bankingcircle.Bank.Reset). Never
+// refused: nothing here is unsafe to cut short.
+func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+	all := req.Scope == simctl.ScopeAll
+	cleared := a.bank.Reset(all, func(cleared map[string]int) {
+		cleared["activity"] = int(a.payLog.Clear() + a.notifLog.Clear() + a.reportLog.Clear())
+		a.outcomes.clear()
+	})
+	kept := []string{"subscriptions", "accounts", "tokens"}
+	if all {
+		kept = []string{"tokens"}
+	}
+	return simctl.ResetResult{Cleared: cleared, Kept: kept}, nil
+}
+
 // internalMux is the lab-only, unauthenticated B4B<->Banking-Circle bridge
 // (INTERNAL_LISTEN). Nothing else is served here.
 func (a *app) internalMux() *http.ServeMux {
@@ -343,9 +455,24 @@ func (a *app) internalMux() *http.ServeMux {
 	mux.HandleFunc("POST /internal/payments/{id}/return", a.returnInternalPayment)
 	mux.HandleFunc("GET /internal/payments/outcomes", a.forcedOutcomes)
 	mux.HandleFunc("POST /internal/payments/outcomes", a.forceOutcomes)
-	mux.HandleFunc("POST /internal/incoming-payments", a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment))
+	mux.HandleFunc("POST /internal/incoming-payments", a.incomingPayments())
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
+}
+
+// trapLog is the traps' activity log, nil without a trap store.
+func (a *app) trapLog() *activity.Log {
+	if a.traps == nil {
+		return nil
+	}
+	return a.traps.Log()
+}
+
+// incomingPayments is money landing on a safeguarding account, logged as
+// payment.incoming: the bridge's POST /internal/incoming-payments and the
+// control surface's POST /sim/incoming-payments.
+func (a *app) incomingPayments() http.HandlerFunc {
+	return a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment)
 }
 
 // --- auth ---------------------------------------------------------------
@@ -820,7 +947,8 @@ type internalPaymentReq struct {
 // distinct creditor account per beneficiary, not a single fixed known one,
 // so this can no longer 404); the debtor is the safeguarding account
 // matching the payment's currency; externalRef lands on the existing
-// Payment.SettlementID field verbatim (Addendum section B).
+// Payment.SettlementID field verbatim (Addendum section B). The payout is
+// booked at once and offered to the payment.outgoing traps (book).
 func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 	var req internalPaymentReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -875,9 +1003,8 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:              now,
 		UpdatedAt:              now,
 	}
-	a.engine.Create(p)
-	got, _ := a.engine.Get(p.ID)
-	httputilx.WriteJSON(w, 202, got)
+	// Answered as booked: a trap's first step may already have landed.
+	httputilx.WriteJSON(w, 202, a.book(p))
 }
 
 type incomingPaymentReq struct {
@@ -887,10 +1014,10 @@ type incomingPaymentReq struct {
 }
 
 // createIncomingPayment implements POST /internal/incoming-payments — the
-// harness's "Worldline lump sum landed" trigger
+// e2e suite's "Worldline lump sum landed" trigger
 // (docs/ARCHITECTURE-phase3-corrections.md section 1), same lab-only trust
 // boundary as the B4B bridge above. Real Banking Circle has no equivalent
-// caller-facing endpoint; this is the harness's stand-in for the acquirer
+// caller-facing endpoint; this is the e2e suite's stand-in for the acquirer
 // actually wiring funds into the SGA.
 func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request) {
 	var req incomingPaymentReq
@@ -1001,33 +1128,6 @@ func (a *app) returnInternalPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 200, p)
-}
-
-type forceOutcomesReq struct {
-	Outcomes []bankingcircle.Outcome `json:"outcomes"`
-}
-
-// forceOutcomes decides how the next outgoing payments end: each queued
-// outcome ("Rejected" or "Pending") is taken by one payment, in order.
-// Lab-only test hook, like reverse above — it lets a reconciliation sweep be
-// shown a rejection or a payment that never resolves, on demand.
-func (a *app) forceOutcomes(w http.ResponseWriter, r *http.Request) {
-	var req forceOutcomesReq
-	if err := httputilx.ReadJSON(r, &req); err != nil {
-		httputilx.Error(w, 400, err.Error())
-		return
-	}
-	queued, err := a.engine.ForceNext(req.Outcomes)
-	if err != nil {
-		httputilx.Error(w, 400, err.Error())
-		return
-	}
-	log.Printf("banking-circle: next %d outgoing payment(s) will end %v", len(queued), queued)
-	httputilx.WriteJSON(w, 200, map[string]any{"queued": queued})
-}
-
-func (a *app) forcedOutcomes(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"queued": a.engine.ForcedOutcomes()})
 }
 
 // --- notification delivery ---------------------------------------------

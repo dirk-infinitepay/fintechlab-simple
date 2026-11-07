@@ -2,7 +2,7 @@
 //
 // It exists because several simulated vendors identify the same real-world
 // thing by different names -- B4B knows a merchant by its beneficiary id,
-// the settlement harness knows it by its IBAN, Banking Circle knows it by
+// the settlement stand-in knows it by its IBAN, Banking Circle knows it by
 // an account id -- and the lab needs those to agree without any of them
 // importing another vendor's package or inventing a random id that a
 // second process could not reproduce.

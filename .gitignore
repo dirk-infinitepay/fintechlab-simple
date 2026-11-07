@@ -50,7 +50,7 @@ coverage.out
 /bank
 /bankingcircle
 /console
-/harness
+/e2e
 /notifier
 /paymentapi
 /receiver
@@ -74,3 +74,6 @@ coverage.out
 
 # deploy/aws/lab.sh configuration: your account, addresses and stack name
 /deploy/aws/lab.env
+
+# compose reads .env from here; a LAB_API_TOKEN put in one stays out of git.
+/.env

@@ -427,6 +427,22 @@ func (s *SubscriptionStore) SetActive(id, ifMatch string, active bool) (*Subscri
 	return sub, nil
 }
 
+// OverrideActive is SetActive without the If-Match check, for the lab's
+// control port: the lab switching a subscription on or off is not a client
+// that could be writing over another's change. The rowVersions move as
+// they do under SetActive, so a client holding the old one still gets its
+// mismatch.
+func (s *SubscriptionStore) OverrideActive(id string, active bool) (*Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, ok := s.subs[id]
+	if !ok {
+		return nil, ErrSubscriptionNotFound
+	}
+	s.setActiveLocked(sub, active, "")
+	return sub, nil
+}
+
 // Deactivate turns a subscription off without an If-Match check, for the
 // one case the API itself does it: retry exhaustion. reason becomes the
 // statusMessage a client sees on its next read, which is how it finds out
@@ -612,4 +628,75 @@ func (s *SubscriptionStore) Recipients(eventType string, targetIDs ...string) []
 type Recipient struct {
 	Subscription *Subscription
 	Event        *SubscriptionEvent
+}
+
+// subscriptionState is a store's contents, deep-copied: the start-up seed a
+// reset of scope all puts back (Bank).
+type subscriptionState struct {
+	subs   map[string]*Subscription
+	rowSeq uint64
+	idSeq  int
+}
+
+// snapshot copies the store as it stands.
+func (s *SubscriptionStore) snapshot() subscriptionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	subs, _ := copySubscriptions(s.subs)
+	return subscriptionState{subs: subs, rowSeq: s.rowSeq, idSeq: s.idSeq}
+}
+
+// restoreLocked puts st back -- a copy of it, so it can be put back again --
+// and says how many subscriptions that changed: each one st does not have,
+// and each of st's that had been deleted or written to since. Caller holds
+// s.mu.
+func (s *SubscriptionStore) restoreLocked(st subscriptionState) int {
+	changed := 0
+	for id, sub := range s.subs {
+		if seed, ok := st.subs[id]; !ok || !sameVersion(seed, sub) {
+			changed++
+		}
+	}
+	for id := range st.subs {
+		if _, ok := s.subs[id]; !ok {
+			changed++
+		}
+	}
+	s.subs, s.events = copySubscriptions(st.subs)
+	s.rowSeq, s.idSeq = st.rowSeq, st.idSeq
+	return changed
+}
+
+// sameVersion reports whether two copies of a subscription have the same
+// rowVersions throughout. Every write moves one: the subscription's own, or
+// an event's for a change of targets.
+func sameVersion(a, b *Subscription) bool {
+	if a.RowVersion != b.RowVersion || len(a.Events) != len(b.Events) {
+		return false
+	}
+	for i := range a.Events {
+		if a.Events[i].RowVersion != b.Events[i].RowVersion {
+			return false
+		}
+	}
+	return true
+}
+
+// copySubscriptions deep-copies subscriptions, and indexes the copies'
+// events by id the way the store does.
+func copySubscriptions(in map[string]*Subscription) (map[string]*Subscription, map[string]*SubscriptionEvent) {
+	subs := make(map[string]*Subscription, len(in))
+	events := map[string]*SubscriptionEvent{}
+	for id, sub := range in {
+		cp := *sub
+		cp.Events = make([]*SubscriptionEvent, len(sub.Events))
+		for i, e := range sub.Events {
+			ec := *e
+			ec.Targets = append([]TargetDetail(nil), e.Targets...)
+			cp.Events[i] = &ec
+			events[ec.ID] = &ec
+		}
+		subs[id] = &cp
+	}
+	return subs, events
 }

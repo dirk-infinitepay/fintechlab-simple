@@ -66,6 +66,10 @@ type Ledger struct {
 	mu      sync.Mutex
 	accts   map[string]*Account
 	byVIBAN map[string]*Account
+	// seeded is every account the ledger was built with, and the balance
+	// it was seeded at: what a reset puts back. Accounts opened later by a
+	// payout (GetOrCreate) are not in it.
+	seeded map[string]int64
 }
 
 var (
@@ -89,7 +93,7 @@ var (
 // land" step the real flow starts with. Credited only via Credit, driven by
 // the Engine.CreditIncoming "Worldline lump sum landed" simulation.
 func NewLedger() *Ledger {
-	l := &Ledger{accts: map[string]*Account{}, byVIBAN: map[string]*Account{}}
+	l := &Ledger{accts: map[string]*Account{}, byVIBAN: map[string]*Account{}, seeded: map[string]int64{}}
 	l.mustSeed(SGAAccountEUR, "BE00SIMSGA00000001", "Infinite Safeguarding Account EUR", "EUR", 0)
 	l.mustSeed(SGAAccountGBP, "GB00SIMSGA00000001", "Infinite Safeguarding Account GBP", "GBP", 0)
 	return l
@@ -99,6 +103,7 @@ func (l *Ledger) mustSeed(id, viban, holder, ccy string, cents int64) {
 	a := &Account{ID: id, VIBAN: viban, Holder: holder, Currency: ccy, cents: cents, Balance: money.Format(cents)}
 	l.accts[id] = a
 	l.byVIBAN[viban] = a
+	l.seeded[id] = cents
 }
 
 // Get looks an account up by ID or VIBAN.

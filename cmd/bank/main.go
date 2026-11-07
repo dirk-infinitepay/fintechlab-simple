@@ -16,7 +16,9 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 type account struct {
@@ -200,7 +202,6 @@ func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 	mux.HandleFunc("POST /accounts", ledger.Watch("account.open", summarizeOpen, s.createAccount))
 	mux.HandleFunc("POST /transfers", ledger.Watch("transfer", summarizeTransfer, s.transfer))
 	mux.HandleFunc("GET /ledger", s.listLedger)
-	mux.HandleFunc("GET /sim/activity", activity.Handler(credits, ledger))
 
 	// The rail hop: a payout leaving the settlement bank has to arrive
 	// somewhere, and this is where. No auth — it is a lab seam, and the
@@ -209,13 +210,89 @@ func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 	return mux
 }
 
+// simRoutes are the lab's hooks on the control port: the activity logs,
+// and the accounts the lab API lists and opens. GET and POST /sim/accounts
+// are GET and POST /accounts, the same handlers answering the same, so the
+// lab never has to call the ledger's own API to steer the bank.
+func simRoutes(mux *http.ServeMux, s *store, credits, ledger *activity.Log) {
+	mux.HandleFunc("GET /sim/activity", activity.Handler(credits, ledger))
+	mux.HandleFunc("GET /sim/accounts", s.listAccounts)
+	mux.HandleFunc("POST /sim/accounts", ledger.Watch("account.open", summarizeOpen, s.createAccount))
+}
+
+// surfaces builds the bank's two listeners: its own API on addr, and the
+// control surface on addr's port plus 1000 (internal/simctl), with every
+// /sim route. The old /sim paths still answer on addr, passed through to
+// the control surface, until phase 4 of docs/lab-api/plan.md retires them.
+func surfaces(s *store, credits, ledger *activity.Log, addr string) (*http.ServeMux, *simctl.Control, error) {
+	mux := routes(s, credits, ledger)
+	ctl, err := simctl.NewControl(control(s, credits, ledger, addr), simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	simRoutes(ctl.Mux, s, credits, ledger)
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8081")
 	labclock.FollowEnv(context.Background(), "bank")
 	credits, ledger := newLogs()
-	mux := routes(newStore(), credits, ledger)
+	mux, ctl, err := surfaces(newStore(), credits, ledger, addr)
+	if err != nil {
+		log.Fatalf("bank: %v", err)
+	}
+	ctl.Start()
 	log.Printf("bank listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// control is the bank's part of the sim control contract. Both scopes do
+// the same: nothing here is set up once by a platform — a platform never
+// calls the bank — so "what a run made" is everything that was not seeded.
+func control(s *store, credits, ledger *activity.Log, addr string) simctl.Config {
+	return simctl.Config{
+		Service: "bank", Kind: "vendor", Simulates: "the merchants' business bank",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			cleared := s.reset()
+			cleared["activity"] = int(credits.Clear() + ledger.Clear())
+			return simctl.ResetResult{Cleared: cleared, Kept: []string{"seeded_accounts"}}, nil
+		},
+	}
+}
+
+// reset puts the ledger back as it was on first start: every account that
+// was not seeded goes (opened by a payout or by hand), the seeded ones are
+// back at their seed balance, and the ledger is empty. It says how many
+// accounts it closed, how many seeded balances it moved back, and how many
+// credits and transfers the ledger held.
+func (s *store) reset() map[string]int {
+	seed := newStore()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	opened, balances := 0, 0
+	for id, a := range s.accts {
+		switch sa, seeded := seed.accts[id]; {
+		case !seeded:
+			opened++
+		case a.cents != sa.cents:
+			balances++
+		}
+	}
+	credits, legs := 0, 0
+	for _, e := range s.entries {
+		if strings.HasPrefix(e.ID, "ent_") {
+			credits++
+		} else {
+			legs++
+		}
+	}
+	s.accts, s.byIBAN, s.entries, s.seq = seed.accts, seed.byIBAN, nil, 0
+	return map[string]int{"accounts": opened, "balances": balances, "credits": credits, "transfers": legs / 2}
 }
 
 // summarizeCredit: "credited 733.34 EUR to GB00SIM… (Acme Ltd) — account opened".

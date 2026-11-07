@@ -7,6 +7,11 @@ Follow the money. Nothing here reads a shared directory: the platform side
 learns what it is owed the same way it would in production — by pulling a
 file off Worldline's SFTP server and decrypting it.
 
+What only the lab can do — seed trading, fire a cycle now, land a wire,
+read what a vendor sent — goes through the lab API on `:8097`. When the lab
+sets `LAB_API_TOKEN`, add `-H "Authorization: Bearer $LAB_API_TOKEN"` to
+those calls.
+
 ## 1. A card payment happens at the merchant's paypoint
 
 Worldline is the one who knows, because Worldline acquired it. Seed it
@@ -19,7 +24,7 @@ morning cycle to pick them up:
 ```bash
 YESTERDAY=$(date -u -d yesterday +%F)   # macOS: date -u -v-1d +%F
 
-curl -s -X POST http://127.0.0.1:8084/sim/transactions \
+curl -s -X POST http://127.0.0.1:8097/v1/services/worldline/sim/transactions \
   -H 'Content-Type: application/json' \
   -d "[
     {\"mid\":\"GB00SIM0000000000003\",\"currency\":\"EUR\",\"amount_cents\":10000,\"date\":\"$YESTERDAY\"},
@@ -35,7 +40,7 @@ Worldline delivers the same settlement twice a day: a **morning file**
 The scheduler runs on its own, but you can fire a slot now:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8084/sim/settlement-cycle/run?slot=morning&date=$YESTERDAY" \
+curl -s -X POST "http://127.0.0.1:8097/v1/services/worldline/sim/settlement-cycle/run?slot=morning&date=$YESTERDAY" \
   | python3 -m json.tool
 ```
 
@@ -117,7 +122,7 @@ curl -s http://127.0.0.1:8083/reports/settlement/set_XXXXXXXXXXXX/payout | pytho
 If it is waiting on funds, credit the account and retry:
 
 ```bash
-curl -s -X POST http://127.0.0.1:8095/internal/incoming-payments \
+curl -s -X POST http://127.0.0.1:8097/v1/services/banking-circle/sim/incoming-payments \
   -d '{"currency":"EUR","amount":"1000000.00","reference":"worldline-lump-sum"}'
 
 curl -s -X POST http://127.0.0.1:8083/reports/settlement/set_XXXXXXXXXXXX/retry-payout | python3 -m json.tool
@@ -195,8 +200,7 @@ the first failure — then **deactivates** it, emails you, and **retains**
 the undelivered notifications:
 
 ```bash
-curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem \
-  -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8085/sim/emails | python3 -m json.tool
+curl -s http://127.0.0.1:8097/v1/services/banking-circle/sim/emails | python3 -m json.tool
 ```
 
 You are not waiting two days for that: `BC_TIME_SCALE` (86400 in compose)
@@ -219,4 +223,4 @@ subscriber had it stopped answering.
 That is `worldline-settlement-to-sftp`, `worldline-confirmation-file`,
 `banking-circle-payout`, `banking-circle-subscription`,
 `banking-circle-retry-deactivation` and `b4b-oversight-gates` in
-`make harness` — this walkthrough is the same assertions, by hand.
+`make e2e` — this walkthrough is the same assertions, by hand.

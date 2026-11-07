@@ -7,10 +7,12 @@
 package verify
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 // Decision is a single merchant's verification outcome, matching
@@ -73,17 +75,29 @@ type Engine struct {
 	decisions    map[int]*Decision
 	delay        time.Duration
 	forceDecline map[int]bool
+
+	// pending counts triggers still sleeping out the delay. epoch is what
+	// Reset moves, and cancel wakes the sleepers so they see it: a
+	// decision triggered before a reset is dropped, never recorded after.
+	pending int
+	epoch   simctl.Epoch
+	ctx     context.Context
+	cancel  context.CancelFunc
+	// running is every trigger's goroutine, for the tests to wait on.
+	running sync.WaitGroup
 }
 
 // NewEngine builds an Engine. forceDecline is the set of
 // merchantApplicationIds (VERIFY_FORCE_DECLINE_IDS) that resolve to a
 // decline decision instead of the default approval.
 func NewEngine(delay time.Duration, forceDecline map[int]bool) *Engine {
-	return &Engine{
+	e := &Engine{
 		decisions:    map[int]*Decision{},
 		delay:        delay,
 		forceDecline: forceDecline,
 	}
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+	return e
 }
 
 // Trigger starts deciding id and returns immediately with the decision that
@@ -91,7 +105,8 @@ func NewEngine(delay time.Duration, forceDecline map[int]bool) *Engine {
 // synchronous 202 response body, even though Get is what a poller actually
 // consults. The decision itself is recorded, with CompletedAt set, only
 // after `delay` elapses in a background goroutine; before then Get reports
-// not-found, matching the real service's "404 until ready" shape.
+// not-found, matching the real service's "404 until ready" shape. A Reset
+// in between drops it.
 func (e *Engine) Trigger(id int) *Decision {
 	var d Decision
 	if e.forceDecline[id] {
@@ -100,17 +115,35 @@ func (e *Engine) Trigger(id int) *Decision {
 		d = positiveDecision(id)
 	}
 
+	// The caller's copy, taken before the goroutine stamps CompletedAt.
+	result := d
+
+	e.mu.Lock()
+	started, ctx := e.epoch.Current(), e.ctx
+	e.pending++
+	e.mu.Unlock()
+
+	e.running.Add(1)
 	go func() {
+		defer e.running.Done()
 		if e.delay > 0 {
-			time.Sleep(e.delay)
+			t := time.NewTimer(e.delay)
+			select {
+			case <-t.C:
+			case <-ctx.Done(): // a reset: the check below drops it
+				t.Stop()
+			}
 		}
 		d.CompletedAt = labclock.Now().Format(time.RFC3339)
 		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.epoch.Moved(started) {
+			return // Reset zeroed pending and cleared the decisions
+		}
+		e.pending--
 		e.decisions[id] = &d
-		e.mu.Unlock()
 	}()
 
-	result := d
 	return &result
 }
 
@@ -125,4 +158,20 @@ func (e *Engine) Get(id int) (*Decision, bool) {
 	}
 	cp := *d
 	return &cp, true
+}
+
+// Reset forgets every recorded decision and drops every trigger still
+// sleeping out its delay, so nothing decided before the reset can become
+// readable after it. It returns how many of each it cleared. The
+// force-decline set is configuration and stays.
+func (e *Engine) Reset() (decisions, pending int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	decisions, pending = len(e.decisions), e.pending
+	e.epoch.Bump()
+	e.cancel()
+	e.ctx, e.cancel = context.WithCancel(context.Background())
+	e.decisions = map[int]*Decision{}
+	e.pending = 0
+	return decisions, pending
 }

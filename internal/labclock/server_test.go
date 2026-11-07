@@ -207,3 +207,24 @@ func TestHTTPSurface(t *testing.T) {
 		t.Fatalf("second release: %v %v", resp, err)
 	}
 }
+
+func TestResetRefusesWhileHeldAndOtherwiseGoesBackToTheStart(t *testing.T) {
+	s := NewServer(nil, nil)
+	if _, err := s.Move(Request{Advance: "48h"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Take("runner", "a settlement run", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Reset(false, Request{}); !errors.Is(err, ErrHeld) {
+		t.Fatalf("reset under a hold = %v, want ErrHeld", err)
+	}
+	holds, changes, err := s.Reset(true, Request{})
+	if err != nil || holds != 1 || changes == 0 {
+		t.Fatalf("forced reset = %d holds, %d changes, %v", holds, changes, err)
+	}
+	st := s.State()
+	if st.Mode != ModeReal || len(st.Holds) != 0 {
+		t.Errorf("after reset: mode %s, holds %v; want the real clock and no holds", st.Mode, st.Holds)
+	}
+}

@@ -40,12 +40,15 @@ type settlementApp struct {
 	sgaAccount map[string]string // currency -> Banking Circle account id
 	httpClient *http.Client
 
+	// guard drops a run that a reset lands in the middle of (reset.go).
+	guard *runGuard
+
 	mu   sync.Mutex
 	runs []CycleRun
 }
 
 // CycleRun records one execution of the settlement cycle, so an operator
-// (or the harness) can see what was cut without reading the SFTP root.
+// (or the e2e suite) can see what was cut without reading the SFTP root.
 type CycleRun struct {
 	At        time.Time           `json:"at"`
 	Slot      string              `json:"slot"`
@@ -83,19 +86,28 @@ type LumpSum struct {
 // confirmation arrived is exactly the bug a simulation should make
 // impossible to write against.
 func (s *settlementApp) run(slot string, at time.Time, fromDate, toDate string) CycleRun {
+	// A reset that lands while this runs drops what is left of it: no file
+	// is published, no wire sent and no run recorded after the reset.
+	started := s.guard.start()
 	run := CycleRun{At: at.UTC(), Slot: slot, FromDate: fromDate, ToDate: toDate}
 
 	files, err := worldline.Cut(s.store, s.cfg, slot, fromDate, toDate, at)
 	if err != nil {
 		run.Errors = append(run.Errors, err.Error())
-		s.record(run)
+		if !s.guard.apply(started, func() { s.record(run) }) {
+			return dropped(run)
+		}
 		return run
 	}
 	run.Files = files
 
 	totals := map[string]int64{}
 	for _, f := range files {
-		name, err := wlsftp.Publish(s.root, f.Filename, f.Bytes, s.keys)
+		var name string
+		var err error
+		if !s.guard.apply(started, func() { name, err = wlsftp.Publish(s.root, f.Filename, f.Bytes, s.keys) }) {
+			return dropped(run)
+		}
 		if err != nil {
 			run.Errors = append(run.Errors, err.Error())
 			continue
@@ -109,14 +121,29 @@ func (s *settlementApp) run(slot string, at time.Time, fromDate, toDate string) 
 			if amount <= 0 || ccy == "" {
 				continue
 			}
-			ls := s.wireLumpSum(ccy, amount, toDate)
+			var ls LumpSum
+			if !s.guard.apply(started, func() { ls = s.wireLumpSum(ccy, amount, toDate) }) {
+				return dropped(run)
+			}
 			run.LumpSums = append(run.LumpSums, ls)
 		}
 	}
 
-	s.record(run)
+	if !s.guard.apply(started, func() { s.record(run) }) {
+		return dropped(run)
+	}
 	log.Printf("worldline: settlement cycle slot=%s coverage=%s..%s files=%d published=%d lump_sums=%d errors=%d",
 		slot, fromDate, toDate, len(files), len(run.Published), len(run.LumpSums), len(run.Errors))
+	return run
+}
+
+// dropped closes a run a reset landed in: what it did before the reset is
+// on it, the rest never happens, and it is not kept in the history the
+// reset just cleared.
+func dropped(run CycleRun) CycleRun {
+	log.Printf("worldline: settlement cycle slot=%s coverage=%s..%s dropped by a reset after publishing %d file(s) and sending %d lump sum(s)",
+		run.Slot, run.FromDate, run.ToDate, len(run.Published), len(run.LumpSums))
+	run.Errors = append(run.Errors, "worldline was reset while this run was in flight; the rest of it was dropped")
 	return run
 }
 
@@ -190,6 +217,24 @@ func (s *settlementApp) record(run CycleRun) {
 	}
 }
 
+// clearRuns empties the run history, for a reset. It returns how many runs
+// and lump sums the history held, and the name of every file those runs
+// published.
+func (s *settlementApp) clearRuns() (runs, lumpSums int, published map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	published = map[string]bool{}
+	for _, r := range s.runs {
+		lumpSums += len(r.LumpSums)
+		for _, name := range r.Published {
+			published[name] = true
+		}
+	}
+	runs = len(s.runs)
+	s.runs = nil
+	return runs, lumpSums, published
+}
+
 func (s *settlementApp) history() []CycleRun {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,8 +273,9 @@ func (s *settlementApp) schedule() {
 //
 // Everything under /sim is this lab's, not Worldline's. It is how a test
 // says "a card payment happened" or "it is tomorrow morning now" without
-// waiting for a real clock. Kept under one prefix so the real-shaped
-// surface stays recognizable as the part you can point at a real host.
+// waiting for a real clock. It is served on the control port, apart from
+// the vendor's own (main.go, surfaces), so the real-shaped surface stays
+// recognizable as the part you can point at a real host.
 
 func (s *settlementApp) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sim/transactions", s.addTransactions)

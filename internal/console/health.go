@@ -121,7 +121,14 @@ func (m *Monitor) probe(ctx context.Context, s Service) Status {
 	ctx, cancel := context.WithTimeout(ctx, m.timeout)
 	defer cancel()
 	st := Status{ServiceID: s.ID, CheckedAt: time.Now().UTC()}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+s.HealthPath, nil)
+	// A lab service is probed on its control port, which needs no vendor
+	// credentials: the same process, so the same answer to "is it up". A
+	// plugin has none, and is probed where it said.
+	target := s.BaseURL + s.HealthPath
+	if s.Control != "" {
+		target = s.Control + "/health"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		st.State, st.Detail = StateDown, err.Error()
 		return st

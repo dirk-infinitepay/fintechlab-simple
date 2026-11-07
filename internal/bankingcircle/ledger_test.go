@@ -231,7 +231,7 @@ func TestSGAAccountsAreSeededAsUUIDs(t *testing.T) {
 }
 
 // TestAccountIDForIsStableAndPassesThrough. Two processes that never talk
-// to each other -- B4B naming the creditor of a payout, and the harness
+// to each other -- B4B naming the creditor of a payout, and the e2e suite
 // checking that merchant's balance afterwards -- have to land on the same
 // account from the same merchant key, or the money is provably somewhere
 // but not findable.

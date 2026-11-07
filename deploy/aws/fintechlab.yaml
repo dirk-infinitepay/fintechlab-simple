@@ -14,7 +14,8 @@ Description: >-
 #     a replaced instance;
 #   - an Elastic IP, the lab's one stable address (and, optionally, a DNS
 #     record for it in a hosted zone you name);
-#   - a security group open to AllowedCidrs only;
+#   - a security group open to AllowedCidrs only, on the vendors' surfaces,
+#     the console and the lab API -- never a control port;
 #   - a private bucket the deploy script hands bundles over through.
 # Nothing in the instance's user data: deploy/host/play.sh prepares the host
 # on the first deploy, so editing it never replaces the instance.
@@ -37,8 +38,9 @@ Parameters:
     # that is never empty keeps the loop below free of conditions.
     Default: 10.77.0.0/24
     Description: >-
-      Who may reach the lab's ports: the console and vendors (8080-8095),
-      the receiver (8443) and Worldline's SFTP (2222). Your office or VPN
+      Who may reach the lab's ports: the vendors and the console
+      (8080-8090), the lab API (8097, behind its token), the receiver (8443)
+      and Worldline's SFTP (2222). Your office or VPN
       egress, and the platform's own outbound addresses (its NAT gateways),
       each listed once. The default, the lab's own range, opens nothing to
       the outside: reach the console through SSM port forwarding.
@@ -149,15 +151,27 @@ Resources:
   Fn::ForEach::Ingress:
     - Cidr
     - !Ref AllowedCidrs
+    # Not 8095 (Banking Circle's bridge, lab plumbing with no auth) nor the
+    # control ports (each vendor's port plus 1000): from outside, the lab API
+    # is the one way to steer the lab.
     - Lab&{Cidr}:
         Type: AWS::EC2::SecurityGroupIngress
         Properties:
           GroupId: !Ref SecurityGroup
           IpProtocol: tcp
           FromPort: 8080
-          ToPort: 8095
+          ToPort: 8090
           CidrIp: !Ref Cidr
-          Description: console 8090, the vendors, Banking Circle's lab bridge 8095
+          Description: the vendors' own surfaces and the console 8090
+      LabApi&{Cidr}:
+        Type: AWS::EC2::SecurityGroupIngress
+        Properties:
+          GroupId: !Ref SecurityGroup
+          IpProtocol: tcp
+          FromPort: 8097
+          ToPort: 8097
+          CidrIp: !Ref Cidr
+          Description: the lab API, behind its token
       Receiver&{Cidr}:
         Type: AWS::EC2::SecurityGroupIngress
         Properties:
@@ -311,6 +325,11 @@ Outputs:
     Description: Reachable from AllowedCidrs; otherwise lab.sh console forwards it to 127.0.0.1.
     Value: !Sub
       - http://${Host}:8090
+      - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
+  LabApiUrl:
+    Description: The platform's FINTECH_SIM_LAB_URL. lab.sh token prints the token it asks for.
+    Value: !Sub
+      - http://${Host}:8097
       - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
   DataVolumeId:
     Value: !Ref DataVolume

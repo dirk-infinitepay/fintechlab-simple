@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -64,6 +65,9 @@ type worldlinePuller struct {
 	mu     sync.Mutex
 	seen   map[string]bool
 	pulled []pulledFile
+	// notBefore is when the stand-in was last reset: a file on the server
+	// older than that is not taken (predatesReset). Zero until a reset.
+	notBefore time.Time
 }
 
 // newWorldlinePuller builds the puller from the environment, or returns
@@ -161,6 +165,9 @@ func (p *worldlinePuller) run() {
 func (p *worldlinePuller) pullOnce() (int, error) {
 	p.pullMu.Lock()
 	defer p.pullMu.Unlock()
+	// A reset that lands while this pull runs drops the rest of it: no file
+	// archived, no record made and no payout sent after it (reset.go).
+	started := p.app.guard.start()
 
 	c, err := wlsftp.Dial(p.cfg)
 	if err != nil {
@@ -174,16 +181,44 @@ func (p *worldlinePuller) pullOnce() (int, error) {
 	}
 	var n int
 	for _, f := range files {
-		if !p.claim(f.Name) {
+		if p.app.guard.moved(started) {
+			log.Printf("settlement: worldline pull dropped by a reset after taking %d file(s)", n)
+			break
+		}
+		if p.predatesReset(f) || !p.claim(f.Name) {
 			continue
 		}
-		rec := p.take(c, f.Name)
-		p.mu.Lock()
-		p.pulled = append(p.pulled, rec)
-		p.mu.Unlock()
+		rec, ok := p.take(c, f.Name, started)
+		if ok {
+			ok = p.app.guard.apply(started, func() {
+				p.mu.Lock()
+				p.pulled = append(p.pulled, rec)
+				p.mu.Unlock()
+			})
+		}
+		if !ok {
+			log.Printf("settlement: %s: %v", f.Name, errReset)
+			break
+		}
 		n++
 	}
 	return n, nil
+}
+
+// predatesReset reports whether f was on the server before the last reset,
+// and marks it seen so it is never taken. The reset emptied the archive
+// that would otherwise say it had been taken already, and taking it again
+// would pay its merchants a second time. A file Worldline publishes after
+// the reset — even under the same name — is newer, and taken.
+func (p *worldlinePuller) predatesReset(f wlsftp.RemoteFile) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.notBefore.IsZero() || p.seen[f.Name] || !f.ModTime.Before(p.notBefore) {
+		return false
+	}
+	p.seen[f.Name] = true
+	log.Printf("settlement: %s was on Worldline's server before the reset; not taken", f.Name)
+	return true
 }
 
 // claim marks a filename as taken and reports whether this caller is the
@@ -200,15 +235,16 @@ func (p *worldlinePuller) claim(name string) bool {
 }
 
 // take downloads, decrypts, archives, and (for a morning file) processes
-// one settlement file.
-func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
+// one settlement file. It reports false when a reset since started dropped
+// the rest of it.
+func (p *worldlinePuller) take(c *wlsftp.Client, name string, started uint64) (pulledFile, bool) {
 	rec := pulledFile{Name: name, Slot: worldline.FilenameSlot(name), PulledAt: labclock.Now()}
 
 	plaintext, err := c.Download(name, p.keyring)
 	if err != nil {
 		rec.Error = err.Error()
 		log.Printf("settlement: download %s: %v", name, err)
-		return rec
+		return rec, true
 	}
 	rec.Bytes = len(plaintext)
 
@@ -216,8 +252,12 @@ func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
 	// processing panics or the process dies mid-payout, the bytes that
 	// caused it are already on disk.
 	archived := filepath.Join(p.archiveDir, name)
-	if err := os.WriteFile(archived, plaintext, 0o644); err != nil {
-		log.Printf("settlement: archive %s: %v", name, err)
+	var werr error
+	if !p.app.guard.apply(started, func() { werr = os.WriteFile(archived, plaintext, 0o644) }) {
+		return rec, false
+	}
+	if werr != nil {
+		log.Printf("settlement: archive %s: %v", name, werr)
 	} else {
 		rec.ArchivedAt = archived
 	}
@@ -229,11 +269,14 @@ func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
 		// already described.
 		log.Printf("settlement: retained afternoon confirmation file %s (%d bytes), not reprocessed", name, len(plaintext))
 	case worldline.SlotMorning:
-		ids, payouts, err := p.process(name, plaintext)
+		ids, payouts, err := p.process(name, plaintext, started)
+		if errors.Is(err, errReset) {
+			return rec, false
+		}
 		if err != nil {
 			rec.Error = err.Error()
 			log.Printf("settlement: process %s: %v", name, err)
-			return rec
+			return rec, true
 		}
 		rec.Processed = true
 		rec.Settlements = ids
@@ -241,7 +284,7 @@ func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
 	default:
 		log.Printf("settlement: %s carries no recognizable settlement slot, archived only", name)
 	}
-	return rec
+	return rec, true
 }
 
 // process parses a morning settlement file and turns each submerchant's
@@ -250,7 +293,11 @@ func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
 // The per-MID grouping comes from the file, not from the platform's own
 // ledger: MID is the outlet Worldline settled, and it is the unit the
 // platform pays out against.
-func (p *worldlinePuller) process(name string, plaintext []byte) (ids []string, payouts int, err error) {
+//
+// Each MID's record, and its payout, lands only if no reset came since
+// started; the first one that would land after a reset ends it with
+// errReset.
+func (p *worldlinePuller) process(name string, plaintext []byte, started uint64) (ids []string, payouts int, err error) {
 	parsed, err := worldline.ParseBamboraCSV(strings.NewReader(string(plaintext)))
 	if err != nil {
 		return nil, 0, err
@@ -285,28 +332,18 @@ func (p *worldlinePuller) process(name string, plaintext []byte) (ids []string, 
 			State:            settlement.StateScheduled,
 			SettlementDate:   settlementDate,
 		}
-		if err := p.app.store.Create(rec); err != nil {
-			log.Printf("settlement: create %s from %s: %v", rec.ID, name, err)
-			continue
+		var created, settled bool
+		if !p.app.guard.apply(started, func() { created, settled = p.app.settleRecord(rec, report, "settlement file processing failed") }) {
+			return ids, payouts, errReset
 		}
-		ids = append(ids, rec.ID)
-		if _, err := p.app.store.Transition(rec.ID, settlement.EventProcess); err != nil {
-			log.Printf("settlement: process %s: %v", rec.ID, err)
-			continue
+		if created {
+			ids = append(ids, rec.ID)
 		}
-		if err := p.app.store.SetReport(rec.ID, report); err != nil {
-			log.Printf("settlement: set report %s: %v", rec.ID, err)
-			continue
-		}
-		if res, err := p.app.store.Transition(rec.ID, settlement.EventSettle); err != nil || !res.Success {
-			log.Printf("settlement: settle %s failed: %v", rec.ID, err)
-			if _, ferr := p.app.store.Transition(rec.ID, settlement.EventFail, "settlement file processing failed"); ferr != nil {
-				log.Printf("settlement: fail %s: %v", rec.ID, ferr)
-			}
+		if !settled {
 			continue
 		}
 		if fresh, gerr := p.app.store.Get(rec.ID); gerr == nil {
-			p.app.submitPayout(fresh)
+			p.app.submitPayout(fresh, started)
 		}
 	}
 	return ids, payouts, nil
@@ -348,20 +385,24 @@ func (p *worldlinePuller) history() []pulledFile {
 
 // routes exposes the pull state, and a way to force a pull rather than
 // waiting for the next tick -- which is what a test wants right after it
-// has told the acquirer to cut a file.
+// has told the acquirer to cut a file. The control port serves the same
+// pull as POST /sim/pull (main.go, controlRoutes).
 func (p *worldlinePuller) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /worldline/files", func(w http.ResponseWriter, _ *http.Request) {
 		files := p.history()
 		httputilx.WriteJSON(w, 200, map[string]any{"count": len(files), "files": files})
 	})
-	mux.HandleFunc("POST /worldline/pull", func(w http.ResponseWriter, _ *http.Request) {
-		n, err := p.pullOnce()
-		if err != nil {
-			httputilx.Error(w, 502, fmt.Sprintf("pull from %s:%s failed: %v", p.cfg.Host, p.cfg.Port, err))
-			return
-		}
-		httputilx.WriteJSON(w, 200, map[string]any{"pulled": n, "files": p.history()})
-	})
+	mux.HandleFunc("POST /worldline/pull", p.pull)
+}
+
+// pull pulls now and answers with what it took and the whole history.
+func (p *worldlinePuller) pull(w http.ResponseWriter, _ *http.Request) {
+	n, err := p.pullOnce()
+	if err != nil {
+		httputilx.Error(w, 502, fmt.Sprintf("pull from %s:%s failed: %v", p.cfg.Host, p.cfg.Port, err))
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"pulled": n, "files": p.history()})
 }
 
 // envDuration reads a duration from the environment, falling back to def

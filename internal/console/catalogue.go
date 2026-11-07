@@ -11,7 +11,10 @@
 package console
 
 import (
+	"net"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +22,7 @@ import (
 
 // Kind is which half of the lab a service belongs to. The distinction is
 // the one docs/catalogue.md draws: a vendor simulation is the deliverable,
-// scaffolding exists only so the harness can prove a hop is connected.
+// scaffolding exists only so the e2e suite can prove a hop is connected.
 type Kind string
 
 const (
@@ -46,12 +49,16 @@ type Endpoint struct {
 // service names) and one run from a shell (published 127.0.0.1 ports) --
 // hence Browse, the URL that works from the operator's browser instead.
 type Service struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Kind       Kind     `json:"kind"`
-	Summary    string   `json:"summary"`
-	BaseURL    string   `json:"base_url"`
-	Browse     string   `json:"browse_url"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Kind    Kind   `json:"kind"`
+	Summary string `json:"summary"`
+	BaseURL string `json:"base_url"`
+	Browse  string `json:"browse_url"`
+	// Control is where the lab steers the service: its control port, every
+	// /sim/* route and its own GET /health, plain HTTP with no vendor auth
+	// (internal/simctl). Empty for a plugin, which has none.
+	Control    string   `json:"control_url,omitempty"`
 	HealthPath string   `json:"health_path"`
 	Ports      []string `json:"ports"`
 	Transport  string   `json:"transport"`
@@ -154,6 +161,8 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Point B4B_URL at the real Oversight API.",
 			Docs:       "docs/ARCHITECTURE-b4b-oversight.md",
 			Endpoints: []Endpoint{
+				{"POST", "/sim/traps", "arm a trap on payment.create: hang or fail a future payment (control port)"},
+				{"GET", "/sim/traps/hooks", "what can be trapped: fields and the payment's lifecycle (control port)"},
 				{"GET|POST", "/oversight/v1/companies", "list / board a company (422 on a repeated external_ref)"},
 				{"GET", "/oversight/v1/companies/{id}", "by id or external_ref"},
 				{"GET|POST", "/oversight/v1/companies/{id}/addresses", ""},
@@ -187,11 +196,13 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Point at the real Connect API.",
 			Docs:       "docs/ARCHITECTURE-banking-circle-webhooks.md",
 			Endpoints: []Endpoint{
+				{"POST", "/sim/traps", "arm a trap on payment.outgoing: decide how a future payout ends (control port)"},
+				{"GET", "/sim/traps/hooks", "what can be trapped: fields and the payout's state graph (control port)"},
 				// The Connect API, as the real bank serves it (mTLS, Bearer).
 				{"GET", "/api/v1/authorizations/authorize", "Basic -> Bearer"},
-				{"GET", "/api/v1/accounts/{id}/balances", "safeguarding balance, financialDate on the business day"},
+				{"GET", "/api/v1/accounts/{id}/balances", "safeguarding balance; financialDate is the lab clock's date"},
 				{"GET|POST", "/api/v1/notificationselfservice/subscription", "list / create webhook subscriptions"},
-				{"GET|PUT|DELETE", "/api/v1/notificationselfservice/subscription/{id}", "one subscription (PUT needs If-Match)"},
+				{"GET|PUT|DELETE", "/api/v1/notificationselfservice/subscription/{id}", "one subscription (PUT and DELETE need If-Match)"},
 				{"PUT", "/api/v1/notificationselfservice/subscription/{id}/activate|deactivate", "switch a subscription on or off"},
 				{"POST", "/api/v1/notificationselfservice/subscriptionEvent", "add an event type to a subscription"},
 				{"PUT", "/api/v1/notificationselfservice/subscriptionEvent/{id}/targets", "scope an event to accounts"},
@@ -209,7 +220,9 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/sim/payments/{id}/return", "the beneficiary's bank sends a processed payout back"},
 				{"POST", "/sim/payments/{id}/reverse", "the scheme reverses a processed payout"},
 				{"GET", "/sim/activity", "payments received and notifications sent"},
-				{"GET", "/payments, /accounts, /reconciliation", "introspection: the bank's own records"},
+				{"GET", "/payments", "introspection: every payment the bank holds"},
+				{"GET", "/accounts", "introspection: every account and its balance"},
+				{"GET", "/reconciliation?date=YYYY-MM-DD[&account_id=]", "introspection: the payments of one day, optionally one account"},
 				// Lab bridge, plain HTTP on :8095, no auth.
 				{"POST", ":8095 /internal/payments", "B4B's hand-off: book a payout"},
 				{"POST", ":8095 /internal/incoming-payments", "money in: a Worldline lump sum lands"},
@@ -228,9 +241,10 @@ func DefaultCatalogue() *Catalogue {
 			Auth:       "shared webhook secret (hex, 32 raw bytes)",
 			SwapFor:    "It is the sender -- point ACI_WEBHOOK_TARGET_URL at your own listener.",
 			Endpoints: []Endpoint{
-				{"POST", "/internal/simulate-payment", "emit a card-payment webhook"},
-				{"GET", "/internal/sent", "what it delivered"},
-				{"GET", "/internal/sent/{id}", "one delivery"},
+				{"POST", "/sim/payments", "emit a card-payment webhook (control port)"},
+				{"GET", "/sim/sent", "what it delivered (control port)"},
+				{"GET", "/sim/sent/{id}", "one delivery (control port)"},
+				{"GET|POST", "/sim/connected", "lab switch: whether it delivers webhooks at all"},
 			},
 		},
 		{
@@ -277,7 +291,7 @@ func DefaultCatalogue() *Catalogue {
 			Ports:      []string{"8089/http"},
 			Transport:  "HTTP",
 			Auth:       "per vendor: bearer (Creditsafe, LexisNexis) or api key (iban.com, KYC6)",
-			SwapFor:    "Point CREDITSAFE_URL, IBAN_API_URL, KYC6_URL and LEXISNEXIS_URL at the real vendors.",
+			SwapFor:    "Point CREDITSAFE_API_URL, IBAN_COM_BASE_URL, KYC6_API_BASE_URL and the LEXISNEXIS_* URLs at the real vendors.",
 			Endpoints: []Endpoint{
 				{"POST", "/creditsafe/authenticate", "Creditsafe: username/password -> token"},
 				{"POST", "/creditsafe/localSolutions/GB/bankVerification/search", "UK bank account + name match"},
@@ -289,8 +303,8 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/kyc6/businesses", "KYC6: business screening"},
 				{"GET", "/kyc6/lifecycle/ongoing-monitoring/{alertId}", "KYC6: ongoing-monitoring alert"},
 				{"POST", "/lexisnexis/oauth/token", "LexisNexis: OAuth"},
-				{"POST", "/lexisnexis/idu/api/attribute-query", "identity assessment"},
-				{"POST", "/lexisnexis/ivi/v1/reports", "LexisNexis: identity verification report"},
+				{"POST", "/lexisnexis/idu/v1/reports", "LexisNexis IDU: identity report (bearer)"},
+				{"POST", "/lexisnexis/ivi/api/attribute-query", "LexisNexis IVI: identity verification attribute query"},
 				{"GET", "/sim/outcome", "what each check currently answers"},
 				{"POST", "/sim/outcome", "lab-only: flip one check to a failure"},
 			},
@@ -340,6 +354,7 @@ func DefaultCatalogue() *Catalogue {
 				{"POST", "/internal/b4b-webhook", "B4B's payment-status callback"},
 				{"GET", "/sftp/out[/{merchant_id}[/{filename}]]", "report files written for SFTP"},
 				{"GET", "/sftp/staging", "files staged for delivery"},
+				{"GET|POST", "/sim/connected", "lab switch: whether it pulls files"},
 			},
 		},
 		{
@@ -357,7 +372,9 @@ func DefaultCatalogue() *Catalogue {
 			Auth:       "HMAC on /webhooks; none on /raw-events",
 			SwapFor:    "Point the vendors' webhook URLs at your own listener.",
 			Endpoints: []Endpoint{
+				{"POST", "/webhooks", "HMAC-signed webhooks: verified, then stored"},
 				{"GET", "/events", "verified webhooks"},
+				{"POST", "/raw-events", "capture any body unverified (Banking Circle, ACI)"},
 				{"GET", "/raw-events", "raw captures (base64 bodies)"},
 			},
 		},
@@ -365,13 +382,13 @@ func DefaultCatalogue() *Catalogue {
 			// Not on the settle path: payment-api, the business bank's
 			// transfers and the notifier make the lab's oldest scenario,
 			// `make demo-payment` — payment, ledger move, signed webhook,
-			// stored event — which the harness still runs.
+			// stored event — which the e2e suite still runs.
 			ID: "payment-api", Name: "Payment API (demo stand-in)", Kind: KindPlatform,
 			StandIn: &StandInInfo{
 				Shown: shown,
-				Plays: "a payment facade of the platform's own: POST /payments with an Idempotency-Key moves money between two accounts at the business bank and enqueues a signed webhook at the notifier. Nothing in the settle path calls it; make demo-payment and the harness's first scenario do.",
+				Plays: "a payment facade of the platform's own: POST /payments with an Idempotency-Key moves money between two accounts at the business bank and enqueues a signed webhook at the notifier. Nothing in the settle path calls it; make demo-payment and the e2e suite's first scenario do.",
 			},
-			Summary: "Generic payment facade with Idempotency-Key: one POST /payments moves money at the business bank and enqueues a signed webhook at the notifier. Only make demo-payment and the harness call it — the settle path never does.",
+			Summary: "Generic payment facade with Idempotency-Key: one POST /payments moves money at the business bank and enqueues a signed webhook at the notifier. Only make demo-payment and the e2e suite call it — the settle path never does.",
 			BaseURL: "http://127.0.0.1:8080", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8080/http"}, Transport: "HTTP", Auth: "none (lab)",
 			SwapFor: "-- generic shape, not a vendor.",
@@ -387,13 +404,13 @@ func DefaultCatalogue() *Catalogue {
 				Shown: shown,
 				Plays: "a webhook worker of the platform's own: HMAC-signs what payment-api enqueues and delivers it to the receiver, with retries and a destination allowlist. Nothing in the settle path calls it; make demo-payment does.",
 			},
-			Summary: "Signed webhook worker: HMAC-signs what payment-api enqueues and POSTs it to the receiver, with retries and an allowlist. Only make demo-payment and the harness call it — the settle path never does.",
+			Summary: "Signed webhook worker: HMAC-signs what payment-api enqueues and POSTs it to the receiver, with retries and an allowlist. Only make demo-payment and the e2e suite call it — the settle path never does.",
 			BaseURL: "http://127.0.0.1:8082", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8082/http"}, Transport: "HTTP", Auth: "HMAC out",
 			SwapFor: "-- generic shape, not a vendor.",
 			Endpoints: []Endpoint{
 				{"POST", "/enqueue", "what payment-api calls"},
-				{"GET", "/subscriptions", ""}, {"GET", "/deliveries", ""},
+				{"GET|POST", "/subscriptions", "read / replace the subscription (POST clears a failed one)"}, {"GET", "/deliveries", ""},
 				{"GET", "/sim/activity", "deliveries and their attempts"},
 			},
 		},
@@ -412,6 +429,10 @@ func DefaultCatalogue() *Catalogue {
 			s.BaseURL = v
 		}
 		s.Browse = browseURL(s)
+		s.Control = os.Getenv(controlEnvKeyFor(s.ID))
+		if s.Control == "" {
+			s.Control = ControlURL(s.BaseURL)
+		}
 		kept = append(kept, s)
 	}
 	return &Catalogue{Services: kept}
@@ -420,6 +441,27 @@ func DefaultCatalogue() *Catalogue {
 // ServiceOff, as a CONSOLE_URL_<ID> value, leaves that service out of the
 // catalogue: the deployment does not run it.
 const ServiceOff = "off"
+
+// controlEnvKeyFor is CONSOLE_CONTROL_URL_<ID>, the override for a
+// service's control address.
+func controlEnvKeyFor(id string) string {
+	return "CONSOLE_CONTROL_URL_" + strings.ToUpper(strings.ReplaceAll(id, "-", "_"))
+}
+
+// ControlURL is a service's control address by the lab's convention: the
+// same host, plain HTTP, and the port plus 1000 (https://banking-circle:8085
+// → http://banking-circle:9085). "" when the base URL has no port to add to.
+func ControlURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil || port <= 0 || port+1000 > 65535 {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(u.Hostname(), strconv.Itoa(port+1000))
+}
 
 // envKeyFor is the per-service base-URL override, e.g. banking-circle ->
 // CONSOLE_URL_BANKING_CIRCLE.

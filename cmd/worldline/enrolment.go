@@ -17,6 +17,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -50,6 +51,9 @@ type enrolmentDesk struct {
 	// rejects maps a pf_account_id to a reason code, armed by an operator
 	// before uploading. Empty means everything is approved.
 	rejects map[string]string
+
+	// guard drops an answer a reset lands in the middle of (reset.go).
+	guard *runGuard
 }
 
 func newEnrolmentDesk(root string, keys *wlsftp.PGPKeys, delay, sweep time.Duration) *enrolmentDesk {
@@ -110,8 +114,10 @@ func (d *enrolmentDesk) pending() ([]string, error) {
 }
 
 // process answers every batch that is due. When now is true the configured
-// delay is ignored, which is the operator seam.
+// delay is ignored, which is the operator seam. A reset that lands while it
+// runs drops the rest: no receipt is written after it.
 func (d *enrolmentDesk) process(now bool) (int, error) {
+	started := d.guard.start()
 	names, err := d.pending()
 	if err != nil {
 		return 0, err
@@ -126,13 +132,19 @@ func (d *enrolmentDesk) process(now bool) (int, error) {
 		if !now && time.Since(info.ModTime()) < d.delay {
 			continue
 		}
-		if err := d.answer(name, path); err != nil {
+		if err := d.answer(name, path, started); err != nil {
+			if errors.Is(err, errReset) {
+				log.Printf("worldline: enrolment %s not answered: %v", name, err)
+				break
+			}
 			// Log and carry on: one malformed batch must not stop the
 			// others from being answered.
 			log.Printf("worldline: enrolment %s: %v", name, err)
-			d.mu.Lock()
-			d.seen[name] = time.Now().UTC()
-			d.mu.Unlock()
+			d.guard.apply(started, func() {
+				d.mu.Lock()
+				d.seen[name] = time.Now().UTC()
+				d.mu.Unlock()
+			})
 			continue
 		}
 		answered++
@@ -140,8 +152,15 @@ func (d *enrolmentDesk) process(now bool) (int, error) {
 	return answered, nil
 }
 
-// answer decrypts one batch and writes its receipt.
-func (d *enrolmentDesk) answer(name, path string) error {
+// errReset is work a reset dropped.
+var errReset = errors.New("worldline was reset while it was in flight; dropped")
+
+// answer decrypts one batch and writes its receipt, unless a reset happened
+// since started (errReset).
+func (d *enrolmentDesk) answer(name, path string, started uint64) error {
+	if d.guard.moved(started) {
+		return errReset
+	}
 	fileID, sequenceDate, ok := worldline.ParseEnrolmentFilename(name)
 	if !ok {
 		return fmt.Errorf("not an enrolment filename")
@@ -194,6 +213,23 @@ func (d *enrolmentDesk) answer(name, path string) error {
 	if err != nil {
 		return fmt.Errorf("encrypt receipt: %w", err)
 	}
+	// The receipt and the record of having answered land together, before a
+	// reset or not at all.
+	var werr error
+	if !d.guard.apply(started, func() { werr = d.deliver(name, outName, sealed) }) {
+		return errReset
+	}
+	if werr != nil {
+		return werr
+	}
+	log.Printf("worldline: %s -> %s (%d approved, %d rejected)",
+		name, outName, receipt.Summary.ApprovedCount, receipt.Summary.RejectedCount)
+	return nil
+}
+
+// deliver writes a receipt into from_WLNORDIC/ and records the batch as
+// answered.
+func (d *enrolmentDesk) deliver(batch, outName string, sealed []byte) error {
 	outDir := filepath.Join(d.root, wlsftp.DirFromWLNordic)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -207,13 +243,31 @@ func (d *enrolmentDesk) answer(name, path string) error {
 	if err := os.Rename(tmp, filepath.Join(outDir, outName)); err != nil {
 		return err
 	}
-
 	d.mu.Lock()
-	d.seen[name] = time.Now().UTC()
+	d.seen[batch] = time.Now().UTC()
 	d.mu.Unlock()
-	log.Printf("worldline: %s -> %s (%d approved, %d rejected)",
-		name, outName, receipt.Summary.ApprovedCount, receipt.Summary.RejectedCount)
 	return nil
+}
+
+// clearRejections disarms every rejection, for a reset, and returns how
+// many were armed.
+func (d *enrolmentDesk) clearRejections() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := len(d.rejects)
+	d.rejects = map[string]string{}
+	return n
+}
+
+// forgetAnswered forgets which batches were answered, for a reset of
+// everything, and returns how many it had answered. A batch still in
+// to_WLNORDIC/ is answered again on the next sweep.
+func (d *enrolmentDesk) forgetAnswered() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	n := len(d.seen)
+	d.seen = map[string]time.Time{}
+	return n
 }
 
 // decrypt opens a batch. The platform encrypts to the acquirer's public key

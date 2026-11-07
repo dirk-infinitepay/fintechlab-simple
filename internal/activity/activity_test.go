@@ -165,3 +165,19 @@ func TestConcurrentRecordAndRead(t *testing.T) {
 		t.Errorf("Total = %d, want 800 — every record must be counted once", total)
 	}
 }
+
+func TestClearEmptiesTheLogAndSeqKeepsCounting(t *testing.T) {
+	l := New("x", "X", "")
+	l.Record(Event{Op: "a"})
+	l.Record(Event{Op: "b"})
+	if n := l.Clear(); n != 2 {
+		t.Errorf("cleared %d, want 2", n)
+	}
+	if s := l.Snapshot(10); s.Total != 0 || len(s.Events) != 0 {
+		t.Errorf("after clear: %+v", s)
+	}
+	l.Record(Event{Op: "c"})
+	if e := l.Recent(1); len(e) != 1 || e[0].Seq != 3 {
+		t.Errorf("after clear the next seq is %v, want 3", e)
+	}
+}

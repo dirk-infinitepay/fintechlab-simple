@@ -67,8 +67,9 @@ graph TD
 
 ## The four refusals worth having
 
-Each of these is a real 422 a client meets in production and cannot meet
-against a mock that only answers the happy path. `b4b-company-boarding` in
+Each of these is a real refusal a client meets in production and cannot
+meet against a mock that only answers the happy path: the first three are
+422s, the fourth a 400. `b4b-company-boarding` in
 the harness asserts all four.
 
 **1. A repeated `external_ref` is 422, not a second company.** This is the
@@ -93,7 +94,7 @@ the last step fails will re-post this. A client that treats the resulting
 profile that already exists, and `GET /companies/{id}/extended` is the read
 that makes the retry correct.
 
-**4. A profile naming an upload that never happened is refused.** The
+**4. A profile naming an upload that never happened is refused (400).** The
 two-step upload flow only means anything if the second step checks the
 first happened.
 

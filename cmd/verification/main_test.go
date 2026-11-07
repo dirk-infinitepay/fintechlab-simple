@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 )
 
 // call drives one endpoint the way its real client does and returns the
@@ -216,4 +219,150 @@ func nested(m map[string]any, a, b string) map[string]any {
 		return map[string]any{}
 	}
 	return second
+}
+
+// surfaces builds verification's two surfaces with the control port on its
+// default and open to every caller, whatever the environment says.
+func surfaces(t *testing.T, a *app) (svc *http.ServeMux, ctl *simctl.Control) {
+	t.Helper()
+	t.Setenv("SIM_CONTROL_LISTEN", "")
+	t.Setenv("SIM_CONTROL_ALLOW", "")
+	svc, ctl, err := a.routes(":8089")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return svc, ctl
+}
+
+// serve sends one request to h and returns the recorder.
+func serve(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+	return w
+}
+
+// resetVia posts a reset to the control port, as the lab API does, and
+// decodes the answer.
+func resetVia(t *testing.T, a *app, scope string) (cleared map[string]int, kept []string) {
+	t.Helper()
+	_, ctl := surfaces(t, a)
+	w := serve(ctl.Handler(), http.MethodPost, "/sim/reset", `{"scope":"`+scope+`"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reset %s: %d %s", scope, w.Code, w.Body)
+	}
+	var got struct {
+		Cleared map[string]int `json:"cleared"`
+		Kept    []string       `json:"kept"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return got.Cleared, got.Kept
+}
+
+// TestFlowResetPutsOutcomesBackAndKeepsTokens: a flipped check is a run's
+// trap and goes; a token the platform was issued is what it set up once,
+// and still opens the bearer routes after the reset.
+func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
+	a := &app{out: newOutcomes()}
+	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
+	for check, outcome := range map[string]string{checkScreening: "hit", checkIdentity: "fail"} {
+		if err := a.out.set(check, outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cleared, kept := resetVia(t, a, "flow")
+	if len(cleared) != 1 || cleared["outcomes"] != 2 {
+		t.Errorf("cleared = %v, want two outcomes back to their defaults", cleared)
+	}
+	if strings.Join(kept, ",") != "tokens,portfolios" {
+		t.Errorf("kept = %v", kept)
+	}
+	for check, v := range newOutcomes().m {
+		if got := a.out.get(check); got != v {
+			t.Errorf("%s = %q after a reset, want its default %q", check, got, v)
+		}
+	}
+	if code, out := call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{}`, bearerHdr(cs)); code != http.StatusOK {
+		t.Errorf("a token issued before a flow reset: %d %v", code, out)
+	}
+	if _, out := call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"q"}`, bearerHdr(cs)); out["portfolioId"] != float64(2) {
+		t.Errorf("portfolio ids after a flow reset: %v, want 2", out["portfolioId"])
+	}
+}
+
+// TestAllResetIsFirstStart: no token issued before it is valid, and
+// portfolio ids count from 1 again.
+func TestAllResetIsFirstStart(t *testing.T) {
+	a := &app{out: newOutcomes()}
+	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	token(t, a, a.lexisToken, "/lexisnexis/oauth/token", `{"client_id":"c","client_secret":"s"}`)
+	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
+	if err := a.out.set(checkCompany, "dissolved"); err != nil {
+		t.Fatal(err)
+	}
+
+	cleared, kept := resetVia(t, a, "all")
+	if cleared["outcomes"] != 1 || cleared["tokens"] != 2 || cleared["portfolios"] != 1 || len(kept) != 0 {
+		t.Errorf("cleared = %v, kept = %v", cleared, kept)
+	}
+	if a.out.get(checkCompany) != "active" {
+		t.Error("company should be back to active")
+	}
+	if code, _ := call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{}`, bearerHdr(cs)); code != http.StatusUnauthorized {
+		t.Errorf("a token issued before an all reset: %d, want 401", code)
+	}
+	cs = token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	if _, out := call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"q"}`, bearerHdr(cs)); out["portfolioId"] != float64(1) {
+		t.Errorf("portfolio ids after an all reset: %v, want 1", out["portfolioId"])
+	}
+}
+
+// TestTheControlPortServesEverySimRoute: the outcome switches and the
+// control contract are on the control port, with no vendor auth, and no
+// vendor route is; the vendor port still answers the old /sim paths the
+// same way until phase 4.
+func TestTheControlPortServesEverySimRoute(t *testing.T) {
+	a := &app{out: newOutcomes()}
+	svc, ctl := surfaces(t, a)
+	if ctl.Addr() != ":9089" {
+		t.Errorf("control address = %q, want :9089", ctl.Addr())
+	}
+
+	if w := serve(ctl.Handler(), "GET", "/health", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"surface":"control"`) {
+		t.Errorf("control GET /health = %d %s", w.Code, w.Body)
+	}
+	for _, r := range []struct{ method, path, body string }{
+		{"GET", "/sim/outcome", ""},
+		{"POST", "/sim/outcome", `{"check":"screening","outcome":"hit"}`},
+		{"GET", "/sim/info", ""},
+		{"GET", "/sim/logs", ""},
+		{"POST", "/sim/reset", `{"scope":"flow"}`},
+	} {
+		on := serve(ctl.Handler(), r.method, r.path, r.body)
+		if on.Code == 404 || on.Code == 405 {
+			t.Errorf("control %s %s = %d %s", r.method, r.path, on.Code, on.Body)
+		}
+		if alias := serve(svc, r.method, r.path, r.body); alias.Code != on.Code {
+			t.Errorf("vendor port %s %s = %d, want %d as on the control port", r.method, r.path, alias.Code, on.Code)
+		}
+	}
+
+	// A flip on the control port is the vendor port's answer.
+	serve(ctl.Handler(), "POST", "/sim/outcome", `{"check":"identity","outcome":"refer"}`)
+	if got := a.out.get(checkIdentity); got != "refer" {
+		t.Errorf("identity after a flip on the control port = %q", got)
+	}
+
+	for _, r := range []struct{ method, path string }{
+		{"POST", "/creditsafe/authenticate"},
+		{"POST", "/iban/verify"},
+		{"POST", "/lexisnexis/oauth/token"},
+	} {
+		if w := serve(ctl.Handler(), r.method, r.path, `{}`); w.Code != 404 {
+			t.Errorf("control %s %s = %d, want 404: vendor routes are not on the control port", r.method, r.path, w.Code)
+		}
+	}
 }

@@ -50,9 +50,10 @@ goes in `internal`.
 | `accountid.go` | account-id validation and the safeguarding account ids |
 
 Every file above has a `_test.go` sibling exercised by `make test`
-(`go test ./...`, no Docker). `internal/harness/scenario_bankingcircle.go`
+(`go test ./...`, no Docker). `internal/e2e/scenario_bankingcircle.go`
 and `scenario_bcsubscription.go` are the other kind of test: a black-box
-binary dialing the real container over `:8085`/`:8095` (`make harness`),
+binary dialing the real container's Connect API on `:8085`, and its lab
+hooks through the lab API (`make e2e`),
 importing `internal/bankingcircle` only for two constants and the
 `Envelope` struct — everything else is real HTTP, mTLS, and AES-256-GCM
 decryption of captured wire bytes.
@@ -78,7 +79,7 @@ graph LR
     WL["worldline"] -->|"POST :8095/internal/incoming-payments\nSGA lump-sum credit"| BC(("banking-circle"))
     B4B["b4b"] -->|"POST :8095/internal/payments\ncreate outgoing payment"| BC
     ST["settlement"] -->|"GET :8095/internal/accounts/.../balances\nSGA sufficiency check"| BC
-    HN["harness"] -->|"mTLS+Bearer :8085\nauthorize / subscriptions / reconciliation"| BC
+    HN["e2e"] -->|"mTLS+Bearer :8085\nauthorize / subscriptions"| BC
     BC -->|"AES-256-GCM webhook POST\nWEBHOOK_URL"| RV["receiver /raw-events"]
 ```
 

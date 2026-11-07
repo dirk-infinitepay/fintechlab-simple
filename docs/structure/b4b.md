@@ -72,10 +72,10 @@ graph TD
     Z["POST /oversight/v1/companies -> /addresses -> /people -> /extended\ncompanies.go, people.go — 422 on a duplicate ref, a missing\nidentity document, or a second extended profile"] --> Y["POST /oversight/v1/beneficiaries\nbeneficiaries.go — company_id checked against the directory"]
     Y --> A
     A["POST /oversight/v1/payments\ncmd/b4b/payments.go createPayment"] --> B["gateBeneficiary\nbeneficiaries.go — sanctions + disabled + creditor-consistency\n(+ paying company, if enforced), 422 on fail"]
-    B --> C["Engine.Submit\ninternal/b4b/payment.go"]
+    B --> C["offered to the trap store (cmd/b4b/traps.go), then\nEngine.Submit — or Engine.Accept and the trap's path\ninternal/b4b/payment.go"]
     C -->|"fires immediately"| D["B4BAccepted"]
     D -->|"goroutine, delay per hop"| E["B4BSanctionsPending -> B4BSanctionsApproved -> B4BTMPending"]
-    E --> F["B4BTMApproved  or  B4BFailed (ForceFail)"]
+    E --> F["B4BTMApproved  or  B4BFailed (a trap's path, e.g. a standing\ntrap from B4B_FORCE_FAILURE_BENEFICIARY_IDS)"]
     F --> G["onTransition\ncmd/b4b/main.go"]
     G --> H["deliverCallback -> POST callback_url or B4B_CALLBACK_URL\nretry until 2xx or MAX_ATTEMPTS"]
     F -->|"B4BTMApproved only"| I["approveAndBridge -> POST banking-circle :8095/internal/payments"]
@@ -88,7 +88,7 @@ graph LR
     ST["settlement"] -->|"POST :8086/oversight/v1/payments\nRS512 bearer JWT"| B4B(("b4b"))
     B4B -->|"POST callback_url (caller-supplied)\nplain JSON, retried"| ST
     B4B -->|"POST :8095/internal/payments\nonce B4BTMApproved"| BC["banking-circle"]
-    HN["harness"] -->|"RS512 bearer JWT :8086\nregister beneficiary, create payment, poll payment status"| B4B
+    HN["e2e"] -->|"RS512 bearer JWT :8086\nregister beneficiary, create payment, poll payment status"| B4B
 ```
 
 Callbacks resolve their destination in two steps: the record's own
@@ -105,9 +105,9 @@ and its own `callback_url` → `requireAuth` verifies the token →
 `gateBeneficiary` checks the beneficiary's sanctions status is `pass` and
 the payment's creditor fields match its record (422 + nothing forwarded
 otherwise) → `Engine.Submit` fires `B4BAccepted` synchronously and the
-handler returns 201 immediately → a goroutine walks the remaining phases
+handler returns 202 immediately → a goroutine walks the remaining phases
 on the configured delay → every transition calls `onTransition`, which
-retries `deliverWebhook` against `callback_url` → at `B4BTMApproved`
+retries `deliverCallback` against `callback_url` → at `B4BTMApproved`
 specifically, `approveAndBridge` also POSTs to banking-circle's bridge,
 carrying `external_ref` → banking-circle books the outgoing payment
 against the merchant's auto-vivified creditor account, debiting its

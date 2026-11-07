@@ -7,6 +7,7 @@ package pod
 
 import (
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -77,6 +78,11 @@ func load(t *testing.T, path string, into any) {
 // container, with its own command, so it has no container to compare.
 const initService = "ca"
 
+// fromHost is a compose value taken from the host's environment, empty by
+// default: ${NAME:-}. A pod has no host environment to read, so the pod
+// takes the same setting from an optional ConfigMap passed at play time.
+var fromHost = regexp.MustCompile(`^\$\{([A-Z0-9_]+):-\}$`)
+
 func TestEveryComposeServiceIsAContainerWithTheSameEnvironment(t *testing.T) {
 	var c composeFile
 	var p podFile
@@ -102,10 +108,23 @@ func TestEveryComposeServiceIsAContainerWithTheSameEnvironment(t *testing.T) {
 			t.Errorf("%s: image %q, want %q", name, ct.Image, want)
 		}
 		got := map[string]string{}
+		fromConfigMap := map[string]bool{}
 		for _, e := range ct.Env {
 			got[e.Name] = e.Value
+			if e.ValueFrom != nil && e.ValueFrom.ConfigMapKeyRef != nil && e.ValueFrom.ConfigMapKeyRef.Optional {
+				fromConfigMap[e.Name] = true
+			}
 		}
 		for k, v := range svc.Environment {
+			if m := fromHost.FindStringSubmatch(v); m != nil {
+				if m[1] != k {
+					t.Errorf("%s: %s takes its value from the host's %s; name them the same", name, k, m[1])
+				}
+				if !fromConfigMap[k] {
+					t.Errorf("%s: %s comes from the host in compose.yml; in the pod it must come from an optional ConfigMap, not a value", name, k)
+				}
+				continue
+			}
 			if g, ok := got[k]; !ok {
 				t.Errorf("%s: %s=%q is in compose.yml but not in the pod", name, k, v)
 			} else if g != v {
@@ -214,4 +233,49 @@ func TestRegenerateKeysIsAnOptionalFlagFromItsOwnFile(t *testing.T) {
 		return
 	}
 	t.Error("the init container has no REGENERATE_KEYS")
+}
+
+// The lab API's token is the same setting in the lab API and the console,
+// read from the ConfigMap deploy/pod/lab-api-token.yaml defines, and
+// optional: a play without the file runs an open lab, as compose does
+// without LAB_API_TOKEN. The file ships empty, so playing it unedited asks
+// for nothing.
+func TestTheLabAPITokenIsAnOptionalConfigMapFromItsOwnFile(t *testing.T) {
+	var p podFile
+	load(t, "fintechlab.yaml", &p)
+	var cm struct {
+		Kind     string `yaml:"kind"`
+		Metadata struct {
+			Name string `yaml:"name"`
+		} `yaml:"metadata"`
+		Data map[string]string `yaml:"data"`
+	}
+	load(t, "lab-api-token.yaml", &cm)
+
+	readers := map[string]bool{}
+	for _, ct := range p.Spec.Containers {
+		for _, e := range ct.Env {
+			if e.Name != "LAB_API_TOKEN" {
+				continue
+			}
+			readers[ct.Name] = true
+			if e.ValueFrom == nil || e.ValueFrom.ConfigMapKeyRef == nil {
+				t.Errorf("%s: LAB_API_TOKEN must come from a ConfigMap, not a fixed value", ct.Name)
+				continue
+			}
+			ref := e.ValueFrom.ConfigMapKeyRef
+			if !ref.Optional {
+				t.Errorf("%s: LAB_API_TOKEN must be optional: a play without the file runs an open lab", ct.Name)
+			}
+			if cm.Kind != "ConfigMap" || ref.Name != cm.Metadata.Name {
+				t.Errorf("%s reads ConfigMap %q, lab-api-token.yaml defines %s %q", ct.Name, ref.Name, cm.Kind, cm.Metadata.Name)
+			}
+			if v, ok := cm.Data[ref.Key]; !ok || v != "" {
+				t.Errorf("lab-api-token.yaml must define %s, empty (got %q, %v)", ref.Key, v, ok)
+			}
+		}
+	}
+	if !readers["lab-api"] || !readers["console"] {
+		t.Errorf("LAB_API_TOKEN is read by %v, want lab-api and console", readers)
+	}
 }

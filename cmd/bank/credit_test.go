@@ -154,13 +154,14 @@ func TestCreditRefusesNonsense(t *testing.T) {
 // true to count.
 func TestACreditIsLoggedWhereTheConsoleReadsIt(t *testing.T) {
 	credits, ledger := newLogs()
-	mux := routes(newStore(), credits, ledger)
+	mux, ctl := testSurfaces(t, newStore(), credits, ledger)
 	r := httptest.NewRequest(http.MethodPost, "/internal/credit", strings.NewReader(
 		`{"iban":"GB00SIMMERCH0000009","holder":"Quiet Coffee","amount":"10.50","currency":"EUR","reference":"SETL-9"}`))
 	mux.ServeHTTP(httptest.NewRecorder(), r)
 
+	// On the control port, where the lab API reads it.
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sim/activity", nil))
+	ctl.Handler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sim/activity", nil))
 	var got struct {
 		Logs []struct {
 			Name   string `json:"name"`

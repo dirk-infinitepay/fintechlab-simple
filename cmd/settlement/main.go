@@ -1,6 +1,6 @@
 // Settlement is this lab's stand-in for the platform side. It is
 // scaffolding, not a vendor simulation and not a model of any real
-// platform: it exists so the harness has something to prove the vendor
+// platform: it exists so the e2e suite has something to prove the vendor
 // simulations are actually connected to. See docs/catalogue.md.
 //
 // It pulls Worldline's settlement file over the real SFTP+PGP channel
@@ -37,9 +37,11 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/labswitch"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
 	"github.com/webduvet/fintechlab-simple/internal/sftp"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -69,9 +71,13 @@ type app struct {
 	// takes its place (internal/labswitch); an explicit pull or generate
 	// still works.
 	wiring *labswitch.Switch
+
+	// guard drops work a reset lands in the middle of (reset.go).
+	guard runGuard
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8083")
 	labclock.FollowEnv(context.Background(), "settlement")
 	bankURL := strings.TrimRight(env("BANK_URL", "http://bank:8081"), "/")
@@ -147,6 +153,22 @@ func main() {
 		go puller.run()
 	}
 
+	mux, ctl, err := a.surfaces(addr, puller)
+	if err != nil {
+		log.Fatalf("settlement: %v", err)
+	}
+	ctl.Start()
+	log.Printf("settlement listening on %s bank=%s b4b=%s verify=%s banking_circle=%s sftp_out=%s sftp_outbound=%s",
+		addr, bankURL, b4bURL, verifyURL, bcInternalURL, sftpOutDir, sftpOutboundDir)
+	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// surfaces builds the stand-in's two listeners: its own, on addr, and the
+// control surface on addr's port plus 1000 (internal/simctl), with every
+// /sim route. The old /sim paths still answer on addr, passed through to
+// the control surface, until phase 4 of docs/lab-api/plan.md retires them.
+// puller is nil when no Worldline host is configured.
+func (a *app) surfaces(addr string, puller *worldlinePuller) (*http.ServeMux, *simctl.Control, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "settlement"})
@@ -162,13 +184,31 @@ func main() {
 	mux.HandleFunc("GET /sftp/out/{merchant_id}/{filename}", a.readOut)
 	mux.HandleFunc("GET /sftp/staging", a.listStaging)
 	mux.HandleFunc("POST /internal/b4b-webhook", a.b4bWebhook)
-	a.wiring.Routes(mux, "/sim/connected")
 	if puller != nil {
 		puller.routes(mux)
 	}
-	log.Printf("settlement listening on %s bank=%s b4b=%s verify=%s banking_circle=%s sftp_out=%s sftp_outbound=%s",
-		addr, bankURL, b4bURL, verifyURL, bcInternalURL, sftpOutDir, sftpOutboundDir)
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "settlement", Kind: "stand-in", Simulates: "the platform's settle path (scaffolding)",
+		Listeners: []string{addr},
+		Reset:     a.reset(puller),
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+	a.controlRoutes(ctl.Mux, puller)
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
+// controlRoutes registers the lab's hooks on the control surface, beside
+// the contract simctl mounts there: the stand-in's switch, and a pull from
+// Worldline now. POST /sim/pull is POST /worldline/pull, the same handler
+// answering the same, so the lab never has to call the stand-in's own API.
+func (a *app) controlRoutes(mux *http.ServeMux, puller *worldlinePuller) {
+	a.wiring.Routes(mux, "/sim/connected")
+	if puller != nil {
+		mux.HandleFunc("POST /sim/pull", puller.pull)
+	}
 }
 
 // parseDateRange applies ARCHITECTURE-reconciliation-api.md's defaults:
@@ -252,7 +292,7 @@ func (a *app) getReport(w http.ResponseWriter, r *http.Request) {
 
 // payoutResp is a lab-only introspection view of a record's best-effort
 // payout submission -- not part of any real Worldline/B4B contract, purely
-// so a test harness can observe PayoutID/PayoutState (which the vendor-
+// so the e2e suite can observe PayoutID/PayoutState (which the vendor-
 // shaped Report/CSV/XML output deliberately never carries) without
 // re-deriving them from logs.
 type payoutResp struct {
@@ -371,6 +411,7 @@ type transitionReq struct {
 }
 
 func (a *app) transition(w http.ResponseWriter, r *http.Request) {
+	started := a.guard.start()
 	id := r.PathValue("id")
 	var req transitionReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
@@ -397,7 +438,7 @@ func (a *app) transition(w http.ResponseWriter, r *http.Request) {
 	}
 	if event == settlement.EventSettle {
 		if rec, gerr := a.store.Get(id); gerr == nil {
-			a.submitPayout(rec)
+			a.submitPayout(rec, started)
 		}
 	}
 	httputilx.WriteJSON(w, 200, result)
@@ -487,7 +528,11 @@ func (a *app) getJSON(url string, dest any) error {
 // Create -> Process -> (Generate) -> Settle, staging files and submitting
 // the B4B payout on every successful Settle. Returns the
 // created record IDs.
+//
+// A reset that lands while it runs drops the rest: no record is made and no
+// file written after it (reset.go).
 func (a *app) runBatch(fromDate, toDate, merchantFilter string) ([]string, error) {
+	started := a.guard.start()
 	ledger, err := a.fetchLedger(fromDate, toDate)
 	if err != nil {
 		return nil, err
@@ -522,36 +567,58 @@ func (a *app) runBatch(fromDate, toDate, merchantFilter string) ([]string, error
 			State:            settlement.StateScheduled,
 			SettlementDate:   settlementDate,
 		}
-		if err := a.store.Create(rec); err != nil {
-			log.Printf("settlement: create %s: %v", rec.ID, err)
-			continue
-		}
-		ids = append(ids, rec.ID)
-		if _, err := a.store.Transition(rec.ID, settlement.EventProcess); err != nil {
-			log.Printf("settlement: process %s: %v", rec.ID, err)
-			continue
-		}
-		if err := a.store.SetReport(rec.ID, report); err != nil {
-			log.Printf("settlement: set report %s: %v", rec.ID, err)
-			continue
-		}
-		if res, err := a.store.Transition(rec.ID, settlement.EventSettle); err != nil || !res.Success {
-			log.Printf("settlement: settle %s failed: %v", rec.ID, err)
-			if _, ferr := a.store.Transition(rec.ID, settlement.EventFail, "batch settle failed"); ferr != nil {
-				log.Printf("settlement: fail %s: %v", rec.ID, ferr)
+		var created bool
+		if !a.guard.apply(started, func() {
+			var settled bool
+			created, settled = a.settleRecord(rec, report, "batch settle failed")
+			if !settled {
+				return
 			}
-			continue
+			// No payout here. A payout is owed because the acquirer
+			// settled, and the acquirer says so in the settlement file --
+			// which worldline_pull.go processes. This endpoint generates
+			// the platform's own internal report from its own ledger;
+			// paying out from it as well would pay every merchant twice,
+			// once per source.
+			if err := a.stageReport(report); err != nil {
+				log.Printf("settlement: stage %s: %v", rec.ID, err)
+			}
+		}) {
+			log.Printf("settlement: batch %s..%s dropped by a reset after %d record(s)", fromDate, toDate, len(ids))
+			break
 		}
-		// No payout here. A payout is owed because the acquirer settled,
-		// and the acquirer says so in the settlement file -- which
-		// worldline_pull.go processes. This endpoint generates the
-		// platform's own internal report from its own ledger; paying out
-		// from it as well would pay every merchant twice, once per source.
-		if err := a.stageReport(report); err != nil {
-			log.Printf("settlement: stage %s: %v", rec.ID, err)
+		if created {
+			ids = append(ids, rec.ID)
 		}
 	}
 	return ids, nil
+}
+
+// settleRecord creates rec and drives it Scheduled -> Processing -> Settled
+// with report, or to Failed with failReason when the settle is refused. It
+// reports whether the record was created and whether it settled. Callers
+// run it under the guard.
+func (a *app) settleRecord(rec *settlement.SettlementRecord, report *settlement.Report, failReason string) (created, settled bool) {
+	if err := a.store.Create(rec); err != nil {
+		log.Printf("settlement: create %s: %v", rec.ID, err)
+		return false, false
+	}
+	if _, err := a.store.Transition(rec.ID, settlement.EventProcess); err != nil {
+		log.Printf("settlement: process %s: %v", rec.ID, err)
+		return true, false
+	}
+	if err := a.store.SetReport(rec.ID, report); err != nil {
+		log.Printf("settlement: set report %s: %v", rec.ID, err)
+		return true, false
+	}
+	if res, err := a.store.Transition(rec.ID, settlement.EventSettle); err != nil || !res.Success {
+		log.Printf("settlement: settle %s failed: %v", rec.ID, err)
+		if _, ferr := a.store.Transition(rec.ID, settlement.EventFail, failReason); ferr != nil {
+			log.Printf("settlement: fail %s: %v", rec.ID, ferr)
+		}
+		return true, false
+	}
+	return true, true
 }
 
 // stageReport writes report as CSV, XML, and JSON to the SFTP-out
@@ -756,7 +823,7 @@ func (a *app) checkSgaBalance(currency string, requiredCents int64) (sufficient 
 // 3) and reports whether the merchant is cleared to be paid. Unlike
 // checkSgaBalance, connectivity errors here ARE logged-and-continued
 // (approved=true): verification is explicitly a sample/stub component in
-// this lab, not the thing this harness exists to prove, so its own
+// this lab, not the thing this e2e suite exists to prove, so its own
 // unavailability must not block the payout demonstration the way
 // insufficient SGA funds genuinely should. An actual DECLINE decision,
 // once received, still blocks -- only *not hearing back* is forgiven.
@@ -830,33 +897,52 @@ func (a *app) checkVerification(merchantID string) (approved bool) {
 // network error, timeout) it logs clearly, marks PayoutState
 // "submission_failed", and returns -- the record already finished its
 // Settled transition before this was called.
-func (a *app) submitPayout(rec *settlement.SettlementRecord) {
+func (a *app) submitPayout(rec *settlement.SettlementRecord, started uint64) {
 	if rec.Report == nil {
 		return
+	}
+	// Every outcome, and the payment itself, lands only if no reset came
+	// since started (reset.go): a payout for a record a reset cleared is
+	// never sent, and the gates are not asked about it either.
+	dropped := func() bool {
+		if a.guard.moved(started) {
+			log.Printf("settlement: payout for %s: %v", rec.ID, errReset)
+			return true
+		}
+		return false
+	}
+	if dropped() {
+		return
+	}
+	setPayout := func(state string) {
+		a.guard.apply(started, func() { _ = a.store.SetPayout(rec.ID, "", state) })
 	}
 
 	requiredCents := rec.Report.SettlementNetAmount
 	sufficient, err := a.checkSgaBalance(rec.Currency, requiredCents)
 	if err != nil {
 		log.Printf("settlement: payout for %s: SGA balance check failed: %v", rec.ID, err)
-		_ = a.store.SetPayout(rec.ID, "", "balance_check_failed")
+		setPayout("balance_check_failed")
 		return
 	}
 	if !sufficient {
 		log.Printf("settlement: payout for %s: SGA balance insufficient for currency %s, awaiting Worldline funding", rec.ID, rec.Currency)
-		_ = a.store.SetPayout(rec.ID, "", "awaiting_funding")
+		setPayout("awaiting_funding")
 		return
 	}
 
+	if dropped() {
+		return
+	}
 	if !a.checkVerification(rec.MerchantID) {
-		_ = a.store.SetPayout(rec.ID, "", "verification_declined")
+		setPayout("verification_declined")
 		return
 	}
 
 	token, err := a.b4bJWT()
 	if err != nil {
 		log.Printf("settlement: payout for %s: build JWT: %v", rec.ID, err)
-		_ = a.store.SetPayout(rec.ID, "", "submission_failed")
+		setPayout("submission_failed")
 		return
 	}
 
@@ -867,6 +953,9 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 	// whatever account details had actually been registered for the
 	// outlet.
 	beneficiaryID := rec.MerchantID
+	if dropped() {
+		return
+	}
 	// GET the beneficiary first, matching the real call order (Addendum
 	// section A) -- this is a realism-only call per the spec: its
 	// response body is not used for anything. A failure here (B4B's mock
@@ -878,7 +967,7 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 	ben, err := a.fetchB4BBeneficiary(beneficiaryID, token)
 	if err != nil {
 		log.Printf("settlement: payout for %s: beneficiary lookup %s failed: %v", rec.ID, beneficiaryID, err)
-		_ = a.store.SetPayout(rec.ID, "", "submission_failed")
+		setPayout("submission_failed")
 		return
 	}
 	// Only "pass" permits payments, and the status can move at any time
@@ -887,7 +976,7 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 	if ben.SanctionsStatus != "pass" {
 		log.Printf("settlement: payout for %s: beneficiary %s has sanctions_status %q, not paying out",
 			rec.ID, beneficiaryID, ben.SanctionsStatus)
-		_ = a.store.SetPayout(rec.ID, "", "sanctions_blocked")
+		setPayout("sanctions_blocked")
 		return
 	}
 
@@ -912,18 +1001,28 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 	})
 	if err != nil {
 		log.Printf("settlement: payout request for %s: marshal error: %v", rec.ID, err)
-		_ = a.store.SetPayout(rec.ID, "", "submission_failed")
+		setPayout("submission_failed")
 		return
 	}
 	httpReq, err := http.NewRequest(http.MethodPost, a.b4bURL+"/oversight/v1/payments", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("settlement: payout request for %s: build request: %v", rec.ID, err)
-		_ = a.store.SetPayout(rec.ID, "", "submission_failed")
+		setPayout("submission_failed")
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
+	// The payment and the record of it land together: a reset that arrives
+	// while it is on its way waits for B4B's answer.
+	if !a.guard.apply(started, func() { a.postPayout(rec, httpReq) }) {
+		log.Printf("settlement: payout for %s not sent: %v", rec.ID, errReset)
+	}
+}
+
+// postPayout sends the payment to B4B and stores the outcome on the record.
+// It runs under the guard, so it stores directly.
+func (a *app) postPayout(rec *settlement.SettlementRecord, httpReq *http.Request) {
 	resp, err := a.b4bClient.Do(httpReq)
 	if err != nil {
 		log.Printf("settlement: payout submission for %s failed (b4b unreachable, continuing as Settled): %v", rec.ID, err)
@@ -957,6 +1056,7 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 // flight or done -- retrying an approved/in-progress B4B payment would
 // double-submit it.
 func (a *app) retryPayout(w http.ResponseWriter, r *http.Request) {
+	started := a.guard.start()
 	id := r.PathValue("id")
 	rec, err := a.store.Get(id)
 	if err != nil {
@@ -973,7 +1073,7 @@ func (a *app) retryPayout(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "payout already in flight or completed: payout_state="+rec.PayoutState)
 		return
 	}
-	a.submitPayout(rec)
+	a.submitPayout(rec, started)
 	fresh, err := a.store.Get(id)
 	if err != nil {
 		httputilx.Error(w, 500, err.Error())

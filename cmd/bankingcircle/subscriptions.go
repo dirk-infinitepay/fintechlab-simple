@@ -96,8 +96,21 @@ func (a *app) createSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listSubscriptions(w http.ResponseWriter, r *http.Request) {
-	page := queryInt(r, "PageNumber", 1)
-	size := queryInt(r, "PageSize", 50)
+	a.writeSubscriptions(w, queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", 50))
+}
+
+// simSubscriptionsPageSize is the control surface's page: every
+// subscription a lab will ever hold, so its reader needs no paging.
+const simSubscriptionsPageSize = 1000
+
+// simListSubscriptions is GET /sim/subscriptions: the vendor's list and its
+// envelope, as GET …/subscription?PageSize=1000 answers it. PageNumber and
+// PageSize are honoured as the vendor's are.
+func (a *app) simListSubscriptions(w http.ResponseWriter, r *http.Request) {
+	a.writeSubscriptions(w, queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", simSubscriptionsPageSize))
+}
+
+func (a *app) writeSubscriptions(w http.ResponseWriter, page, size int) {
 	subs, total := a.subs.List(page, size)
 	out := make([]bankingcircle.PublicSubscription, 0, len(subs))
 	for _, s := range subs {
@@ -155,6 +168,31 @@ func (a *app) updateSubscription(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) activateSubscription(w http.ResponseWriter, r *http.Request) {
 	sub, err := a.subs.SetActive(r.PathValue("id"), ifMatch(r), true)
+	a.answerActivated(w, sub, err)
+}
+
+func (a *app) deactivateSubscription(w http.ResponseWriter, r *http.Request) {
+	sub, err := a.subs.SetActive(r.PathValue("id"), ifMatch(r), false)
+	answerDeactivated(w, sub, err)
+}
+
+// simActivateSubscription and simDeactivateSubscription are the control
+// surface's switch: the vendor's activate and deactivate, answered the
+// same way, without If-Match. The lab switching a subscription is not a
+// client that could be writing over another's change, and a delivery retry
+// moving the rowVersion under it is no reason to refuse. The rowVersions
+// still move, so a client holding the old one gets its 412.
+func (a *app) simActivateSubscription(w http.ResponseWriter, r *http.Request) {
+	sub, err := a.subs.OverrideActive(r.PathValue("subscriptionId"), true)
+	a.answerActivated(w, sub, err)
+}
+
+func (a *app) simDeactivateSubscription(w http.ResponseWriter, r *http.Request) {
+	sub, err := a.subs.OverrideActive(r.PathValue("subscriptionId"), false)
+	answerDeactivated(w, sub, err)
+}
+
+func (a *app) answerActivated(w http.ResponseWriter, sub *bankingcircle.Subscription, err error) {
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -169,8 +207,7 @@ func (a *app) activateSubscription(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (a *app) deactivateSubscription(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.SetActive(r.PathValue("id"), ifMatch(r), false)
+func answerDeactivated(w http.ResponseWriter, sub *bankingcircle.Subscription, err error) {
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return

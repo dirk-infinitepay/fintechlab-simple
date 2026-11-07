@@ -1,7 +1,9 @@
 // Receiver accepts TLS webhooks from the local CA, verifies HMAC, stores events.
+// The lab steers it on a control port of its own, plain HTTP (internal/simctl).
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/hmacx"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -35,7 +39,7 @@ type event struct {
 //
 // The body is retained, base64-encoded, up to maxRawBodyBytes. It used to
 // be discarded, which meant nothing could check *what* was delivered: a
-// caller holding the encryption key (the harness does) can now decrypt the
+// caller holding the encryption key (the e2e suite does) can now decrypt the
 // capture and assert on the payload, which is the difference between
 // proving a message arrived and proving the right message arrived.
 type rawEvent struct {
@@ -61,11 +65,11 @@ type store struct {
 }
 
 func main() {
+	logring.Install()
 	addr := env("LISTEN", ":8443")
 	cert := env("TLS_CERT", "/keys/certs/receiver.pem")
 	key := env("TLS_KEY", "/keys/certs/receiver-key.pem")
 	secret := []byte(env("HMAC_SECRET", "sim-hmac-dev-only"))
-	skew := 10 * time.Minute
 	s := &store{}
 
 	// The ca service and this one start concurrently under compose; not
@@ -75,6 +79,36 @@ func main() {
 	if err := waitfor.Files(30*time.Second, cert, key); err != nil {
 		log.Fatalf("receiver: %v", err)
 	}
+	mux, ctl, err := s.routes(secret, addr)
+	if err != nil {
+		log.Fatalf("receiver: %v", err)
+	}
+	ctl.Start()
+	log.Printf("receiver listening https %s", addr)
+	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(mux)))
+}
+
+// routes is the receiver's two surfaces. On addr, HTTPS: the HMAC-checked
+// listener, the raw capture sink and what each stored. On a control port
+// of its own, plain HTTP even though addr is HTTPS (internal/simctl): the
+// sim control contract and its own GET /health. addr still answers the
+// /sim paths until phase 4 of docs/lab-api/plan.md retires them.
+func (s *store) routes(secret []byte, addr string) (*http.ServeMux, *simctl.Control, error) {
+	// Both scopes do the same: everything here is what a run delivered.
+	ctl, err := simctl.NewControl(simctl.Config{
+		Service: "receiver", Kind: "stand-in", Simulates: "the platform's webhook listener",
+		Listeners: []string{addr},
+		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
+		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
+			events, raw := s.reset()
+			return simctl.ResetResult{Cleared: map[string]int{"events": events, "raw_events": raw}}, nil
+		},
+	}, simctl.ControlAddr(addr))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	const skew = 10 * time.Minute
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "receiver"})
@@ -165,8 +199,19 @@ func main() {
 		httputilx.WriteJSON(w, 200, map[string]any{"raw_events": s.rawEvents})
 	})
 
-	log.Printf("receiver listening https %s", addr)
-	log.Fatal(http.ListenAndServeTLS(addr, cert, key, logReq(mux)))
+	// The old /sim paths over HTTPS on addr, until phase 4.
+	mux.Handle("/sim/", ctl.Mux)
+	return mux, ctl, nil
+}
+
+// reset empties both stores and says how many each held. GET /events and
+// GET /raw-events answer null again, as on first start.
+func (s *store) reset() (events, raw int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events, raw = len(s.events), len(s.rawEvents)
+	s.events, s.rawEvents = nil, nil
+	return events, raw
 }
 
 func shortID() string {
