@@ -1,8 +1,9 @@
-// Package pod holds the lab's podman pod manifest. The only Go here is this
-// test: the manifest repeats compose.yml's environment by hand, and a copy
-// that quietly drifts is how the pod ends up running a different lab from
-// the one everybody tested.
 package pod
+
+// The manifest repeats compose.yml's environment by hand, and a copy that
+// quietly drifts is how the pod ends up running a different lab from the
+// one everybody tested. These tests hold the two together; render_test.go
+// holds every rendering of the manifest to it in turn.
 
 import (
 	"os"

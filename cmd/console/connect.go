@@ -19,10 +19,12 @@ import (
 // and `curl -OJ` save the same file under the same name.
 
 // kitHost is the address the platform should use to reach the lab. Asked
-// for explicitly (?host=) it is that; otherwise it is the host this request
-// came in on -- a developer who opened the console at lab.example.test:8090
-// reaches the vendors at lab.example.test too, which is the one case a
-// fixed default would get wrong.
+// for explicitly (?host=) it is that. Next, CONSOLE_CONNECT_HOST, when the
+// deployment knows its own address: a lab in the cloud is reached by the
+// platform at one public name, whatever tunnel the operator opened the
+// console through (an SSM port forward is 127.0.0.1). Otherwise it is the
+// host this request came in on -- a developer who opened the console at
+// lab.example.test:8090 reaches the vendors at lab.example.test too.
 var hostPattern = regexp.MustCompile(`^[A-Za-z0-9.:-]+$`)
 
 func kitHost(r *http.Request) (string, error) {
@@ -30,6 +32,9 @@ func kitHost(r *http.Request) (string, error) {
 		if !hostPattern.MatchString(h) {
 			return "", errors.New("host must be a hostname or an IP address")
 		}
+		return h, nil
+	}
+	if h := strings.TrimSpace(os.Getenv("CONSOLE_CONNECT_HOST")); h != "" && hostPattern.MatchString(h) {
 		return h, nil
 	}
 	host, _, err := net.SplitHostPort(r.Host)

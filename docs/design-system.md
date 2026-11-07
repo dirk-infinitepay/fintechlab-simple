@@ -490,6 +490,10 @@ that thing lives.
 - **Unknown stays grey.** A widget whose source did not answer says so in
   its line, grey, with the error in the `title`; it does not disappear, and
   it does not go red unless the source is a lab service that is down.
+- **Not deployed is not unknown.** A widget for something this deployment
+  does not run — the lab clock on a lab deployed without one — keeps its
+  place and says what stands in for it ("the real time"), as a
+  `<div class="widget">` with no foot: there is no card to link to.
 
 ### Hop drawer — watching one arrow
 
@@ -642,6 +646,14 @@ that did nothing because the lab was on a Sunday must be explainable from
 this screen. The clock belongs to the lab, not to the platform: the vendors
 and a registered platform both follow it, and it is moved from its own card
 (Platform → Lab clock), never from a platform's.
+
+**A lab with no clock still says what time it is.** A deployment may run
+without the clock service (the cloud profile: a deployed platform cannot
+follow one). The line then shows the real time in the same zones and says
+the lab is on the real time because it was deployed without a clock — plain
+`.note`, not amber, and no *Move it* link to a card that is not there. It
+claims nothing about business days: the calendars live in the clock service,
+and a guess would be a bluff.
 
 **A box reports on the participant, an arrow on the hop.** One report stage
 failing on a mail hop does not make the bank unwell. Red on a box means the

@@ -116,6 +116,17 @@ Container names become `fintechlab-<service>` (e.g.
 volumes rather than `keys/`, `console-data/` and `b4b-data/`. `make pod-down`
 stops it and keeps the volumes.
 
+## The lab in the cloud
+
+`docs/deploy-cloud.md`. The same pod on one EC2 host (`deploy/aws/lab.sh`,
+config in `deploy/aws/lab.env`), rendered **without the clock**: there is no
+`:8096`, `GET /api/clock` answers `{"absent": true, …}` with the real time,
+and a move is a `501`. Everything else below works against it with the
+public host in place of `localhost`, if your address is in
+`LAB_ALLOWED_CIDRS`; otherwise `make aws-console` forwards the console to
+`127.0.0.1:8090`. Containers there are `fintechlab-<service>` too:
+`deploy/aws/lab.sh logs banking-circle`.
+
 ## The clock
 
 One clock for the whole lab: the `clock` service (`:8096`). Every vendor

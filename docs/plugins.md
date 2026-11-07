@@ -314,6 +314,12 @@ books on Monday at the bank.
   While one is live, the console refuses to move the lab clock: the
   vendors would be on another day from the platform they serve.
 
+A lab deployed for such a platform usually runs **without a clock** at all
+(the cloud profile, [deploy-cloud.md](deploy-cloud.md)): there is no
+`:8096`, the console's `GET /api/clock` answers `{"absent": true, "mode":
+"real", "offset_ms": 0, "now": …}`, and a move is a `501`. A follower that
+finds no clock keeps the real time, which is right. Register with `"wall"`.
+
 A platform that must not have the clock moved under it — a settlement run
 in flight — **holds** it:
 

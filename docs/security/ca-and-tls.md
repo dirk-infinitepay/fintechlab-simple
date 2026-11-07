@@ -18,8 +18,21 @@ enforces. Its `:8095` listener (the B4B bridge and the harness's other
 lab-only test hooks) is deliberately plain HTTP, no TLS, no auth — see
 `docs/ARCHITECTURE-vendor-corrections.md` Addendum section C for why the
 two can't share one listener. Notifier and the harness both load
-`CA_FILE=/keys/certs/ca.pem` so they will not accept a random public cert for
-`receiver`/`banking-circle`.
+`CA_FILE=/keys/certs/ca.pem` so they verify `receiver`/`banking-circle`
+against the lab CA.
+
+**Outbound, the lab CA is added to the system roots, not put in their
+place.** Banking Circle, ACI and the notifier deliver webhooks with
+`httputilx.RootsWithLabCA`: a target with a lab certificate verifies, and so
+does a platform behind a public certificate — the webhook endpoint of a
+deployed platform, on a load balancer ([../deploy-cloud.md](../deploy-cloud.md)).
+Nothing about that weakens the lab names: no public CA issues a certificate
+for `receiver` or `banking-circle`.
+
+**A lab on another machine** needs its address on the two certificates a
+client outside dials: `CERT_EXTRA_SANS` (`DNS:<name>,IP:<address>`), read
+when they are issued. The cloud deploy sets it from the stack's address;
+for a lab that already issued its certificates, play once with new keys.
 
 Every other service in this lab (`bank`, `payment-api`, `settlement`,
 `worldline`'s HTTP side, `b4b`, `aci`, `verify`) is plain HTTP — matching

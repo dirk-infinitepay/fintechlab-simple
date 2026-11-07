@@ -133,6 +133,7 @@ platform's own fee), each confirmed by the bank.
   platform** on the Configuration view downloads one `.env` with every
   address, credential and key inlined.
 - **New keys:** `make keys-regenerate`, then restart the runner.
-- **The lab on another machine:** [deploy-pod.md](deploy-pod.md).
+- **The lab on another machine:** [deploy-pod.md](deploy-pod.md); for a
+  deployed platform, without the clock: [deploy-cloud.md](deploy-cloud.md).
 - **Your own platform instead of buddy's runner:** register a card and
   follow the clock the same way — [plugins.md](plugins.md).

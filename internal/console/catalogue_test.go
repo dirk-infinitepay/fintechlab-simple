@@ -52,6 +52,21 @@ func TestBaseURLIsOverridableAndBrowseURLStaysOnTheHost(t *testing.T) {
 	}
 }
 
+// A deployment that does not run a service says so with "off", and the
+// service is gone -- not listed as down, which would read as broken.
+func TestAServiceTheDeploymentDoesNotRunIsLeftOut(t *testing.T) {
+	t.Setenv("CONSOLE_URL_CLOCK", ServiceOff)
+	c := DefaultCatalogue()
+	if _, ok := c.Get("clock"); ok {
+		t.Fatal("CONSOLE_URL_CLOCK=off and the clock is still in the catalogue")
+	}
+	for _, id := range []string{"worldline", "banking-circle", "b4b", "bank"} {
+		if _, ok := c.Get(id); !ok {
+			t.Errorf("leaving the clock out also lost %s", id)
+		}
+	}
+}
+
 func TestBrowseURLIsEmptyForAServiceWithNoHTTPPort(t *testing.T) {
 	if got := browseURL(Service{Ports: []string{"2222/ssh"}}); got != "" {
 		t.Fatalf("browse_url = %q for an SSH-only service, want empty", got)

@@ -20,7 +20,7 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild pod-images pod-up pod-down pod-bundle
+.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild pod-images pod-up pod-down pod-bundle cloud-manifest cloud-bundle
 
 help:
 	@echo "make up             build, replace the containers, start the lab"
@@ -39,6 +39,13 @@ help:
 	@echo "                    REGENERATE_KEYS=true to start it on new keys"
 	@echo "make pod-down       stop the pod; its volumes (keys, data) are kept"
 	@echo "make pod-bundle     images + manifest in dist/, to run on a machine with no checkout"
+	@echo ""
+	@echo "make cloud-manifest the pod manifest for a deployed lab (no lab clock), to stdout"
+	@echo "make cloud-bundle   that manifest + images + deploy/host/play.sh in dist/fintechlab-cloud.tgz"
+	@echo "make aws-infra      create/update the AWS stack (deploy/aws/lab.sh; config in deploy/aws/lab.env)"
+	@echo "make aws-deploy     build the cloud bundle and play it on the AWS host"
+	@echo "make aws-status | aws-console | aws-env | aws-shell | aws-stop | aws-start | aws-destroy"
+	@echo "                    see docs/deploy-cloud.md"
 
 # Where the lab generates every key and certificate, one subdirectory per
 # owner (keys/README.md says what each file is for):
@@ -239,10 +246,14 @@ IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
 POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
-POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
+# [a-z0-9-]: b4b has a digit in its name, and [a-z-]* left it on localhost.
+POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z0-9-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
+
+# POD_IMAGES narrows the build: cloud-bundle builds no clock.
+POD_IMAGES ?= $(POD_SERVICES)
 
 pod-images:
-	@for s in $(POD_SERVICES); do \
+	@for s in $(POD_IMAGES); do \
 		echo "building $(IMAGE_PREFIX)/$$s:$(LAB_VERSION)"; \
 		podman build -q -f docker/Dockerfile.$$s -t $(IMAGE_PREFIX)/$$s:$(LAB_VERSION) . >/dev/null || exit 1; \
 	done
@@ -282,6 +293,52 @@ pod-bundle: pod-images
 	@$(POD_RENDER) > dist/fintechlab-$(LAB_VERSION).yaml
 	@cp deploy/pod/regenerate-keys.yaml dist/
 	@echo "dist/fintechlab-$(LAB_VERSION)-images.tar + dist/fintechlab-$(LAB_VERSION).yaml -- see docs/deploy-pod.md"
+
+# --- the lab deployed somewhere ------------------------------------------
+# docs/deploy-cloud.md. The images are the pod's, unchanged; a deployment
+# differs only in its manifest, which deploy/pod/render derives from the
+# checked-in one. The cloud profile leaves the lab clock out -- a deployed
+# platform cannot follow one -- and every vendor is then on the real time.
+#
+#   LAB_PROFILE        cloud (default) or local (keeps the clock)
+#   LAB_PUBLIC_HOST    the name or IPv4 address the platform reaches the lab at
+#   LAB_SANS           more certificate names: DNS:<name>,IP:<address>
+#   LAB_WEBHOOK_ALLOW  the platform's webhook/callback hosts, comma-separated
+#   LAB_SET            container.KEY=value overrides, space-separated
+#
+# cloud-bundle's dist/fintechlab-cloud.tgz runs on any Linux host with
+# deploy/host/play.sh inside it; deploy/aws/lab.sh is the AWS way to hand
+# it over.
+
+LAB_PROFILE ?= cloud
+LAB_PUBLIC_HOST ?=
+LAB_SANS ?=
+LAB_WEBHOOK_ALLOW ?=
+LAB_SET ?=
+CLOUD_SERVICES := $(filter-out clock,$(POD_SERVICES))
+BUNDLE_SERVICES = $(if $(filter cloud,$(LAB_PROFILE)),$(CLOUD_SERVICES),$(POD_SERVICES))
+CLOUD_RENDER = go run ./deploy/pod/render -profile '$(LAB_PROFILE)' -public-host '$(LAB_PUBLIC_HOST)' \
+	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)')
+
+cloud-manifest:
+	@$(CLOUD_RENDER)
+
+# Images under the manifest's own names (localhost/fintechlab/<s>:v1), so
+# the host plays them as loaded, with no registry in between.
+cloud-bundle:
+	@$(MAKE) --no-print-directory pod-images POD_IMAGES="$(BUNDLE_SERVICES)" IMAGE_PREFIX=localhost/fintechlab LAB_VERSION=v1
+	@rm -rf dist/cloud && mkdir -p dist/cloud
+	@$(CLOUD_RENDER) > dist/cloud/fintechlab.yaml
+	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1)
+	@cp deploy/pod/regenerate-keys.yaml deploy/host/play.sh dist/cloud/
+	@echo "$$(git describe --always --dirty 2>/dev/null || echo unknown) $(LAB_PROFILE) built $$(date -u +%FT%TZ) by $$(git config user.name 2>/dev/null || whoami)" > dist/cloud/REVISION
+	@tar -czf dist/fintechlab-cloud.tgz -C dist/cloud .
+	@echo "dist/fintechlab-cloud.tgz ($$(du -h dist/fintechlab-cloud.tgz | cut -f1)): $$(cat dist/cloud/REVISION)"
+
+AWS_COMMANDS := infra deploy status outputs env console shell stop start destroy
+.PHONY: $(addprefix aws-,$(AWS_COMMANDS))
+$(addprefix aws-,$(AWS_COMMANDS)):
+	@deploy/aws/lab.sh $(@:aws-%=%)
 
 harness:
 	@go run ./cmd/harness

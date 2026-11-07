@@ -29,6 +29,11 @@ make pod-down     # stop and remove the pod; volumes stay
 It publishes the same host ports as compose, so run one or the other, not
 both.
 
+For a lab a *deployed* platform talks to — no lab clock, its public address
+on the certificates and in the `.env`, a host on AWS or anywhere — see
+[deploy-cloud.md](deploy-cloud.md). It is this pod, rendered for the place
+it runs.
+
 ## On a machine with no checkout
 
 ```sh

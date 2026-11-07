@@ -398,14 +398,28 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 	}
-	for i := range svcs {
-		if v := os.Getenv(envKeyFor(svcs[i].ID)); v != "" {
-			svcs[i].BaseURL = v
+	// CONSOLE_URL_<ID>=off: this deployment does not run that service at
+	// all -- the cloud profile runs no clock (docs/deploy-cloud.md). It is
+	// left out rather than listed as down: a card that is red forever says
+	// something is broken, and nothing is.
+	kept := svcs[:0]
+	for _, s := range svcs {
+		v := os.Getenv(envKeyFor(s.ID))
+		if v == ServiceOff {
+			continue
 		}
-		svcs[i].Browse = browseURL(svcs[i])
+		if v != "" {
+			s.BaseURL = v
+		}
+		s.Browse = browseURL(s)
+		kept = append(kept, s)
 	}
-	return &Catalogue{Services: svcs}
+	return &Catalogue{Services: kept}
 }
+
+// ServiceOff, as a CONSOLE_URL_<ID> value, leaves that service out of the
+// catalogue: the deployment does not run it.
+const ServiceOff = "off"
 
 // envKeyFor is the per-service base-URL override, e.g. banking-circle ->
 // CONSOLE_URL_BANKING_CIRCLE.

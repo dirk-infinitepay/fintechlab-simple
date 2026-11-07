@@ -1223,6 +1223,55 @@ func TestTheClockDoesNotMoveUnderAWallClockPlatform(t *testing.T) {
 	}
 }
 
+// TestALabWithNoClockIsOnTheRealTime: the cloud profile runs no clock
+// service. Asking the time is still answered -- the real time, and that
+// there is nothing to move -- and a move is a 501, not a 502 that would
+// read as a clock that is down.
+func TestALabWithNoClockIsOnTheRealTime(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	a := testApp(t, srv) // its catalogue has no clock
+
+	before := time.Now().UTC().Truncate(time.Second)
+	w := call(t, a, http.MethodGet, "/api/clock", "")
+	if w.Code != 200 {
+		t.Fatalf("GET /api/clock with no clock = %d %s, want 200", w.Code, w.Body)
+	}
+	var got struct {
+		Absent   bool      `json:"absent"`
+		Now      time.Time `json:"now"`
+		OffsetMs *float64  `json:"offset_ms"`
+		Mode     string    `json:"mode"`
+		Business *bool     `json:"business_day"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Absent || got.Mode != "real" || got.OffsetMs == nil || *got.OffsetMs != 0 {
+		t.Fatalf("no-clock answer = %s, want absent, real, offset 0", w.Body)
+	}
+	if got.Now.Before(before) || got.Now.After(time.Now().Add(time.Second)) {
+		t.Fatalf("now = %s, want the real time", got.Now)
+	}
+	// The calendars are the clock service's: without it, the console does
+	// not guess whether today is a business day.
+	if got.Business != nil {
+		t.Fatalf("business_day = %v with no clock to ask", *got.Business)
+	}
+
+	w = call(t, a, http.MethodPost, "/api/clock", `{"advance":"1h"}`)
+	if w.Code != 501 || !strings.Contains(w.Body.String(), "without a lab clock") {
+		t.Fatalf("moving a clock that is not there = %d %s, want 501 saying why", w.Code, w.Body)
+	}
+	if calls != 0 {
+		t.Fatalf("%d calls to a peer for a clock that is not deployed", calls)
+	}
+}
+
 // TestEveryAnswerNamesThePageItServes: a tab left open across a rebuild runs
 // the page it loaded, so the page compares this header with the one it first
 // saw. The page and the API must carry the same value, and it must not move

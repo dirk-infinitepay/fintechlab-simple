@@ -5,7 +5,6 @@ package main
 import (
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -264,8 +263,7 @@ func httpClient(caFile string) (*http.Client, error) {
 	}
 	if caFile != "" {
 		if pem, err := os.ReadFile(caFile); err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(pem) {
+			if pool, ok := httputilx.RootsWithLabCA(pem); ok {
 				t.TLSClientConfig.RootCAs = pool
 			} else {
 				log.Printf("CA_FILE %s had no certs, using system roots", caFile)

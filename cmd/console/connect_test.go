@@ -67,6 +67,24 @@ func TestTheEnvFileIsADownloadAddressedToTheHostTheConsoleWasOpenedOn(t *testing
 	}
 }
 
+// A lab deployed somewhere knows the one address a platform reaches it at,
+// and the operator may be looking through a tunnel on 127.0.0.1. The
+// deployment's host wins over the request's; ?host= still wins over both.
+func TestADeployedLabHandsOutItsOwnAddressNotTheTunnels(t *testing.T) {
+	t.Setenv("CONSOLE_CONNECT_HOST", "lab.example.test")
+	a := testApp(t, nil)
+	withKeys(t, a)
+
+	w := get(t, a, "127.0.0.1:8090", "/api/connect/env/worldline")
+	if !strings.Contains(w.Body.String(), "\nWORLDLINE_SFTP_HOST=lab.example.test\n") {
+		t.Errorf("CONSOLE_CONNECT_HOST not used through a tunnel:\n%s", w.Body)
+	}
+	w = get(t, a, "127.0.0.1:8090", "/api/connect/env/worldline?host=10.0.0.5")
+	if !strings.Contains(w.Body.String(), "\nWORLDLINE_SFTP_HOST=10.0.0.5\n") {
+		t.Errorf("?host= did not win over CONSOLE_CONNECT_HOST")
+	}
+}
+
 func TestAHostThatCouldInjectIntoTheFileIsRefused(t *testing.T) {
 	a := testApp(t, nil)
 	withKeys(t, a)

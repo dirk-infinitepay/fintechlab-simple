@@ -1232,6 +1232,18 @@ const FLOW_FIRST_ROW = 124;
 function flowClock() {
   const c = state.clock;
   if (!c) return '';
+  if (c.absent) {
+    // Deployed without a clock: the real time, and why there is nothing
+    // to move. No business-day claim — the calendars are the clock's.
+    const when = (c.now || '').replace('T', ' ').slice(0, 16);
+    return `<div class="note">
+      Real time <span class="mono">${esc(when)} UTC</span> —
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Paris'))}</span> Paris,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Stockholm'))}</span> Stockholm,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/London'))}</span> London.
+      This lab was deployed without a lab clock, so every vendor dates what it does by the real calendar.
+    </div>`;
+  }
   if (c.error) {
     return `<div class="note">Lab clock unavailable — ${esc(c.error)}. The vendors keep the
       last time they were given, or the real clock if they never had one.</div>`;
@@ -1497,6 +1509,18 @@ function widgetClock() {
       <span class="w-foot">Move it →</span>
     </a>`;
   if (!c) return shell('<span class="w-value">…</span>', '');
+  if (c.absent) {
+    // Not deployed is not unknown: the widget keeps its place, says what
+    // stands in for the clock, and links nowhere — there is no card.
+    const at = new Date(c.now);
+    const when = at.toLocaleString('en-GB', { timeZone: 'UTC', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    return `<div class="widget">
+        <span class="w-title">Lab clock</span>
+        <span class="w-value mono">${esc(when)} UTC</span>
+        ${widgetLine(`${esc((c.now || '').slice(0, 10))} · the real time`)}
+        ${widgetLine('deployed without a lab clock: nothing to move', 'faint')}
+      </div>`;
+  }
   if (c.error) {
     return shell('<span class="w-value">unknown</span>',
       widgetLine('The clock did not answer, so vendors keep the last time they were given.', 'faint') +
@@ -2060,7 +2084,15 @@ function renderServices() {
     <div class="stat accent"><b>${labUp}/${labProbed}</b><span>whole lab</span></div>
   </div>`;
 
-  if (!group.length) return html + `<div class="empty">Nothing in this section yet.</div>`;
+  // Empty says what would fill it. The Platform view is empty only on a lab
+  // deployed without a clock, before any platform registered.
+  if (!group.length) {
+    return html + (kind === 'platform'
+      ? `<div class="empty">No platform has registered. A platform puts its own card here by registering
+          with the console — see <span class="mono">docs/plugins.md</span>. This lab runs without a lab clock,
+          so there is no clock card either.</div>`
+      : `<div class="empty">Nothing in this section yet.</div>`);
+  }
 
   const ordered = group.map((s, i) => [s, i])
     .sort((a, b) => cardRank(a[0]) - cardRank(b[0]) || a[1] - b[1])

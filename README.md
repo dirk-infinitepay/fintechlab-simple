@@ -128,6 +128,14 @@ the machine that runs it: `make pod-images && make pod-up` here, or
 `make pod-bundle` to carry it to a server. See
 [docs/deploy-pod.md](docs/deploy-pod.md).
 
+## Run it in the cloud
+
+The same pod for a *deployed* platform, without the lab clock (a deployed
+platform cannot follow one): `make aws-infra && make aws-deploy` puts it on
+one EC2 host in a VPC of its own, with one CloudFormation stack and nothing
+shared; `make cloud-bundle` is the same thing for any Linux host. See
+[docs/deploy-cloud.md](docs/deploy-cloud.md).
+
 (The kernel/pod/*recipe* architecture that used to be described here is a
 different thing, parked on its own branches; see `CLAUDE.md`.)
 

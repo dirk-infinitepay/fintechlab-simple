@@ -537,7 +537,17 @@ func (a *app) fundSGA(w http.ResponseWriter, r *http.Request) {
 // platform that registered to follow it, so "what happens on a Sunday" is a
 // button rather than a restart — and "…and then on Monday, with the same
 // money" is the button after it.
+//
+// A lab deployed without a clock (the cloud profile, docs/deploy-cloud.md)
+// is still asked what time it is, and the answer is the real time: every
+// vendor dates what it does by its own wall clock, so that is the lab's
+// time. "absent" tells the page there is nothing to move, rather than a
+// 502 that would read as a clock that is down.
 func (a *app) labClock(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.cat.Get("clock"); !ok {
+		httputilx.WriteJSON(w, 200, absentClock(time.Now()))
+		return
+	}
 	ctx, cancel := reqContext(r)
 	defer cancel()
 	var out any
@@ -554,11 +564,31 @@ func (a *app) labClock(w http.ResponseWriter, r *http.Request) {
 // to keep that correct. A hold (a run in flight) comes back as the
 // service's own 409.
 func (a *app) setLabClock(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.cat.Get("clock"); !ok {
+		httputilx.Error(w, 501, noClockNote)
+		return
+	}
 	if why := a.clockLock(); why != "" {
 		httputilx.Error(w, 409, why)
 		return
 	}
 	a.forward(w, r, http.MethodPost, a.baseURL("clock")+"/clock")
+}
+
+const noClockNote = "This lab runs without a lab clock, on the real time: it was deployed without one, so there is nothing to move. Moving time is for a lab and a platform that share a clock, which is a local lab."
+
+// absentClock is GET /api/clock's answer when the lab runs no clock: the
+// fields a follower reads, at zero, and the real time. No business_day --
+// the calendars live in the clock service, and a guess would be a bluff.
+func absentClock(now time.Time) map[string]any {
+	return map[string]any{
+		"absent":       true,
+		"now":          now.UTC().Format(time.RFC3339),
+		"offset_ms":    0,
+		"offset_hours": 0,
+		"mode":         "real",
+		"note":         noClockNote,
+	}
 }
 
 func (a *app) proxyPost(w http.ResponseWriter, r *http.Request, url string) {

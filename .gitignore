@@ -71,3 +71,6 @@ coverage.out
 
 
 .claude
+
+# deploy/aws/lab.sh configuration: your account, addresses and stack name
+/deploy/aws/lab.env

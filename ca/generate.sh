@@ -35,7 +35,7 @@ if need "$CERTS/ca.pem" || need "$CERTS/ca-key.pem"; then
     -subj "/CN=fintech-sim-lab CA/O=fintech-sim-lab"
 fi
 
-SAN="subjectAltName=DNS:receiver,DNS:localhost,DNS:receiver.local,DNS:receiver.fintech-sim-lab.test,IP:127.0.0.1$EXTRA"
+SAN="subjectAltName=DNS:receiver,DNS:localhost,DNS:receiver.local,DNS:receiver.fintechlab-simple.test,IP:127.0.0.1$EXTRA"
 if need "$CERTS/receiver.pem" || need "$CERTS/receiver-key.pem"; then
   echo "generating receiver server cert"
   openssl req -newkey rsa:2048 -nodes \
@@ -59,7 +59,7 @@ fi
 # Banking Circle mock is also an mTLS server (docs/ARCHITECTURE-vendor-
 # corrections.md section 3): it needs its own server cert, distinct from
 # receiver's, signed by the same lab CA.
-BC_SAN="subjectAltName=DNS:banking-circle,DNS:localhost,DNS:banking-circle.fintech-sim-lab.test,IP:127.0.0.1$EXTRA"
+BC_SAN="subjectAltName=DNS:banking-circle,DNS:localhost,DNS:banking-circle.fintechlab-simple.test,IP:127.0.0.1$EXTRA"
 if need "$CERTS/banking-circle.pem" || need "$CERTS/banking-circle-key.pem"; then
   echo "generating banking-circle server cert"
   openssl req -newkey rsa:2048 -nodes \
@@ -82,7 +82,7 @@ fi
 
 # pod-bank-rails twin: dedicated leaf so Connect-surface mTLS on :9085
 # can run side-by-side with standalone banking-circle without sharing SANs.
-POD_BR_SAN="subjectAltName=DNS:pod-bank-rails,DNS:localhost,DNS:pod-bank-rails.fintech-sim-lab.test,IP:127.0.0.1"
+POD_BR_SAN="subjectAltName=DNS:pod-bank-rails,DNS:localhost,DNS:pod-bank-rails.fintechlab-simple.test,IP:127.0.0.1"
 if need "$CERTS/pod-bank-rails.pem" || need "$CERTS/pod-bank-rails-key.pem"; then
   echo "generating pod-bank-rails server cert"
   openssl req -newkey rsa:2048 -nodes \
