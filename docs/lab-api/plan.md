@@ -23,7 +23,12 @@ the lab working end to end, and `make harness` green.
   `B4B_FORCE_FAILURE_BENEFICIARY_IDS` as standing traps; `/v1/traps`,
   `/v1/traps/hooks` and `DELETE /v1/traps`;
 - the harness scenarios for the trap paths and for a reset mid-payout
-  (`HARNESS_ONLY` runs a few).
+  (`HARNESS_ONLY` runs a few);
+- `openapi.yaml`, generated from the route table and an annotation of
+  what each route takes, served at `GET /v1/openapi.json` and checked in
+  as [docs/api/openapi.yaml](../api/openapi.yaml) (next to the reference,
+  not here), held to the routes by tests and valid against the OpenAPI 3.1
+  meta-schema.
 
 Choices made on the way:
 
@@ -66,9 +71,12 @@ step to a state further along as one step per hop, so `pending_steps`
 shows the next hop and a disarm stops at it. [OPEN 8](open.md) is not
 decided: `MissingFunding` stays final.
 
-Not built yet: `openapi.yaml`. That is the last of phase 1. Four services each carry their own
-reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and settlement's
-`runGuard`); one in `internal/simctl` should replace them.
+**Phase 1 is done.** Follow-ups it leaves: four services each carry their
+own reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and
+settlement's `runGuard`), and one in `internal/simctl` should replace them;
+a walking graph's hops are expanded by b4b itself, where `internal/trap`
+could do it for every sim; the harness still calls some old `/sim` paths on
+vendor ports, which must move before phase 4 retires them.
 
 Shared packages, generic infra like `internal/activity`:
 

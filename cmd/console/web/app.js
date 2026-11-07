@@ -2172,7 +2172,8 @@ function apiLabRoutes(idx) {
   }).join('');
   const aliased = (idx.routes || []).filter((r) => r.alias).length;
   return `<p class="hint">${(idx.routes || []).length} routes, listed by the lab API itself
-      (<a href="/v1" target="_blank" rel="noreferrer" class="mono">GET /v1</a>).
+      (<a href="/v1" target="_blank" rel="noreferrer" class="mono">GET /v1</a>; as OpenAPI 3.1 for a code generator or an
+      agent's tools, <a href="/v1/openapi.json" target="_blank" rel="noreferrer" class="mono">GET /v1/openapi.json</a>).
       ${aliased} also answer at the console's old <span class="mono">/api</span> path, for plugins that
       still register there. No auth unless <span class="mono">LAB_API_TOKEN</span> is set; JSON in and out.
       Bodies, answers and errors for each: <span class="mono">${esc(idx.docs || 'docs/api/lab-api.md')}</span>.</p>

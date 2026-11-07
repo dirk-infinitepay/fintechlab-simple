@@ -102,6 +102,9 @@ func (a *app) routes() http.Handler {
 		h := rt.handler
 		if h == nil {
 			h = apiIndex(table)
+			if rt.Path == "/v1/openapi.json" {
+				h = openAPIHandler(table)
+			}
 		}
 		for _, p := range rt.patterns() {
 			mux.HandleFunc(p, h)

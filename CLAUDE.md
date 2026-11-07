@@ -63,7 +63,9 @@ start is `GET :8097/v1` (every route and what it reaches), then
 [docs/lab-api/](docs/lab-api/README.md) is the design and the plan.
 
 A route and its documentation change together. The lab API's routes are
-registered from the table in `cmd/labapi/routes.go` and documented in
+registered from the table in `cmd/labapi/routes.go`, annotated for OpenAPI
+in `cmd/labapi/openapi.go` (regenerate `docs/api/openapi.yaml` with
+`go test ./cmd/labapi -run OpenAPI -update`) and documented in
 `docs/api/lab-api.md`; each service's routes are documented in
 `docs/api/services/<id>.md`. `go test ./cmd/labapi ./internal/console`
 fails when a route and its document disagree.

@@ -39,7 +39,7 @@ func TestEveryRouteSaysWhatItIsForAndWhatItReaches(t *testing.T) {
 		if strings.TrimSpace(rt.Summary) == "" || strings.TrimSpace(rt.Reaches) == "" {
 			t.Errorf("%s: a route needs a summary and what it reaches", key)
 		}
-		if rt.handler == nil && key != "GET /v1" {
+		if rt.handler == nil && key != "GET /v1" && key != "GET /v1/openapi.json" {
 			t.Errorf("%s has no handler", key)
 		}
 	}

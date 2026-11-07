@@ -80,12 +80,14 @@ var apiGroups = []routeGroup{
 // apiDoc is where the long form of this table lives, relative to the repo.
 const apiDoc = "docs/api/lab-api.md"
 
-// apiRoutes is the table. GET /v1's handler is left nil: it describes the
-// table, so routes() wires it where the table is known.
+// apiRoutes is the table. GET /v1's and GET /v1/openapi.json's handlers are
+// left nil: they describe the table, so routes() wires them where the table
+// is known.
 func (a *app) apiRoutes() []route {
 	return []route{
 		{"GET", "/health", "", "lab", "Whether the lab API process is up", "nothing — the lab API's own state", a.health},
 		{"GET", "/v1", "/api", "lab", "This index: every route, its alias, its group and what it reaches", "nothing — the lab API's own state", nil},
+		{"GET", "/v1/openapi.json", "", "lab", "This API as an OpenAPI 3.1 document: every route, its parameters and bodies", "nothing — the lab API's own route table", nil},
 		{"GET", "/v1/lab", "/api/overview", "lab", "Every service and registered plugin with its last health probe", "each service's control GET /health, probed in the background", a.overview},
 		{"GET", "/v1/flow", "/api/flow", "lab", "The settlement run as a sequence: participants, hops, counts, report", "each vendor's GET /sim/activity, the plugin's status_path", a.flow},
 		{"GET", "/v1/flow/hops/{id}", "/api/flow/hops/{id}", "lab", "The events behind one arrow of the run diagram", "same reads as GET /v1/flow", a.flowHop},
@@ -182,6 +184,7 @@ func apiIndex(table []route) http.HandlerFunc {
 			"build":    build,
 			"docs":     apiDoc,
 			"services": "GET /v1/services lists every service: base_url, browse_url, auth and endpoints; docs/api/services/<id>.md has each in full",
+			"openapi":  "/v1/openapi.json",
 			"groups":   apiGroups,
 			"routes":   table,
 		})

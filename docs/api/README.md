@@ -254,7 +254,9 @@ step of a settlement run as one call.
 ## Starting cold, as an agent
 
 1. `GET http://127.0.0.1:8097/v1`: every route with its group, a one-line
-   summary and what it reaches.
+   summary and what it reaches. A tool-calling agent or a code generator
+   reads the same routes as OpenAPI 3.1 at `GET /v1/openapi.json`
+   ([openapi.yaml](openapi.yaml)): parameters, request bodies, statuses.
 2. `GET http://127.0.0.1:8097/v1/services`: every service with its health,
    `browse_url` (where you reach it from the host), auth, and the endpoints
    worth knowing; plus the registered platform, if any.
@@ -309,6 +311,7 @@ example, is Banking Circle's.
 | Document | Service | Side | Listens |
 | --- | --- | --- | --- |
 | [lab-api.md](lab-api.md) | lab API | lab | `:8097` (and `:8090/v1` through the console) |
+| [openapi.yaml](openapi.yaml) | lab API, as OpenAPI 3.1 | lab | served at `GET /v1/openapi.json` |
 | [services/worldline.md](services/worldline.md) | Worldline | vendor | `:8084` HTTP, `:2222` SFTP |
 | [services/b4b.md](services/b4b.md) | B4B Payments | vendor | `:8086` |
 | [services/banking-circle.md](services/banking-circle.md) | Banking Circle | vendor | `:8085` Connect API, `:8095` bridge |
@@ -335,6 +338,10 @@ removed without its documentation following:
 
 - The lab API registers its routes from one table, `cmd/labapi/routes.go`.
   `GET /v1` serves that table, and the Docs view draws it.
+  `GET /v1/openapi.json` is generated from it and from what each route
+  takes (`cmd/labapi/openapi.go`); `cmd/labapi/openapi_test.go` fails if a
+  route that takes input is not annotated, or if
+  [openapi.yaml](openapi.yaml) is not the generated document.
   `cmd/labapi/routes_test.go` fails if a route has no summary, if the index
   and the routes served differ (aliases included), or if
   [lab-api.md](lab-api.md) does not document exactly those routes.
@@ -343,8 +350,10 @@ removed without its documentation following:
   service's source registers differ, or if a card lists a route the service
   does not serve.
 
-To add a lab API route: add a row to the table in `routes.go`, add its
-section to `lab-api.md`, and run `go test ./cmd/labapi`. To add a service
+To add a lab API route: add a row to the table in `routes.go`, say what it
+takes in `openapi.go` if it takes anything, add its section to
+`lab-api.md`, rewrite `openapi.yaml` (`go test ./cmd/labapi -run OpenAPI
+-update`), and run `go test ./cmd/labapi`. To add a service
 route: add its section to the service's reference (and, if a person would
 want it on the service's card, an `Endpoint` in
 `internal/console/catalogue.go`), and run `go test ./internal/console`. A

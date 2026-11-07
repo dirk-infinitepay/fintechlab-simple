@@ -1,0 +1,2383 @@
+# The lab API as OpenAPI 3.1, generated from cmd/labapi/routes.go and
+# cmd/labapi/openapi.go. Do not edit: change those, then
+#   go test ./cmd/labapi -run OpenAPI -update
+# The lab API serves the same document at GET /v1/openapi.json.
+openapi: 3.1.0
+info:
+  title: fintechlab lab API
+  version: v1
+  description: 'The one API over the lab: merchants, the clock, settlement runs and what happened, every simulation''s record, health, logs and reset, and its lab hooks (/sim/*) through one passthrough. The lab API reaches each simulation on its control port and holds no vendor credentials; a platform calls the vendors directly. Errors are {"error", "status"}. When LAB_API_TOKEN is set, every call but GET /health carries Authorization: Bearer <it>. The console''s old /api paths still answer, as aliases, and are not listed.'
+servers:
+  - url: http://127.0.0.1:8097
+    description: the lab API
+  - url: http://127.0.0.1:8090
+    description: through the console, which forwards /v1
+tags:
+  - name: lab
+    description: 'What is running and what it has done: the index, the run diagram, the stand-ins.'
+  - name: services
+    description: 'Each service of the lab: its record and health, its logs, and its /sim/* hooks through one address.'
+  - name: traps
+    description: 'Instructions armed in a simulation for a future event: read and disarm them across the lab; arm one through the passthrough.'
+  - name: clock
+    description: The lab's business clock, fronted from the clock service.
+  - name: config
+    description: What the lab is set to, and the one setting the lab API can change.
+  - name: merchants
+    description: The lab's merchant registry, and putting its merchants on the vendors.
+  - name: banks
+    description: Accounts and payouts at the business bank and Banking Circle.
+  - name: actions
+    description: Make a vendor do now what it would otherwise do on its schedule.
+  - name: plugins
+    description: 'The platform under test: registration, its buttons and its settlement files.'
+  - name: connect
+    description: 'What a platform needs to point at this lab: addresses, credentials, key files.'
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Whether the lab API process is up
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-health
+  /v1:
+    get:
+      operationId: getIndex
+      summary: 'This index: every route, its alias, its group and what it reaches'
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1
+  /v1/actions/fund-sga:
+    post:
+      operationId: postActionsFundSga
+      summary: Fund the empty safeguarding accounts, as Worldline's wire would
+      description: 'Reaches: banking-circle /sim/accounts/{id}/balances, /sim/incoming-payments.'
+      tags:
+        - banks
+      parameters:
+        - name: amount
+          in: query
+          required: false
+          description: a decimal per empty safeguarding account; default 1000000.00
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1actionsfund-sga
+  /v1/actions/settlement-pull:
+    post:
+      operationId: postActionsSettlementPull
+      summary: Make the settlement stand-in pull Worldline's SFTP now
+      description: 'Reaches: settlement POST /sim/pull. The answer is the upstream''s own, status and body.'
+      tags:
+        - actions
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1actionssettlement-pull
+  /v1/actions/worldline-cycle:
+    post:
+      operationId: postActionsWorldlineCycle
+      summary: Cut and publish Worldline's settlement files now
+      description: 'Reaches: worldline POST /sim/settlement-cycle/run. The answer is the upstream''s own, status and body.'
+      tags:
+        - actions
+      parameters:
+        - name: slot
+          in: query
+          required: false
+          description: default morning
+          schema:
+            enum:
+              - morning
+              - afternoon
+            type: string
+        - name: date
+          in: query
+          required: false
+          description: YYYY-MM-DD, the business day the file covers; default the lab clock's
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1actionsworldline-cycle
+  /v1/banking-circle/payouts:
+    get:
+      operationId: getBankingCirclePayouts
+      summary: Banking Circle's outgoing payouts, and which can be returned or reversed
+      description: 'Reaches: banking-circle GET /sim/payments.'
+      tags:
+        - banks
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1banking-circlepayouts
+  /v1/banking-circle/payouts/{id}/return:
+    post:
+      operationId: postBankingCirclePayoutsByIdReturn
+      summary: Return a processed payout, as the beneficiary's bank would
+      description: 'Reaches: banking-circle POST /sim/payments/{id}/return.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a Banking Circle payment id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banking-circlepayoutsidreturn
+  /v1/banking-circle/payouts/{id}/reverse:
+    post:
+      operationId: postBankingCirclePayoutsByIdReverse
+      summary: Reverse a processed payout, as the scheme would
+      description: 'Reaches: banking-circle POST /sim/payments/{id}/reverse.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a Banking Circle payment id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banking-circlepayoutsidreverse
+  /v1/banking-circle/subscriptions:
+    get:
+      operationId: getBankingCircleSubscriptions
+      summary: Banking Circle's notification subscriptions, with what is waiting
+      description: 'Reaches: banking-circle GET /sim/subscriptions and each one''s /pending.'
+      tags:
+        - banks
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1banking-circlesubscriptions
+  /v1/banking-circle/subscriptions/{id}/pause:
+    post:
+      operationId: postBankingCircleSubscriptionsByIdPause
+      summary: Hold a subscription's deliveries
+      description: 'Reaches: banking-circle POST /sim/subscription/{id}/pause.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a Banking Circle subscription id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banking-circlesubscriptionsidpause
+  /v1/banking-circle/subscriptions/{id}/resume:
+    post:
+      operationId: postBankingCircleSubscriptionsByIdResume
+      summary: Release a paused subscription's deliveries
+      description: 'Reaches: banking-circle POST /sim/subscription/{id}/resume.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a Banking Circle subscription id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banking-circlesubscriptionsidresume
+  /v1/banking-circle/subscriptions/{id}/test:
+    post:
+      operationId: postBankingCircleSubscriptionsByIdTest
+      summary: Send a subscription a test notification and report what it did
+      description: 'Reaches: banking-circle POST /sim/subscription/{id}/test, GET /sim/activity.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a Banking Circle subscription id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banking-circlesubscriptionsidtest
+  /v1/banks:
+    get:
+      operationId: getBanks
+      summary: Both banks with their accounts and balances
+      description: 'Reaches: bank and banking-circle GET /sim/accounts.'
+      tags:
+        - banks
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1banks
+  /v1/banks/{id}/accounts:
+    post:
+      operationId: postBanksByIdAccounts
+      summary: 'Open an account at the business bank (Banking Circle: 501)'
+      description: 'Reaches: bank POST /sim/accounts.'
+      tags:
+        - banks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: core-ledger or banking-circle
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                currency:
+                  description: ISO 4217
+                  type: string
+                holder:
+                  description: ""
+                  type: string
+                opening_balance:
+                  description: a decimal, default 0.00
+                  type: string
+              required:
+                - holder
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1banksidaccounts
+  /v1/clock:
+    get:
+      operationId: getClock
+      summary: The lab clock as it stands
+      description: 'Reaches: clock GET /clock.'
+      tags:
+        - clock
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1clock
+    post:
+      operationId: postClock
+      summary: Move the lab clock, or change its mode
+      description: 'Reaches: clock POST /clock. The answer is the upstream''s own, status and body.'
+      tags:
+        - clock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              description: exactly one of at, advance or mode
+              oneOf:
+                - additionalProperties: false
+                  properties:
+                    at:
+                      description: an RFC 3339 instant to pin the lab clock to
+                      type: string
+                  required:
+                    - at
+                  type: object
+                - additionalProperties: false
+                  properties:
+                    advance:
+                      description: 'how far to move it on: "1h", "1d"'
+                      type: string
+                  required:
+                    - advance
+                  type: object
+                - additionalProperties: false
+                  properties:
+                    mode:
+                      description: real follows the wall clock; auto-business-day the most recent business day
+                      enum:
+                        - real
+                        - auto-business-day
+                      type: string
+                  required:
+                    - mode
+                  type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1clock
+  /v1/clock/holds:
+    post:
+      operationId: postClockHolds
+      summary: 'Hold the lab clock while a run is in flight: moves are refused'
+      description: 'Reaches: clock POST /clock/holds. The answer is the upstream''s own, status and body.'
+      tags:
+        - clock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                holder:
+                  description: 'who holds it: the name to release it by'
+                  type: string
+                reason:
+                  description: why, shown to anyone whose move is refused
+                  type: string
+                ttl_seconds:
+                  description: how long the hold lasts unless renewed or released
+                  type: integer
+              required:
+                - holder
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1clockholds
+  /v1/clock/holds/{holder}:
+    delete:
+      operationId: deleteClockHoldsByHolder
+      summary: Release a hold on the lab clock
+      description: 'Reaches: clock DELETE /clock/holds/{holder}. The answer is the upstream''s own, status and body.'
+      tags:
+        - clock
+      parameters:
+        - name: holder
+          in: path
+          required: true
+          description: the holder named when the hold was taken
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1clockholdsholder
+  /v1/config:
+    get:
+      operationId: getConfig
+      summary: 'The lab''s settings: env knobs, BC delivery table, Worldline channel'
+      description: 'Reaches: banking-circle /sim/delivery-config, worldline GET /sim/config.'
+      tags:
+        - config
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1config
+  /v1/config/worldline-channel:
+    put:
+      operationId: putConfigWorldlineChannel
+      summary: Change Worldline's SFT file-exchange channel config
+      description: 'Reaches: worldline PUT /sim/config. The answer is the upstream''s own, status and body.'
+      tags:
+        - config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              description: Worldline's SFT file-exchange channel config, as GET /v1/config shows it under worldline_channel
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#put-v1configworldline-channel
+  /v1/connect:
+    get:
+      operationId: getConnect
+      summary: 'What each vendor asks of a platform that connects: names, no values'
+      description: 'Reaches: nothing — the lab API''s own state and the keys directory.'
+      tags:
+        - connect
+      parameters:
+        - name: host
+          in: query
+          required: false
+          description: the host a platform reaches the lab at; default the request's
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1connect
+  /v1/connect/env:
+    get:
+      operationId: getConnectEnv
+      summary: 'Download fintechlab.env: every vendor''s variables with values'
+      description: 'Reaches: nothing — the lab API''s own state and the keys directory.'
+      tags:
+        - connect
+      parameters:
+        - name: host
+          in: query
+          required: false
+          description: the host a platform reaches the lab at
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1connectenv
+  /v1/connect/env/{service}:
+    get:
+      operationId: getConnectEnvByService
+      summary: Download one vendor's .env
+      description: 'Reaches: nothing — the lab API''s own state and the keys directory.'
+      tags:
+        - connect
+      parameters:
+        - name: service
+          in: path
+          required: true
+          description: a vendor id
+          schema:
+            type: string
+        - name: host
+          in: query
+          required: false
+          description: the host a platform reaches the lab at
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1connectenvservice
+  /v1/connect/files/{service}/{name}:
+    get:
+      operationId: getConnectFilesByServiceByName
+      summary: Download one key or certificate file
+      description: 'Reaches: nothing — the keys directory.'
+      tags:
+        - connect
+      parameters:
+        - name: service
+          in: path
+          required: true
+          description: a vendor id
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          description: a file name, as GET /v1/connect lists it
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/octet-stream:
+              schema:
+                format: binary
+                type: string
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1connectfilesservicename
+  /v1/flow:
+    get:
+      operationId: getFlow
+      summary: 'The settlement run as a sequence: participants, hops, counts, report'
+      description: 'Reaches: each vendor''s GET /sim/activity, the plugin''s status_path.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1flow
+  /v1/flow/hops/{id}:
+    get:
+      operationId: getFlowHopsById
+      summary: The events behind one arrow of the run diagram
+      description: 'Reaches: same reads as GET /v1/flow.'
+      tags:
+        - lab
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a hop id, as GET /v1/flow lists them
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1flowhopsid
+  /v1/lab:
+    get:
+      operationId: getLab
+      summary: Every service and registered plugin with its last health probe
+      description: 'Reaches: each service''s control GET /health, probed in the background.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1lab
+  /v1/lab/reset:
+    post:
+      operationId: postLabReset
+      summary: Reset every service in order, producers first and the clock last
+      description: 'Reaches: every service''s POST /sim/reset; the merchant registry on all.'
+      tags:
+        - lab
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                force:
+                  description: reset even while the lab clock is held (a settlement run in flight)
+                  type: boolean
+                scope:
+                  description: flow (default) or all
+                  enum:
+                    - flow
+                    - all
+                  type: string
+                services:
+                  description: only these services, in reset order; lab-api is the merchant registry
+                  items:
+                    description: a service id
+                    type: string
+                  type: array
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1labreset
+  /v1/logs:
+    get:
+      operationId: getLogs
+      summary: Every service's log lines, merged by time, behind one cursor
+      description: 'Reaches: every service''s GET /sim/logs.'
+      tags:
+        - lab
+      parameters:
+        - name: services
+          in: query
+          required: false
+          description: comma-separated service ids; omitted, every lab service
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          description: 'a previous answer''s next: lines after it; omitted, the newest limit lines'
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: 1 to 1000, default 200
+          schema:
+            type: integer
+        - name: q
+          in: query
+          required: false
+          description: case-insensitive substring filter
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1logs
+  /v1/merchants:
+    get:
+      operationId: getMerchants
+      summary: 'The merchant registry: distributors, partners, merchants, outlets, batches'
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1merchants
+    post:
+      operationId: postMerchants
+      summary: Create a merchant and its outlets in the registry
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                address:
+                  additionalProperties: false
+                  properties:
+                    city:
+                      description: ""
+                      type: string
+                    country:
+                      description: ISO 3166-1 alpha-2
+                      type: string
+                    line1:
+                      description: ""
+                      type: string
+                    line2:
+                      description: ""
+                      type: string
+                    post_code:
+                      description: ""
+                      type: string
+                  type: object
+                country:
+                  description: ISO 3166-1 alpha-2
+                  type: string
+                currency:
+                  description: ISO 4217; default the country's
+                  type: string
+                email:
+                  description: default one derived from the name, on a .test domain
+                  type: string
+                legal_name:
+                  description: the merchant's legal name
+                  type: string
+                mcc:
+                  description: merchant category code
+                  type: string
+                outlets:
+                  description: how many outlets to open with; default 1
+                  type: integer
+                partner_id:
+                  description: the partner it trades under; default the first
+                  type: string
+                trading_name:
+                  description: default the legal name
+                  type: string
+              required:
+                - legal_name
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchants
+  /v1/merchants/{id}:
+    delete:
+      operationId: deleteMerchantsById
+      summary: Delete a merchant from the registry; vendors keep what they had
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a merchant id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1merchantsid
+  /v1/merchants/{id}/outlets:
+    post:
+      operationId: postMerchantsByIdOutlets
+      summary: Open another outlet (a new MID) for a merchant
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a merchant id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                name:
+                  description: the outlet's name; default derived
+                  type: string
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsidoutlets
+  /v1/merchants/{id}/provision:
+    post:
+      operationId: postMerchantsByIdProvision
+      summary: Register a merchant's outlets as B4B beneficiaries
+      description: 'Reaches: b4b POST /sim/beneficiaries, per outlet.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a merchant id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsidprovision
+  /v1/merchants/{id}/status:
+    post:
+      operationId: postMerchantsByIdStatus
+      summary: 'Set a merchant''s status: draft, active or suspended'
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a merchant id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                status:
+                  description: ""
+                  enum:
+                    - draft
+                    - active
+                    - suspended
+                  type: string
+              required:
+                - status
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsidstatus
+  /v1/merchants/{id}/trading:
+    post:
+      operationId: postMerchantsByIdTrading
+      summary: Seed card payments at Worldline for a merchant's outlets
+      description: 'Reaches: worldline POST /sim/transactions.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a merchant id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                amount_cents:
+                  description: each payment's amount in cents; default varies per payment
+                  type: integer
+                count:
+                  description: how many card payments per outlet; default 5
+                  type: integer
+                currency:
+                  description: ISO 4217; default the merchant's
+                  type: string
+                date:
+                  description: YYYY-MM-DD, the day traded; default yesterday on the wall clock — pass it when the lab clock is moved
+                  type: string
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsidtrading
+  /v1/merchants/batches:
+    post:
+      operationId: postMerchantsBatches
+      summary: Generate a batch of merchants with outlets from a seed
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                count:
+                  description: how many merchants
+                  type: integer
+                country:
+                  description: ISO 3166-1 alpha-2; "" mixes countries
+                  type: string
+                max_outlets:
+                  description: each gets 1 to this many outlets
+                  type: integer
+                partner_id:
+                  description: the partner they trade under; default the first
+                  type: string
+                seed:
+                  description: 'the generator''s seed: the same seed, the same merchants'
+                  type: integer
+              required:
+                - count
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsbatches
+  /v1/merchants/batches/{id}:
+    delete:
+      operationId: deleteMerchantsBatchesById
+      summary: Delete a batch and its merchants from the registry
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a batch id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1merchantsbatchesid
+  /v1/merchants/batches/{id}/provision:
+    post:
+      operationId: postMerchantsBatchesByIdProvision
+      summary: Register every outlet of a batch as a B4B beneficiary
+      description: 'Reaches: b4b POST /sim/beneficiaries, per outlet.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a batch id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsbatchesidprovision
+  /v1/merchants/batches/{id}/trading:
+    post:
+      operationId: postMerchantsBatchesByIdTrading
+      summary: Seed card payments at Worldline for every outlet of a batch
+      description: 'Reaches: worldline POST /sim/transactions, per merchant.'
+      tags:
+        - merchants
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a batch id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                amount_cents:
+                  description: each payment's amount in cents; default varies per payment
+                  type: integer
+                count:
+                  description: how many card payments per outlet; default 5
+                  type: integer
+                currency:
+                  description: ISO 4217; default the merchant's
+                  type: string
+                date:
+                  description: YYYY-MM-DD, the day traded; default yesterday on the wall clock — pass it when the lab clock is moved
+                  type: string
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1merchantsbatchesidtrading
+  /v1/openapi.json:
+    get:
+      operationId: getOpenapiJson
+      summary: 'This API as an OpenAPI 3.1 document: every route, its parameters and bodies'
+      description: 'Reaches: nothing — the lab API''s own route table.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1openapijson
+  /v1/outlets/{mid}/sanctions:
+    post:
+      operationId: postOutletsByMidSanctions
+      summary: 'Set an outlet''s sanctions status at B4B: pass, review or fail'
+      description: 'Reaches: b4b PUT /sim/beneficiaries/{mid}/sanctions.'
+      tags:
+        - merchants
+      parameters:
+        - name: mid
+          in: path
+          required: true
+          description: an outlet's MID
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                sanctions_status:
+                  description: the beneficiary's sanctions status at B4B
+                  enum:
+                    - pass
+                    - review
+                    - fail
+                  type: string
+              required:
+                - sanctions_status
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1outletsmidsanctions
+  /v1/partners:
+    post:
+      operationId: postPartners
+      summary: Add a partner under a distributor
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - merchants
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                country:
+                  description: ISO 3166-1 alpha-2
+                  type: string
+                distributor_id:
+                  description: default the first
+                  type: string
+                name:
+                  description: ""
+                  type: string
+              required:
+                - name
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1partners
+  /v1/plugins:
+    get:
+      operationId: getPlugins
+      summary: The registered platforms and how each registration stands
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - plugins
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1plugins
+    post:
+      operationId: postPlugins
+      summary: Register or renew a platform's card (docs/plugins.md)
+      description: 'Reaches: the lab API''s own state; then health_path and stand-in wiring.'
+      tags:
+        - plugins
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              description: 'A platform''s descriptor (docs/plugins.md): its card, buttons, logs and settlement files. Sent again every renew_seconds.'
+              properties:
+                actions:
+                  description: buttons, at most eight
+                  items:
+                    additionalProperties: true
+                    description: '{id, label, path, method, primary, confirm, note, fields}'
+                    type: object
+                  type: array
+                activity_path:
+                  description: logs in the lab's activity shape
+                  type: string
+                base_url:
+                  description: where the lab API reaches the platform
+                  type: string
+                browse_url:
+                  description: where a person's browser does
+                  type: string
+                clock:
+                  description: whether it follows the lab clock
+                  enum:
+                    - follows
+                    - wall
+                  type: string
+                health_path:
+                  description: a 2xx here is up
+                  type: string
+                id:
+                  description: lower-case letters, digits, dashes; not a lab service's id
+                  type: string
+                name:
+                  description: the card's title
+                  type: string
+                settlement:
+                  additionalProperties: true
+                  description: 'settlement files: files_path, run_path, upload_path, preview_path, delete_path, reveal_path, status_path'
+                  type: object
+                stand_ins:
+                  additionalProperties: true
+                  description: how the lab's stand-ins should be while it is registered
+                  type: object
+                start_hint:
+                  description: shown while it is not running
+                  type: string
+                summary:
+                  description: ""
+                  type: string
+              required:
+                - id
+                - name
+                - base_url
+                - health_path
+                - clock
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1plugins
+  /v1/plugins/{id}:
+    delete:
+      operationId: deletePluginsById
+      summary: Unregister a platform on a clean shutdown
+      description: 'Reaches: nothing — the lab API''s own state.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+      responses:
+        "204":
+          description: done
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1pluginsid
+  /v1/plugins/{id}/actions/{action}:
+    post:
+      operationId: postPluginsByIdActionsByAction
+      summary: Press one of a platform's declared buttons
+      description: 'Reaches: the plugin''s base_url + the action''s path. The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+        - name: action
+          in: path
+          required: true
+          description: one of the platform's declared action ids
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              description: the action's fields, if it declares any; forwarded to the platform
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1pluginsidactionsaction
+  /v1/plugins/{id}/files:
+    delete:
+      operationId: deletePluginsByIdFiles
+      summary: Delete a settlement file on the platform
+      description: 'Reaches: the plugin''s base_url + delete_path (or upload_path). The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1pluginsidfiles
+    get:
+      operationId: getPluginsByIdFiles
+      summary: A settling platform's settlement files
+      description: 'Reaches: the plugin''s base_url + files_path.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1pluginsidfiles
+    post:
+      operationId: postPluginsByIdFiles
+      summary: Upload a settlement file to the platform
+      description: 'Reaches: the plugin''s base_url + upload_path. The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1pluginsidfiles
+  /v1/plugins/{id}/files/preview:
+    get:
+      operationId: getPluginsByIdFilesPreview
+      summary: The first lines of one settlement file
+      description: 'Reaches: the plugin''s base_url + preview_path. The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+        - name: lines
+          in: query
+          required: false
+          description: 1 to 1000, default 100
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1pluginsidfilespreview
+  /v1/plugins/{id}/files/reveal:
+    post:
+      operationId: postPluginsByIdFilesReveal
+      summary: Open a settlement file's folder on the platform's machine
+      description: 'Reaches: the plugin''s base_url + reveal_path. The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                name:
+                  description: the file's name
+                  type: string
+              required:
+                - name
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1pluginsidfilesreveal
+  /v1/plugins/{id}/run:
+    post:
+      operationId: postPluginsByIdRun
+      summary: Run settlement files on the platform
+      description: 'Reaches: the plugin''s base_url + run_path. The answer is the upstream''s own, status and body.'
+      tags:
+        - plugins
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: a registered platform's id
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                files:
+                  description: file names, one run per currency
+                  items:
+                    description: ""
+                    type: string
+                  type: array
+              required:
+                - files
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1pluginsidrun
+  /v1/services:
+    get:
+      operationId: getServices
+      summary: 'Every service: its catalogue entry and its last health probe'
+      description: 'Reaches: each service''s control GET /health, probed in the background.'
+      tags:
+        - services
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1services
+  /v1/services/{id}:
+    get:
+      operationId: getServicesById
+      summary: 'One service: its catalogue entry and its last health probe'
+      description: 'Reaches: the service''s control GET /health, probed in the background.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1servicesid
+  /v1/services/{id}/activity:
+    get:
+      operationId: getServicesByIdActivity
+      summary: One service's activity logs, as the service reports them
+      description: 'Reaches: the service''s control GET /sim/activity (or plugin activity_path).'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: how many events per log; default 100
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1servicesidactivity
+  /v1/services/{id}/logs:
+    get:
+      operationId: getServicesByIdLogs
+      summary: One service's own log lines
+      description: 'Reaches: the service''s GET /sim/logs. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: since
+          in: query
+          required: false
+          description: 'a previous answer''s next: lines after it; omitted, the newest limit lines'
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: 1 to 1000, default 200
+          schema:
+            type: integer
+        - name: q
+          in: query
+          required: false
+          description: case-insensitive substring filter
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1servicesidlogs
+  /v1/services/{id}/probe:
+    post:
+      operationId: postServicesByIdProbe
+      summary: Probe one service's health now instead of waiting for the monitor
+      description: 'Reaches: the service''s control GET /health.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1servicesidprobe
+  /v1/services/{id}/reset:
+    post:
+      operationId: postServicesByIdReset
+      summary: 'Reset one service: flow or all'
+      description: 'Reaches: the service''s POST /sim/reset. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                force:
+                  description: 'reset even when the sim says it is not safe now (409): the clock while a run holds it'
+                  type: boolean
+                scope:
+                  description: flow (default) clears what a run makes and keeps what a platform set up once; all puts it back as on first start
+                  enum:
+                    - flow
+                    - all
+                  type: string
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1servicesidreset
+  /v1/services/{id}/sim/{path}:
+    delete:
+      operationId: deleteServicesByIdSimByPath
+      summary: Any of a service's /sim/* lab hooks, on its control port
+      description: 'Reaches: the service''s control /sim/{path}: method, query and body as sent. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          description: the rest of the service's /sim path; it may hold slashes
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#any-v1servicesidsimpath
+    get:
+      operationId: getServicesByIdSimByPath
+      summary: Any of a service's /sim/* lab hooks, on its control port
+      description: 'Reaches: the service''s control /sim/{path}: method, query and body as sent. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          description: the rest of the service's /sim path; it may hold slashes
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#any-v1servicesidsimpath
+    post:
+      operationId: postServicesByIdSimByPath
+      summary: Any of a service's /sim/* lab hooks, on its control port
+      description: 'Reaches: the service''s control /sim/{path}: method, query and body as sent. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          description: the rest of the service's /sim path; it may hold slashes
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              description: whatever the service's /sim route takes, sent on as it is; each service's reference lists its routes
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#any-v1servicesidsimpath
+    put:
+      operationId: putServicesByIdSimByPath
+      summary: Any of a service's /sim/* lab hooks, on its control port
+      description: 'Reaches: the service''s control /sim/{path}: method, query and body as sent. The answer is the upstream''s own, status and body.'
+      tags:
+        - services
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a lab service: worldline, b4b, banking-circle, aci, bank, verify, verification, clock, settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+        - name: path
+          in: path
+          required: true
+          description: the rest of the service's /sim path; it may hold slashes
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              description: whatever the service's /sim route takes, sent on as it is; each service's reference lists its routes
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#any-v1servicesidsimpath
+  /v1/stand-ins:
+    get:
+      operationId: getStandIns
+      summary: 'The stand-ins: shown or hidden, and how each is wired, read live'
+      description: 'Reaches: settlement+aci /sim/connected, banking-circle subscriptions.'
+      tags:
+        - lab
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1stand-ins
+  /v1/stand-ins/{id}:
+    post:
+      operationId: postStandInsById
+      summary: Show, hide, connect or disconnect one stand-in
+      description: 'Reaches: settlement+aci POST /sim/connected; BC /sim/subscription/{id}/(de)activate.'
+      tags:
+        - lab
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 'a stand-in: settlement, receiver, payment-api, notifier'
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                connected:
+                  description: connect or disconnect the wiring the stand-in owns
+                  type: boolean
+                shown:
+                  description: show or hide its card and its hops
+                  type: boolean
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1stand-insid
+  /v1/traps:
+    delete:
+      operationId: deleteTraps
+      summary: Disarm every trap in the lab and cancel its pending steps
+      description: 'Reaches: each service''s control DELETE /sim/traps.'
+      tags:
+        - traps
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1traps
+    get:
+      operationId: getTraps
+      summary: Every simulation's traps, newest first; ?state= filters
+      description: 'Reaches: each service''s control GET /sim/traps.'
+      tags:
+        - traps
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: only traps in this state
+          schema:
+            enum:
+              - armed
+              - spent
+              - expired
+              - disarmed
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1traps
+  /v1/traps/hooks:
+    get:
+      operationId: getTrapsHooks
+      summary: 'Every simulation''s trap hooks: fields, graphs, what a trap can do'
+      description: 'Reaches: each service''s control GET /sim/traps/hooks.'
+      tags:
+        - traps
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1trapshooks
+components:
+  schemas:
+    Error:
+      additionalProperties: false
+      properties:
+        error:
+          description: what went wrong, in the failing peer's own words where there is one
+          type: string
+        status:
+          description: the HTTP status
+          type: integer
+      required:
+        - error
+      type: object
+  securitySchemes:
+    labToken:
+      description: LAB_API_TOKEN, when the lab sets one; unset, no auth
+      scheme: bearer
+      type: http
+externalDocs:
+  description: the reference, with examples
+  url: docs/api/lab-api.md

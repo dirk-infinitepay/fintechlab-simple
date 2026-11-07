@@ -70,18 +70,36 @@ document is its long form. Also at `GET /api`.
 
 ```json
 {"service": "lab-api", "version": "v1", "build": "3f09c2a1d4e7", "docs": "docs/api/lab-api.md",
- "services": "GET /v1/services lists every service: …",
+ "services": "GET /v1/services lists every service: …", "openapi": "/v1/openapi.json",
  "groups": [{"id": "lab", "title": "Lab", "note": "…"}, …],
  "routes": [{"method": "GET", "path": "/v1/lab", "alias": "/api/overview", "group": "lab",
              "summary": "…", "reaches": "…"}, …]}
 ```
 
 `build` is a hash of the route table: it changes exactly when the API does.
+`openapi` is where the same routes are as an OpenAPI document.
 `method` is `ANY` for the passthrough, which takes every method. Group ids,
 in order: `lab`, `services`, `clock`, `config`, `merchants`, `banks`,
 `actions`, `plugins`, `connect`.
 
 **Reaches** — nothing — the lab API's own state.
+
+### `GET /v1/openapi.json`
+
+This API as an OpenAPI 3.1 document: every route with its summary, its
+group as a tag, its path and query parameters, its request body's schema
+and its success status, each linked to its section here. What a code
+generator or a tool-calling agent reads. The console's old `/api` aliases
+are not in it.
+
+It is generated from the route table and an annotation of what each route
+takes (`cmd/labapi/openapi.go`); the same document is checked in as
+[openapi.yaml](openapi.yaml), and tests hold the two equal and every route
+that takes input annotated.
+
+**Answers** — `200` with the document.
+
+**Reaches** — nothing — the lab API's own route table.
 
 ### `GET /v1/lab`
 
