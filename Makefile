@@ -45,6 +45,7 @@ help:
 	@echo "make aws-infra      create/update the AWS stack (deploy/aws/lab.sh; config in deploy/aws/lab.env)"
 	@echo "make aws-deploy     build the cloud bundle and play it on the AWS host"
 	@echo "make aws-e2e         run the e2e suite inside the deployed pod"
+	@echo "make aws-allow      put your address on the lab's allowlist (aws-allowed lists it)"
 	@echo "make aws-status | aws-console | aws-env | aws-token | aws-shell | aws-stop | aws-start | aws-destroy"
 	@echo "                    see docs/deploy-cloud.md"
 
@@ -357,7 +358,7 @@ cloud-bundle:
 	@tar -czf dist/fintechlab-cloud.tgz -C dist/cloud .
 	@echo "dist/fintechlab-cloud.tgz ($$(du -h dist/fintechlab-cloud.tgz | cut -f1)): $$(cat dist/cloud/REVISION)"
 
-AWS_COMMANDS := infra deploy status outputs env token e2e console shell stop start destroy
+AWS_COMMANDS := infra deploy status outputs env token e2e allow allowed console shell stop start destroy
 .PHONY: $(addprefix aws-,$(AWS_COMMANDS))
 $(addprefix aws-,$(AWS_COMMANDS)):
 	@deploy/aws/lab.sh $(@:aws-%=%)

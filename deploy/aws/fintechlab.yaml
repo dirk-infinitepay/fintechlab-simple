@@ -1,5 +1,4 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::LanguageExtensions
 Description: >-
   fintechlab-simple: the vendor simulations as one podman pod on one EC2 host,
   in a VPC of its own. It references no other stack, export or shared resource,
@@ -14,8 +13,12 @@ Description: >-
 #     a replaced instance;
 #   - an Elastic IP, the lab's one stable address (and, optionally, a DNS
 #     record for it in a hosted zone you name);
-#   - a security group open to AllowedCidrs only, on the vendors' surfaces,
-#     the console and the lab API -- never a control port;
+#   - a security group open only to the addresses on the lab's allowlist, a
+#     managed prefix list, on the vendors' surfaces, the console and the lab
+#     API -- never a control port. The template creates the list and never
+#     sets its entries: people add and remove theirs (lab.sh allow, or the
+#     VPC console) and the stack does not drift, since CloudFormation checks
+#     only the properties a template sets;
 #   - a private bucket the deploy script hands bundles over through.
 # Nothing in the instance's user data: deploy/host/play.sh prepares the host
 # on the first deploy, so editing it never replaces the instance.
@@ -32,18 +35,6 @@ Parameters:
     Type: String
     Default: t3.small
     Description: Thirteen small Go containers. Must be amd64 -- the images are built on one.
-  AllowedCidrs:
-    Type: CommaDelimitedList
-    # The lab VPC's own range (VpcCidr's default): nobody outside it. A list
-    # that is never empty keeps the loop below free of conditions.
-    Default: 10.77.0.0/24
-    Description: >-
-      Who may reach the lab's ports: the vendors and the console
-      (8080-8090), the lab API (8097, behind its token), the receiver (8443)
-      and Worldline's SFTP (2222). Your office or VPN
-      egress, and the platform's own outbound addresses (its NAT gateways),
-      each listed once. The default, the lab's own range, opens nothing to
-      the outside: reach the console through SSM port forwarding.
   VpcCidr:
     Type: String
     Default: 10.77.0.0/24
@@ -135,10 +126,44 @@ Resources:
 
   # --- who may reach it ---------------------------------------------------------
 
+  # Who may reach the lab: an allowlist people edit, not a parameter. No
+  # Entries here, ever -- the template setting none is what keeps an entry
+  # added outside it from being drift. Nothing about the list may change in
+  # the template either (lab.sh infra restores entries around an update
+  # anyway). MaxEntries is what each rule below costs against the security
+  # group's limit (60 by default): three rules, twenty entries.
+  AllowList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-allowed
+      AddressFamily: IPv4
+      MaxEntries: 20
+
+  # Attach to a role or permission set whose people may edit the allowlist:
+  # this list only, nothing else in the stack or the account.
+  AllowListEditors:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Add and remove addresses on the allowlist of one fintechlab lab
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - ec2:ModifyManagedPrefixList
+              - ec2:GetManagedPrefixListEntries
+            Resource: !GetAtt AllowList.Arn
+          - Effect: Allow
+            Action: ec2:DescribeManagedPrefixLists
+            Resource: "*"
+          - Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: !Ref AWS::StackId
+
   SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: fintechlab lab ports, open to AllowedCidrs only
+      GroupDescription: fintechlab lab ports, open to the allowlist only
       VpcId: !Ref Vpc
       SecurityGroupEgress:
         - IpProtocol: "-1"
@@ -148,48 +173,39 @@ Resources:
         - Key: Name
           Value: !Ref AWS::StackName
 
-  Fn::ForEach::Ingress:
-    - Cidr
-    - !Ref AllowedCidrs
-    # Not 8095 (Banking Circle's bridge, lab plumbing with no auth) nor the
-    # control ports (each vendor's port plus 1000): from outside, the lab API
-    # is the one way to steer the lab.
-    - Lab&{Cidr}:
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref SecurityGroup
-          IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8090
-          CidrIp: !Ref Cidr
-          Description: the vendors' own surfaces and the console 8090
-      LabApi&{Cidr}:
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref SecurityGroup
-          IpProtocol: tcp
-          FromPort: 8097
-          ToPort: 8097
-          CidrIp: !Ref Cidr
-          Description: the lab API, behind its token
-      Receiver&{Cidr}:
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref SecurityGroup
-          IpProtocol: tcp
-          FromPort: 8443
-          ToPort: 8443
-          CidrIp: !Ref Cidr
-          Description: the webhook receiver stand-in
-      Sftp&{Cidr}:
-        Type: AWS::EC2::SecurityGroupIngress
-        Properties:
-          GroupId: !Ref SecurityGroup
-          IpProtocol: tcp
-          FromPort: 2222
-          ToPort: 2222
-          CidrIp: !Ref Cidr
-          Description: Worldline SFTP+PGP
+  # Not 8095 (Banking Circle's bridge, lab plumbing with no auth), not the
+  # control ports (each vendor's port plus 1000) -- from outside, the lab API
+  # is the one way to steer the lab -- and not 8443, the receiver stand-in,
+  # which nothing outside calls (a fourth rule would cost twenty more).
+  LabIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8090
+      SourcePrefixListId: !Ref AllowList
+      Description: the vendor surfaces and the console 8090
+
+  LabApiIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 8097
+      ToPort: 8097
+      SourcePrefixListId: !Ref AllowList
+      Description: the lab API, behind its token
+
+  SftpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 2222
+      ToPort: 2222
+      SourcePrefixListId: !Ref AllowList
+      Description: Worldline SFTP+PGP
 
   # --- the host -------------------------------------------------------------------
 
@@ -322,7 +338,7 @@ Outputs:
     Description: The address a platform reaches the lab at, and the one its certificates name.
     Value: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
   ConsoleUrl:
-    Description: Reachable from AllowedCidrs; otherwise lab.sh console forwards it to 127.0.0.1.
+    Description: Reachable from the allowlist (lab.sh allow); otherwise lab.sh console forwards it to 127.0.0.1.
     Value: !Sub
       - http://${Host}:8090
       - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
@@ -333,5 +349,11 @@ Outputs:
       - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
   DataVolumeId:
     Value: !Ref DataVolume
+  AllowListId:
+    Description: The managed prefix list of who may reach the lab. lab.sh allow / deny edit it.
+    Value: !Ref AllowList
+  AllowListEditorsPolicyArn:
+    Description: Attach to whoever may edit the allowlist.
+    Value: !Ref AllowListEditors
   ReleaseBucket:
     Value: !Ref Releases

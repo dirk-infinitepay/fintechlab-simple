@@ -23,7 +23,13 @@ export LAB_API_TOKEN
 
 # -e NAME with no value passes this process's own, so the token never
 # appears on a command line.
-exec podman run --rm --pod fintechlab \
+#
+# --restart=no, said outright: a container joining the pod takes the pod's
+# restart policy (Always) unless told otherwise, and the suite then runs
+# again every time it finishes -- resets of Banking Circle and all -- for
+# as long as the pod lives. One name, replaced, so a second run is never
+# a second suite.
+exec podman run --rm --restart=no --replace --name fintechlab-e2e --pod fintechlab \
   -v fintechlab-keys:/keys:ro \
   -e LAB_KEYS_DIR=/keys \
   -e PAYMENT_API_URL=http://payment-api:8080 \

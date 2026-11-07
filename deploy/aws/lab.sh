@@ -6,6 +6,9 @@
 #   deploy/aws/lab.sh infra      create or update the stack
 #   deploy/aws/lab.sh deploy     build the cloud bundle, hand it to the host, play it
 #   deploy/aws/lab.sh status     the stack, the host, and what it is running
+#   deploy/aws/lab.sh allow [cidr] [note]  let an address in (default: yours)
+#   deploy/aws/lab.sh deny <cidr>          take one off the allowlist
+#   deploy/aws/lab.sh allowed              who may reach the lab
 #   deploy/aws/lab.sh env [svc]  download the platform's .env from the console
 #   deploy/aws/lab.sh token      print the lab API's token (FINTECH_SIM_LAB_TOKEN)
 #   deploy/aws/lab.sh e2e        run the e2e suite inside the deployed pod
@@ -20,6 +23,8 @@
 # stack did not create.
 set -euo pipefail
 
+# Where you ran it from: lab.sh env saves there, not in the checkout.
+here="$PWD"
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 
@@ -39,8 +44,6 @@ export AWS_REGION="${AWS_REGION:-eu-west-1}"
 export AWS_PAGER=""
 STACK="${LAB_STACK:-fintechlab-dev}"
 TEMPLATE=deploy/aws/fintechlab.yaml
-# The template's VpcCidr default: "nobody outside the lab's own network".
-CLOSED_CIDR=10.77.0.0/24
 UBUNTU_AMI_PARAM=/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
 
 say() { printf '%s\n' "$*"; }
@@ -122,7 +125,15 @@ run_remote() {
 
 cmd_infra() {
   account
-  local params=() ami
+  local params=() ami before="" list status
+  # A stack whose first create failed is left in ROLLBACK_COMPLETE, holding
+  # nothing, and can only be deleted: do that, and create it again.
+  status="$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+  if [ "$status" = ROLLBACK_COMPLETE ]; then
+    say "$STACK failed its first create and holds nothing: deleting it to start again"
+    aws cloudformation delete-stack --stack-name "$STACK"
+    aws cloudformation wait stack-delete-complete --stack-name "$STACK"
+  fi
   if ! stack_exists || [ "${LAB_REFRESH_IMAGE:-}" = 1 ]; then
     # Resolved once, then kept: an image that changed under the stack would
     # replace the host. LAB_REFRESH_IMAGE=1 takes the current one on purpose
@@ -131,25 +142,150 @@ cmd_infra() {
     params+=("ImageId=$ami")
     say "host image $ami"
   fi
-  local cidrs
-  cidrs="$(csv "${LAB_ALLOWED_CIDRS:-}")"
-  if [ -z "$cidrs" ]; then
-    say "LAB_ALLOWED_CIDRS is empty: nothing is reachable from outside; use 'lab.sh console'"
-    cidrs="$CLOSED_CIDR"
+  # The allowlist's entries are people's, not the template's: kept aside
+  # before an update and put back after it, should the update touch them.
+  if stack_exists; then
+    list="$(output AllowListId)"
+    [ -n "$list" ] && [ "$list" != None ] && before="$(allow_entries "$list")"
   fi
   params+=(
-    "AllowedCidrs=$cidrs"
     "InstanceType=${LAB_INSTANCE_TYPE:-t3.small}"
     "DomainName=${LAB_DOMAIN:-}"
     "HostedZoneId=${LAB_HOSTED_ZONE_ID:-}"
   )
   aws cloudformation deploy --stack-name "$STACK" --template-file "$TEMPLATE" \
-    --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND --no-fail-on-empty-changeset \
+    --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
     --tags Project=fintechlab ManagedBy=fintechlab-simple \
     --parameter-overrides "${params[@]}"
+
+  list="$(output AllowListId)"
+  local now add=() cidr desc
+  now="$(allow_entries "$list")"
+  while IFS=$'\t' read -r cidr desc; do
+    [ -n "$cidr" ] || continue
+    grep -q "^$cidr"$'\t' <<<"$now" || add+=("$cidr" "${desc:-restored by lab.sh infra}")
+  done <<<"$before"
+  # LAB_ALLOWED_CIDRS seeds the list: added when missing, never removed.
+  for cidr in $(csv "${LAB_ALLOWED_CIDRS:-}" | tr , ' '); do
+    cidr="$(normalize_cidr "$cidr")" || die "LAB_ALLOWED_CIDRS: $cidr"
+    grep -q "^$cidr"$'\t' <<<"$now" || add+=("$cidr" "$(entry_note "lab.env")")
+  done
+  if [ ${#add[@]} -gt 0 ]; then
+    say "allowlist: adding $(( ${#add[@]} / 2 )) entr$([ ${#add[@]} -eq 2 ] && echo y || echo ies)"
+    modify_allowlist "$list" add "${add[@]}"
+  fi
   cmd_outputs
   say ""
+  cmd_allowed
+  say ""
   say "next: deploy/aws/lab.sh deploy"
+}
+
+# --- the allowlist ------------------------------------------------------------
+# A managed prefix list the template creates and never fills: entries are
+# people's, edited here or in the VPC console (Managed prefix lists), and an
+# edit is not drift. The stack's AllowListEditorsPolicyArn output is a policy
+# that lets a role edit this list and nothing else.
+
+# allow_entries <list>: "cidr<TAB>description" per line.
+allow_entries() {
+  aws ec2 get-managed-prefix-list-entries --prefix-list-id "$1" \
+    --query 'Entries[].[Cidr,Description]' --output text
+}
+
+# normalize_cidr <addr|cidr>: an IPv4 CIDR, /32 for a bare address. Nothing
+# broader than /16: the console asks for no login, so the list is its gate.
+normalize_cidr() {
+  local c="$1"
+  [[ "$c" == */* ]] || c="$c/32"
+  [[ "$c" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] || { echo "$1 is not an IPv4 address or CIDR" >&2; return 1; }
+  [ "${c#*/}" -ge 16 ] || { echo "$c is broader than /16: the console has no login, so the allowlist is all that keeps it private" >&2; return 1; }
+  printf '%s\n' "$c"
+}
+
+# entry_note <note>: who added an entry, when, and why -- what the next
+# person reading the list needs to know whether it can go.
+entry_note() {
+  local who
+  who="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null | sed 's|.*/||')"
+  printf '%s' "${who:-unknown} $(date -u +%Y-%m-%d) ${1:-}" | tr -c 'A-Za-z0-9 ._:/()#,@+=-' '_' | cut -c1-255
+}
+
+# modify_allowlist <list> add <cidr> <description> ... | remove <cidr> ...
+# A prefix list is versioned: a change names the version it changes, and a
+# change made meanwhile by someone else is retried on the new one.
+modify_allowlist() {
+  local list="$1" op="$2" json version state i err
+  shift 2
+  json="$(python3 -c '
+import json, sys
+op, rest = sys.argv[1], sys.argv[2:]
+if op == "add":
+    print(json.dumps([{"Cidr": c, "Description": d} for c, d in zip(rest[::2], rest[1::2])]))
+else:
+    print(json.dumps([{"Cidr": c} for c in rest]))' "$op" "$@")"
+  for i in 1 2 3 4 5 6; do
+    read -r version state <<<"$(aws ec2 describe-managed-prefix-lists --prefix-list-ids "$list" \
+      --query 'PrefixLists[0].[Version,State]' --output text)"
+    case "$state" in *in-progress) sleep 2; continue ;; esac
+    if err="$(aws ec2 modify-managed-prefix-list --prefix-list-id "$list" --current-version "$version" \
+      "--$op-entries" "$json" 2>&1 >/dev/null)"; then
+      while :; do
+        state="$(aws ec2 describe-managed-prefix-lists --prefix-list-ids "$list" --query 'PrefixLists[0].State' --output text)"
+        case "$state" in
+          modify-complete | create-complete) return 0 ;;
+          *failed*) die "the allowlist change failed ($state)" ;;
+        esac
+        sleep 1
+      done
+    fi
+    grep -qE 'IncorrectState|VersionMismatch|InvalidPrefixListModification.*version' <<<"$err" || die "$err"
+    sleep 2
+  done
+  die "the allowlist kept changing under us; try again"
+}
+
+cmd_allow() {
+  need_stack
+  local cidr list now
+  cidr="${1:-}"
+  if [ -z "$cidr" ]; then
+    cidr="$(curl -fsS --max-time 5 https://checkip.amazonaws.com)" || die "could not tell your address; give it: lab.sh allow <ip>"
+  fi
+  cidr="$(normalize_cidr "$cidr")" || exit 1
+  [ $# -gt 0 ] && shift
+  list="$(output AllowListId)"
+  now="$(allow_entries "$list")"
+  if grep -q "^$cidr"$'\t' <<<"$now"; then
+    say "$cidr is already allowed: $(grep "^$cidr"$'\t' <<<"$now" | cut -f2)"
+    return 0
+  fi
+  modify_allowlist "$list" add "$cidr" "$(entry_note "$*")"
+  say "allowed $cidr -- in effect within seconds"
+}
+
+cmd_deny() {
+  [ -n "${1:-}" ] || die "which address? lab.sh allowed lists them"
+  need_stack
+  local cidr list
+  cidr="$(normalize_cidr "$1")" || exit 1
+  list="$(output AllowListId)"
+  grep -q "^$cidr"$'\t' <<<"$(allow_entries "$list")" || { say "$cidr is not on the allowlist"; return 0; }
+  modify_allowlist "$list" remove "$cidr"
+  say "removed $cidr"
+}
+
+cmd_allowed() {
+  need_stack
+  local list entries
+  list="$(output AllowListId)"
+  entries="$(allow_entries "$list")"
+  say "allowlist $list ($(grep -c . <<<"$entries" || true) of 20):"
+  if [ -n "$entries" ]; then
+    printf '%s\n' "$entries" | column -t -s $'\t' | sed 's/^/  /'
+  else
+    say "  nobody -- 'lab.sh allow' adds your address; 'lab.sh console' works without one"
+  fi
 }
 
 cmd_outputs() {
@@ -189,7 +325,7 @@ rm -f /opt/fintechlab/bundle.tgz
 DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' ROTATE_TOKEN='${ROTATE_TOKEN:-false}' sh \"\$d/play.sh\""
 
   say ""
-  say "console:  http://$host:8090   (from LAB_ALLOWED_CIDRS; otherwise 'lab.sh console')"
+  say "console:  http://$host:8090   (from the allowlist -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
   say "lab API:  http://$host:8097/v1 with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   say "platform: 'lab.sh env' downloads its .env, addressed to $host"
   say "check:    'lab.sh e2e' runs the e2e suite inside the pod"
@@ -219,7 +355,9 @@ cmd_env() {
   # Through the console, which adds the lab API's token: the operator needs
   # only what reaches :8090.
   path="/v1/connect/env${1:+/$1}"
-  name="fintechlab${1:+-$1}.env"
+  # It holds keys: saved where you ran lab.sh from, never into the checkout
+  # by accident.
+  name="$here/fintechlab${1:+-$1}.env"
   # The file names $host however it is fetched: the console knows its own
   # address (CONSOLE_CONNECT_HOST).
   if curl -fsS --max-time 8 -o "$name" "http://$host:8090$path" 2>/dev/null; then
@@ -229,7 +367,7 @@ cmd_env() {
   # Not reachable from here (LAB_ALLOWED_CIDRS): ask the host for it over
   # SSM. Compressed, because SSM returns at most 24,000 characters of
   # output; a cut-off answer fails gunzip rather than writing half a key.
-  say "the console at $host:8090 is not reachable from here; fetching it over SSM"
+  say "the console at $host:8090 is not reachable from here (not on the allowlist?); fetching it over SSM"
   id="$(output InstanceId)"
   wait_ssm "$id"
   b64="$(run_remote "$id" "fintechlab env" "set -e
@@ -337,6 +475,9 @@ case "$cmd" in
   outputs) need_stack && cmd_outputs ;;
   env) cmd_env "$@" ;;
   token) cmd_token ;;
+  allow) cmd_allow "$@" ;;
+  deny) cmd_deny "$@" ;;
+  allowed) cmd_allowed ;;
   e2e) cmd_e2e ;;
   console) cmd_console ;;
   shell) cmd_shell ;;

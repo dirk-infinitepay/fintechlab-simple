@@ -155,7 +155,8 @@ token**:
   `LAB_API_TOKEN` / `FINTECH_SIM_LAB_TOKEN`, with `http://<PublicHost>:8097`
   as the lab's address.
 - From your machine, everything here works against `<PublicHost>` if your
-  address is in `LAB_ALLOWED_CIDRS` — except `:8095` and the control ports,
+  address is on the allowlist (`deploy/aws/lab.sh allow` adds it,
+  `allowed` lists it) — except `:8095`, `:8443` and the control ports,
   which are never open. Otherwise `make aws-console` forwards the console to
   `127.0.0.1:8090`; it adds the token itself.
 - `make aws-e2e` runs the e2e suite **inside the pod** on the host, so the

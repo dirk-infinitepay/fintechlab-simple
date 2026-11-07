@@ -11,7 +11,7 @@ switches its vendor endpoints to the lab by configuration.
                 │                                     │  vendors, lab API :8097
                 ▼                                     ▼
   ┌──────────────────── the lab's own VPC (one stack) ─────────────────────┐
-  │  Elastic IP ── security group: LAB_ALLOWED_CIDRS only                  │
+  │  Elastic IP ── security group: the allowlist (a managed prefix list)   │
   │                                                                        │
   │  EC2 host (SSM only, no SSH)                                           │
   │    podman pod "fintechlab"  — the cloud profile: no lab clock          │
@@ -58,7 +58,7 @@ A lab reached over a network asks every caller of `:8097` for its token
 volume, so a redeploy, a stop or a replaced host keeps it; `lab.sh token`
 prints it. The console adds it to everything it forwards, so its page needs
 none — which is also why the console itself is kept behind
-`LAB_ALLOWED_CIDRS` ([Reaching it](#reaching-it)).
+the allowlist ([Reaching it](#reaching-it)).
 
 `make cloud-manifest` prints the rendered manifest; `LAB_PROFILE=local`
 keeps the clock, for a lab on another machine that a laptop runner follows.
@@ -71,7 +71,7 @@ drives it with nothing but the AWS CLI (no CDK bootstrap, no state backend).
 | Resource | Why |
 | --- | --- |
 | VPC, one public subnet, internet gateway | the lab's own network: nothing in it depends on, peers with, or blocks deleting anyone else's |
-| Security group | from `LAB_ALLOWED_CIDRS` only: the vendors' own surfaces and the console (8080-8090), the lab API (8097), the receiver (8443), SFTP (2222). Never `:8095` (Banking Circle's bridge, no auth) or a control port (a vendor's port plus 1000): from outside, the lab API is the one way to steer the lab. Empty opens nothing |
+| Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist). Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
 | EC2 host, Ubuntu 24.04, `t3.small` | SSM only: no key pair, no port 22. IMDSv2 with hop limit 1, so no container can act as the host's role, which can only be managed by SSM anyway |
 | Data volume (20 GiB) | podman's storage. A replaced host — a new image, a new type — keeps every key the platform holds |
 | Elastic IP | the lab's one stable address; optionally a Route 53 record for `LAB_DOMAIN` |
@@ -82,6 +82,37 @@ deploy (data volume, podman, start on boot) and is a no-op after that, so
 editing it never replaces the instance. The host image is resolved once, when
 the stack is created, and kept: a new Ubuntu image never replaces the lab
 host on its own (`LAB_REFRESH_IMAGE=1 lab.sh infra` takes one on purpose).
+
+### Who may reach it: the allowlist
+
+The security group's rules name a managed prefix list (`<stack>-allowed`,
+the stack's `AllowListId` output), not addresses. The template creates the
+list and never sets its entries, so the addresses on it are people's to
+change, and changing them is not drift: CloudFormation checks only the
+properties a template sets.
+
+```sh
+deploy/aws/lab.sh allow                       # your address, as https://checkip.amazonaws.com sees it
+deploy/aws/lab.sh allow 203.0.113.7 "QA laptop"   # someone else's, with a note
+deploy/aws/lab.sh deny 203.0.113.7/32
+deploy/aws/lab.sh allowed                     # every entry: who added it, when, why
+```
+
+An entry records who added it and when, so the next person reading the list
+can tell what may go. In effect within seconds; nothing is redeployed. The
+VPC console does the same (*Managed prefix lists* → the list → *Modify*).
+
+- **Who may edit it.** Anyone whose role can call
+  `ec2:ModifyManagedPrefixList` on it — an account administrator, or a role
+  given the stack's `AllowListEditorsPolicyArn` output: a policy for this
+  one list and nothing else.
+- **Twenty entries**, at most. Each rule that names the list costs its size
+  against the security group's 60 rules, and there are three.
+- **Nothing broader than /16.** `lab.sh` refuses it: the console asks for
+  no login, so the list is all that keeps it private.
+- **`LAB_ALLOWED_CIDRS`** in `lab.env` seeds the list at `lab.sh infra`:
+  missing entries are added, nothing is ever removed. `infra` also puts back
+  any entry an update of the stack might drop.
 
 ### Sharing an account
 
@@ -141,9 +172,9 @@ most exposed:
 1. **SSM port forwarding** — `make aws-console` puts it on
    `http://127.0.0.1:8090` for as long as the command runs. Needs the
    [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
-   and nothing else: it works with `LAB_ALLOWED_CIDRS` empty.
-2. **An allow-listed address** — your office or VPN egress in
-   `LAB_ALLOWED_CIDRS`, and the console is `http://<PublicHost>:8090`.
+   and nothing else: it works with nobody on the allowlist.
+2. **An address on the allowlist** — `deploy/aws/lab.sh allow` adds yours,
+   and the console is `http://<PublicHost>:8090`.
 3. **A name** — `LAB_DOMAIN` (with `LAB_HOSTED_ZONE_ID` the stack writes
    the record). The link is `http://<LAB_DOMAIN>:8090`; the certificates the
    platform dials carry the name. Set it before the first deploy, or
@@ -170,7 +201,7 @@ front of `:8085` has to pass TCP through.
   output) and `FINTECH_SIM_LAB_TOKEN` from `make aws-token`
   ([plugins.md](plugins.md#reaching-the-platform)).
 - **Its outbound addresses.** The platform reaches the lab from its NAT
-  gateways' Elastic IPs: put them in `LAB_ALLOWED_CIDRS` and `make aws-infra`.
+  gateways' Elastic IPs: `deploy/aws/lab.sh allow <ip> "platform NAT"` for each.
 - **Its inbound endpoints.** Banking Circle's webhooks and B4B's callbacks
   go to URLs the platform registers; their hosts go in `LAB_WEBHOOK_ALLOW`.
   A target the lab dials from its own configuration (ACI's webhook) is a
@@ -195,6 +226,7 @@ front of `:8085` has to pass TCP through.
 | `ROTATE_TOKEN=true deploy/aws/lab.sh deploy` | a new lab API token; every caller holding the old one is refused |
 | `make aws-e2e` | the e2e suite inside the pod; `E2E_ONLY=a,b deploy/aws/lab.sh e2e` for some |
 | `make aws-token` | the lab API's token |
+| `make aws-allow` / `make aws-allowed` | add your address to the allowlist / list it; `deploy/aws/lab.sh deny <cidr>` takes one off |
 | `make aws-status` | the stack's outputs, the host, the revision it runs, each container |
 | `deploy/aws/lab.sh logs banking-circle` | the last 200 lines (`LAB_TAIL`) of one container |
 | `make aws-shell` | a shell on the host: `sudo podman ps --pod` |
@@ -231,5 +263,5 @@ pod with a lab API token (`/var/lib/fintechlab/lab-api-token`) and has it
 start on boot; `sudo sh lab/e2e.sh` runs the e2e suite inside it. A host
 whose podman cannot make a bridge plays with `POD_NETWORK=slirp4netns`
 ([deploy-pod.md](deploy-pod.md#the-podman-quirks)). Open the lab's ports —
-8080-8090, 8097, 8443, 2222 — to whoever needs them with that host's own
+8080-8090, 8097, 2222 — to whoever needs them with that host's own
 firewall, and never a control port.

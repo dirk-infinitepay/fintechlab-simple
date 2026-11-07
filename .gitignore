@@ -77,3 +77,5 @@ coverage.out
 
 # compose reads .env from here; a LAB_API_TOKEN put in one stays out of git.
 /.env
+# A downloaded platform .env (lab.sh env, curl -OJ .../connect/env) holds keys.
+fintechlab*.env
