@@ -2094,7 +2094,7 @@ const API_INTENTS = [
   ['Keep your platform’s business dates on the lab’s',
     'The clock', 'GET /clock every second — docs/plugins.md, The clock'],
   ['Prove every hop is connected',
-    'make e2e', 'calls the services directly; it needs neither the lab API nor the console'],
+    'make e2e', 'plays the platform on the vendor surfaces, and steers the lab through the lab API'],
 ];
 
 const API_KIND_TITLES = [
@@ -2244,12 +2244,15 @@ function apiDiagram() {
     </g>`;
   };
   return `<svg class="gd" viewBox="0 0 1000 470" role="img"
-      aria-label="Callers on both sides — the console page, scripts and agents, the e2e suite, the platform — and the lab API and services they call">
+      aria-label="Callers on both sides — the console page, scripts, agents and the e2e suite, the platform — and the lab API and services they call">
     ${gdBox(20, 20, 210, 60, 'is-lab', 'Console page', 'your browser · served on :8090')}
-    ${gdBox(20, 110, 210, 230, 'is-lab', 'Scripts and agents', 'curl, a test suite, an LLM')}
+    ${gdBox(20, 110, 210, 230, 'is-lab', 'Scripts and agents', 'curl, an LLM, make e2e')}
     <text class="gd-note" x="36" y="180">read GET /v1 first:</text>
     <text class="gd-note" x="36" y="198">it lists every route</text>
     <text class="gd-note" x="36" y="216">and what each one reaches</text>
+    <text class="gd-note" x="36" y="250">make e2e is one of them:</text>
+    <text class="gd-note" x="36" y="268">the platform on the vendor</text>
+    <text class="gd-note" x="36" y="286">surfaces, the rest via /v1</text>
 
     ${gdBox(380, 20, 240, 150, 'is-core', 'Lab API :8097', 'the one API over the lab')}
     ${gdChip(396, 76, 208, 'GET /v1 — the index')}
@@ -2264,9 +2267,6 @@ function apiDiagram() {
     ${gdChip(396, 400, 208, 'clock :8096 — GET /clock')}
 
     ${gdBox(770, 20, 210, 290, 'is-sut', 'Your platform', 'a registered plugin')}
-    ${gdBox(770, 340, 210, 100, 'is-lab', 'End-to-end tests', 'make e2e')}
-    <text class="gd-note" x="786" y="400">black-box scenarios;</text>
-    <text class="gd-note" x="786" y="418">needs no lab API</text>
 
     ${gdArrow(230, 50, 380, 'every button', 'one /v1 call')}
     ${gdArrow(230, 140, 380, 'everything lab-level', 'GET /v1 · /v1/*')}
@@ -2283,7 +2283,6 @@ function apiDiagram() {
     ${gdArrow(620, 125, 770, 'its buttons, files, logs', 'on its base_url')}
     ${gdArrow(770, 240, 620, 'vendor traffic, the clock', 'SFTP+PGP · JWT · mTLS', 'is-traffic')}
     ${gdArrow(620, 285, 770, 'webhooks · callbacks', '', 'is-traffic')}
-    ${gdArrow(770, 390, 620, 'scenarios', 'vendor APIs · /sim/*', 'is-traffic')}
   </svg>`;
 }
 

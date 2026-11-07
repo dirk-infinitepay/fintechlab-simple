@@ -75,8 +75,13 @@ decided: `MissingFunding` stays final.
 own reset guard (b4b's `Gate`, aci's `SentLog`, worldline's and
 settlement's `runGuard`), and one in `internal/simctl` should replace them;
 a walking graph's hops are expanded by b4b itself, where `internal/trap`
-could do it for every sim; the e2e suite still calls some old `/sim` paths on
-vendor ports, which must move before phase 4 retires them.
+could do it for every sim.
+
+**After phase 1, built 2026-11-07:** the e2e suite steers the lab through
+the lab API alone (`LAB_API_URL`, `LAB_API_TOKEN`) and plays the platform
+on the vendor surfaces; it calls no old `/sim` path, no control port and
+no `/internal/*`, so nothing in it stands in phase 4's way. The control
+ports stay unpublished ([OPEN 2](open.md), decided).
 
 Shared packages, generic infra like `internal/activity`:
 

@@ -5,14 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
-	"github.com/webduvet/fintechlab-simple/internal/uuidx"
 )
 
-// Traps and reset, over Banking Circle's control port (docs/api/README.md,
-// The control contract, Traps). Both drive a payout in over the bridge, as
-// B4B does, and read what happened from the control port — the lab's own
-// back link, with no vendor login.
+// Traps and reset, through the lab API (docs/api/lab-api.md, Traps). Each
+// sends its payout the way the platform does: through B4B's Oversight API,
+// which approves it and hands it to Banking Circle, where the
+// payment.outgoing trap takes it. What Banking Circle did is read back
+// through the lab API too.
 
 type trapView struct {
 	ID     string `json:"id"`
@@ -27,22 +26,15 @@ type trapView struct {
 	} `json:"pending_steps"`
 }
 
-type simPayments struct {
-	Payments []struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-	} `json:"payments"`
-}
-
-// e2eIBAN is a fake IBAN of this run's own, so a trap matching it
-// catches only the payout this scenario sends.
+// e2eIBAN is a fake IBAN of this run's own, so a trap matching it catches
+// only the payout this scenario sends.
 func e2eIBAN(tag string) string {
 	return fmt.Sprintf("GB00SIM%013d", (time.Now().UnixNano()/1000+int64(len(tag))*7919)%1e13)
 }
 
 func armTrap(ctx context.Context, env *Env, body map[string]any) (trapView, error) {
 	var t trapView
-	status, err := PostJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/traps", nil, body, &t)
+	status, err := env.Lab.Post(ctx, Sim("banking-circle", "traps"), body, &t)
 	if err != nil {
 		return t, fmt.Errorf("arm trap: %w", err)
 	}
@@ -54,32 +46,48 @@ func armTrap(ctx context.Context, env *Env, body map[string]any) (trapView, erro
 
 func getTrap(ctx context.Context, env *Env, id string) (trapView, error) {
 	var t trapView
-	_, err := GetJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/traps/"+id, &t)
+	_, err := env.Lab.Get(ctx, Sim("banking-circle", "traps/"+id), &t)
 	return t, err
 }
 
-// bridgePayout hands Banking Circle a payout as B4B does at B4BTMApproved.
-func bridgePayout(ctx context.Context, env *Env, paymentID, iban string) error {
-	status, err := PostJSON(ctx, env.Client, env.BankingCircleInternalURL+"/internal/payments", nil, map[string]string{
-		"paymentId": paymentID, "accountId": uuidx.Derive(uuidx.NamespaceLab, "harness-trap/"+paymentID),
-		"amount": "1.00", "currency": "EUR", "externalRef": "harness-" + paymentID,
-		"holder": "Harness Trap Ltd", "iban": iban,
-	}, nil)
+// payoutThroughB4B pays 1.00 to a new beneficiary at iban, as the platform
+// would: register the beneficiary at B4B, then a payment to it. B4B takes
+// it to B4BTMApproved on its own and only then hands it to Banking Circle.
+func payoutThroughB4B(ctx context.Context, env *Env, state *State, iban, ref string) error {
+	hdr, err := b4bHeaders(env, state)
 	if err != nil {
-		return fmt.Errorf("bridge payout %s: %w", paymentID, err)
+		return err
+	}
+	base := env.B4BURL + "/oversight/v1"
+	const holder, institution = "Harness Trap Ltd", "SC112233"
+	var ben b4bBeneficiaryResp
+	status, err := PostJSON(ctx, env.Client, base+"/beneficiaries", hdr, map[string]any{
+		"external_ref": ref, "account_name": holder, "account_number": iban,
+		"financial_institution": institution, "country": "GB",
+	}, &ben)
+	if err != nil {
+		return fmt.Errorf("register beneficiary %s: %w", iban, err)
+	}
+	if status != http.StatusCreated || ben.ID == "" {
+		return fmt.Errorf("register beneficiary %s: want 201 + an id, got %d", iban, status)
+	}
+	status, err = PostJSON(ctx, env.Client, base+"/payments", hdr,
+		b4bPaymentBody(env, ben.ID, iban, institution, holder, ref, "1.00"), nil)
+	if err != nil {
+		return fmt.Errorf("pay %s: %w", iban, err)
 	}
 	if status != http.StatusAccepted {
-		return fmt.Errorf("bridge payout %s: want 202, got %d", paymentID, status)
+		return fmt.Errorf("pay %s: want 202, got %d", iban, status)
 	}
 	return nil
 }
 
 func paymentState(ctx context.Context, env *Env, id string) (string, bool, error) {
-	var ps simPayments
-	if _, err := GetJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/payments", &ps); err != nil {
+	payments, err := bcPayments(ctx, env)
+	if err != nil {
 		return "", false, err
 	}
-	for _, p := range ps.Payments {
+	for _, p := range payments {
 		if p.ID == id {
 			return p.State, true, nil
 		}
@@ -94,9 +102,8 @@ func BankingCircleTrapPaths() Scenario {
 	return Scenario{
 		Name: "banking-circle-trap-paths",
 		Run: func(ctx context.Context, env *Env, state *State) error {
-			if status, err := PostJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/incoming-payments", nil,
-				map[string]string{"currency": "EUR", "amount": "1000.00", "reference": "harness trap paths"}, nil); err != nil || status != http.StatusAccepted {
-				return fmt.Errorf("fund the safeguarding account: %d %v", status, err)
+			if err := bcFundSGA(ctx, env, "1000.00", "e2e trap paths"); err != nil {
+				return fmt.Errorf("fund the safeguarding account: %w", err)
 			}
 			ibanA, ibanB := e2eIBAN("a"), e2eIBAN("bb")
 			reversed, err := armTrap(ctx, env, map[string]any{
@@ -121,15 +128,15 @@ func BankingCircleTrapPaths() Scenario {
 				return err
 			}
 			stamp := time.Now().UnixNano()
-			payA, payB := fmt.Sprintf("bcp_harness_%d_a", stamp), fmt.Sprintf("bcp_harness_%d_b", stamp)
-			if err := bridgePayout(ctx, env, payA, ibanA); err != nil {
+			if err := payoutThroughB4B(ctx, env, state, ibanA, fmt.Sprintf("e2e-trap-%d-a", stamp)); err != nil {
 				return err
 			}
-			if err := bridgePayout(ctx, env, payB, ibanB); err != nil {
+			if err := payoutThroughB4B(ctx, env, state, ibanB, fmt.Sprintf("e2e-trap-%d-b", stamp)); err != nil {
 				return err
 			}
 
-			if err := PollUntil(ctx, 15*time.Second, 200*time.Millisecond, func() (bool, error) {
+			// The first trap takes its payout and walks both steps.
+			if err := PollUntil(ctx, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
 				t, err := getTrap(ctx, env, reversed.ID)
 				if err != nil {
 					return false, err
@@ -140,19 +147,30 @@ func BankingCircleTrapPaths() Scenario {
 				return fmt.Errorf("processed-then-reversed trap never finished its path: %+v: %w", t, err)
 			}
 			t, _ := getTrap(ctx, env, reversed.ID)
-			if t.Caught[0].Subject != payA || t.Caught[0].Applied[0].To != "OutgoingPaymentProcessed" || t.Caught[0].Applied[1].To != "Reversed" {
+			if t.Caught[0].Applied[0].To != "OutgoingPaymentProcessed" || t.Caught[0].Applied[1].To != "Reversed" {
 				return fmt.Errorf("processed-then-reversed trap took %+v", t.Caught)
 			}
+			payA := t.Caught[0].Subject
+			if st, ok, err := paymentState(ctx, env, payA); err != nil || st != "Reversed" {
+				return fmt.Errorf("payout %s is %q (found %v, %v), want Reversed", payA, st, ok, err)
+			}
 
-			if err := PollUntil(ctx, 15*time.Second, 200*time.Millisecond, func() (bool, error) {
-				st, ok, err := paymentState(ctx, env, payB)
-				return ok && st == "OutgoingPaymentRejected", err
+			// The second takes the other payout, and Banking Circle rejects it.
+			var payB string
+			if err := PollUntil(ctx, 30*time.Second, 200*time.Millisecond, func() (bool, error) {
+				t, err := getTrap(ctx, env, rejected.ID)
+				if err != nil || len(t.Caught) == 0 {
+					return false, err
+				}
+				payB = t.Caught[0].Subject
+				st, _, err := paymentState(ctx, env, payB)
+				return st == "OutgoingPaymentRejected", err
 			}); err != nil {
 				st, _, _ := paymentState(ctx, env, payB)
-				return fmt.Errorf("payout %s ended %q, want OutgoingPaymentRejected: %w", payB, st, err)
+				return fmt.Errorf("payout %q ended %q, want OutgoingPaymentRejected: %w", payB, st, err)
 			}
-			if t, _ := getTrap(ctx, env, rejected.ID); len(t.Caught) != 1 || t.Caught[0].Subject != payB {
-				return fmt.Errorf("rejected trap caught %+v, want only %s", t.Caught, payB)
+			if t, _ := getTrap(ctx, env, rejected.ID); len(t.Caught) != 1 || payB == payA {
+				return fmt.Errorf("rejected trap caught %+v, want only its own payout", t.Caught)
 			}
 			return nil
 		},
@@ -166,6 +184,9 @@ func BankingCircleResetDropsAPayoutInFlight() Scenario {
 	return Scenario{
 		Name: "banking-circle-reset-drops-a-payout-in-flight",
 		Run: func(ctx context.Context, env *Env, state *State) error {
+			if err := bcFundSGA(ctx, env, "10.00", "e2e reset"); err != nil {
+				return fmt.Errorf("fund the safeguarding account: %w", err)
+			}
 			iban := e2eIBAN("reset")
 			trap, err := armTrap(ctx, env, map[string]any{
 				"label": "e2e: processed in three seconds", "hook": "payment.outgoing",
@@ -175,17 +196,21 @@ func BankingCircleResetDropsAPayoutInFlight() Scenario {
 			if err != nil {
 				return err
 			}
-			pay := fmt.Sprintf("bcp_harness_%d_reset", time.Now().UnixNano())
-			if err := bridgePayout(ctx, env, pay, iban); err != nil {
+			if err := payoutThroughB4B(ctx, env, state, iban, fmt.Sprintf("e2e-reset-%d", time.Now().UnixNano())); err != nil {
 				return err
 			}
-			if err := PollUntil(ctx, 5*time.Second, 50*time.Millisecond, func() (bool, error) {
+			var pay string
+			if err := PollUntil(ctx, 15*time.Second, 50*time.Millisecond, func() (bool, error) {
 				t, err := getTrap(ctx, env, trap.ID)
-				return len(t.PendingSteps) == 1, err
+				if err != nil || len(t.PendingSteps) != 1 {
+					return false, err
+				}
+				pay = t.PendingSteps[0].Subject
+				return true, nil
 			}); err != nil {
 				return fmt.Errorf("the payout's step never became pending: %w", err)
 			}
-			if status, err := PostJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/reset", nil,
+			if status, err := env.Lab.Post(ctx, "/v1/services/banking-circle/reset",
 				map[string]any{"scope": "flow"}, nil); err != nil || status != http.StatusOK {
 				return fmt.Errorf("reset: %d %v", status, err)
 			}
@@ -197,7 +222,7 @@ func BankingCircleResetDropsAPayoutInFlight() Scenario {
 			if st, ok, err := paymentState(ctx, env, pay); err != nil || ok {
 				return fmt.Errorf("after the reset payout %s is still there (%q, %v)", pay, st, err)
 			}
-			if status, _ := GetJSON(ctx, env.Client, env.BankingCircleControlURL+"/sim/traps/"+trap.ID, nil); status != http.StatusNotFound {
+			if status, _ := env.Lab.Get(ctx, Sim("banking-circle", "traps/"+trap.ID), nil); status != http.StatusNotFound {
 				return fmt.Errorf("trap %s survived the reset (GET answered %d)", trap.ID, status)
 			}
 			return nil

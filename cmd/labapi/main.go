@@ -1,12 +1,11 @@
 // Labapi is the lab's one API: every lab-level call a person, a script, an
 // agent or the console page makes goes here, at /v1 (docs/api/lab-api.md).
 //
-// It is a client of the simulated services and nothing more. Each route is
-// the same HTTP call a human with curl would make against a service's own
-// public surface, or the lab's own state (the merchant registry, the plugin
-// registrations); so nothing in this lab can only be reached through it, and
-// it being down must never be why a scenario cannot run. The e2e suite does
-// not know it exists.
+// It is a client of the simulated services and nothing more. Each route is a
+// call to a service's control port, or the lab's own state (the merchant
+// registry, the plugin registrations); no vendor traffic goes through it,
+// so it being down never stops a platform talking to a vendor. The e2e
+// suite steers the lab through it, as an agent does.
 //
 // The console is a page served elsewhere (cmd/console) that calls this API
 // like any other client. The console's old /api/* paths are served here too,

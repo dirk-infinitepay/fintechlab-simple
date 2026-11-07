@@ -84,7 +84,6 @@ func BankingCircleSubscription() Scenario {
 			if err != nil {
 				return fmt.Errorf("create subscription: %w", err)
 			}
-			// Standalone returns 200; pod http-ingress create is 201.
 			if (status != 200 && status != 201) || sub.ID == "" {
 				return fmt.Errorf("create subscription: want 200/201 + an id, got %d", status)
 			}
@@ -110,21 +109,17 @@ func BankingCircleSubscription() Scenario {
 			}
 
 			eventType := string(bankingcircle.NotificationOutgoingPaymentProcessed)
-			if !env.UsesPodBankRails() {
-				// Standalone: subscribe to a specific Connect event target.
-				// Pod twin has no subscriptionEvent / clienttest surface yet
-				// — active subscriptions receive configured bus Facts.
-				evStatus, err := PostJSON(ctx, env.Client, base+"/subscriptionEvent", hdr, map[string]any{
-					"subscriptionId": sub.ID,
-					"eventType":      eventType,
-					"targetType":     1,
-				}, nil)
-				if err != nil {
-					return fmt.Errorf("create subscription event: %w", err)
-				}
-				if evStatus != 200 {
-					return fmt.Errorf("create subscription event: want 200, got %d", evStatus)
-				}
+			// Subscribe to one Connect event type.
+			evStatus, err := PostJSON(ctx, env.Client, base+"/subscriptionEvent", hdr, map[string]any{
+				"subscriptionId": sub.ID,
+				"eventType":      eventType,
+				"targetType":     1,
+			}, nil)
+			if err != nil {
+				return fmt.Errorf("create subscription event: %w", err)
+			}
+			if evStatus != 200 {
+				return fmt.Errorf("create subscription event: want 200, got %d", evStatus)
 			}
 
 			// Optimistic concurrency: a write without the current token is
@@ -164,33 +159,16 @@ func BankingCircleSubscription() Scenario {
 			if err != nil {
 				return err
 			}
-			if env.UsesPodBankRails() {
-				// Pod has no /sim/subscription/{id}/notifications. Five
-				// TransferPosted Facts (via /sim/funding) fill one batch;
-				// flush forces delivery without waiting for the timer.
-				for i := 0; i < 5; i++ {
-					if err := bcFundSGA(ctx, env, "1.00", fmt.Sprintf("batch-fund-%s-%d", sub.ID, i)); err != nil {
-						return fmt.Errorf("enqueue via funding[%d]: %w", i, err)
-					}
-				}
-				flushStatus, err := PostJSON(ctx, env.Client, env.bcLabBase()+"/sim/notifications/flush", nil,
-					map[string]any{"subscription": sub.ID}, nil)
-				if err != nil {
-					return fmt.Errorf("flush notifications: %w", err)
-				}
-				if flushStatus != 200 && flushStatus != 202 {
-					return fmt.Errorf("flush notifications: want 200/202, got %d", flushStatus)
-				}
-			} else {
-				enqStatus, err := PostJSON(ctx, env.Client,
-					fmt.Sprintf("%s/sim/subscription/%s/notifications?count=5&eventType=%s",
-						env.BankingCircleURL, sub.ID, eventType), hdr, nil, nil)
-				if err != nil {
-					return fmt.Errorf("enqueue synthetic notifications: %w", err)
-				}
-				if enqStatus != 202 {
-					return fmt.Errorf("enqueue synthetic notifications: want 202, got %d", enqStatus)
-				}
+			// Banking Circle's lab hook queues five synthetic notifications
+			// without flushing, through the lab API: the batch is then
+			// Banking Circle's own doing.
+			enqStatus, err := env.Lab.Post(ctx,
+				Sim("banking-circle", fmt.Sprintf("subscription/%s/notifications?count=5&eventType=%s", sub.ID, eventType)), nil, nil)
+			if err != nil {
+				return fmt.Errorf("enqueue synthetic notifications: %w", err)
+			}
+			if enqStatus != 202 {
+				return fmt.Errorf("enqueue synthetic notifications: want 202, got %d", enqStatus)
 			}
 
 			var batchEvent capturedEvent
@@ -224,23 +202,11 @@ func BankingCircleSubscription() Scenario {
 				if n.SubscriptionID != sub.ID {
 					return fmt.Errorf("notification carries subscriptionId %q, want %q", n.SubscriptionID, sub.ID)
 				}
-				if env.UsesPodBankRails() {
-					// Funding emits Fact.TransferPosted; Connect stage names
-					// appear when CaseAdvanced carries state. Require a type
-					// and a payment/payload object — do not invent Processed.
-					if n.NotificationType == "" {
-						return fmt.Errorf("notification has empty notificationType")
-					}
-					if n.Payment == nil && n.Payload == nil {
-						return fmt.Errorf("%s notification has neither payment nor payload", n.NotificationType)
-					}
-				} else {
-					if n.NotificationType != eventType {
-						return fmt.Errorf("notification type %q, want %q", n.NotificationType, eventType)
-					}
-					if n.Payment == nil {
-						return fmt.Errorf("%s notification has no payment property", n.NotificationType)
-					}
+				if n.NotificationType != eventType {
+					return fmt.Errorf("notification type %q, want %q", n.NotificationType, eventType)
+				}
+				if n.Payment == nil {
+					return fmt.Errorf("%s notification has no payment property", n.NotificationType)
 				}
 			}
 
@@ -290,36 +256,24 @@ func BankingCircleRetryDeactivation() Scenario {
 				return fmt.Errorf("create dead-endpoint subscription: want 200/201, got %d", status)
 			}
 			eventType := string(bankingcircle.NotificationOutgoingPaymentProcessed)
-			if !env.UsesPodBankRails() {
-				if _, err := PostJSON(ctx, env.Client, base+"/subscriptionEvent", hdr, map[string]any{
-					"subscriptionId": sub.ID, "eventType": eventType, "targetType": 1,
-				}, nil); err != nil {
-					return fmt.Errorf("create subscription event: %w", err)
-				}
+			if _, err := PostJSON(ctx, env.Client, base+"/subscriptionEvent", hdr, map[string]any{
+				"subscriptionId": sub.ID, "eventType": eventType, "targetType": 1,
+			}, nil); err != nil {
+				return fmt.Errorf("create subscription event: %w", err)
 			}
 
 			// Queue notifications and flush them straight into the retry schedule.
-			if env.UsesPodBankRails() {
-				for i := 0; i < 2; i++ {
-					if err := bcFundSGA(ctx, env, "1.00", fmt.Sprintf("retry-fund-%s-%d", sub.ID, i)); err != nil {
-						return fmt.Errorf("enqueue via funding[%d]: %w", i, err)
-					}
-				}
-				if _, err := PostJSON(ctx, env.Client, env.bcLabBase()+"/sim/notifications/flush", nil,
-					map[string]any{"subscription": sub.ID}, nil); err != nil {
-					return fmt.Errorf("flush notifications: %w", err)
-				}
-			} else {
-				if _, err := PostJSON(ctx, env.Client,
-					fmt.Sprintf("%s/sim/subscription/%s/notifications?count=2&flush=true", env.BankingCircleURL, sub.ID),
-					hdr, nil, nil); err != nil {
-					return fmt.Errorf("enqueue notifications: %w", err)
-				}
+			enqStatus, err := env.Lab.Post(ctx,
+				Sim("banking-circle", fmt.Sprintf("subscription/%s/notifications?count=2&flush=true", sub.ID)), nil, nil)
+			if err != nil {
+				return fmt.Errorf("enqueue notifications: %w", err)
+			}
+			if enqStatus != 202 {
+				return fmt.Errorf("enqueue notifications: want 202, got %d", enqStatus)
 			}
 
 			// The schedule runs out and Banking Circle deactivates the
-			// subscription itself. Pod twin compresses via clock scale
-			// (recipes/bank-rails clock.yaml); standalone via BC_TIME_SCALE.
+			// subscription itself, its 48 hours compressed by BC_TIME_SCALE.
 			var deactivated bcSubscriptionResp
 			if err := PollUntil(ctx, 90*time.Second, time.Second, func() (bool, error) {
 				if _, err := GetJSONWithHeaders(ctx, env.Client, base+"/subscription/"+sub.ID, hdr, &deactivated); err != nil {
@@ -331,7 +285,7 @@ func BankingCircleRetryDeactivation() Scenario {
 				return true, nil
 			}); err != nil {
 				return fmt.Errorf("subscription was never deactivated after repeated delivery failures "+
-					"(check BC_TIME_SCALE / pod clock scale): %w", err)
+					"(check BC_TIME_SCALE): %w", err)
 			}
 			if deactivated.Status != int(bankingcircle.StatusInactive) {
 				return fmt.Errorf("deactivated subscription has status %d, want %d",
@@ -341,37 +295,35 @@ func BankingCircleRetryDeactivation() Scenario {
 				return fmt.Errorf("no statusMessage explaining the deactivation; a client cannot tell why it stopped")
 			}
 
-			if !env.UsesPodBankRails() {
-				// Deactivation email — standalone only (pod has no /sim/emails).
-				var mail struct {
-					Emails []struct {
-						Kind           string `json:"kind"`
-						SubscriptionID string `json:"subscription_id"`
-						To             string `json:"to"`
-					} `json:"emails"`
+			// The deactivation email, and what was held back: the lab's
+			// record of both, through the lab API.
+			var mail struct {
+				Emails []struct {
+					Kind           string `json:"kind"`
+					SubscriptionID string `json:"subscription_id"`
+					To             string `json:"to"`
+				} `json:"emails"`
+			}
+			if _, err := env.Lab.Get(ctx, Sim("banking-circle", "emails"), &mail); err != nil {
+				return fmt.Errorf("read emails: %w", err)
+			}
+			var sawDeactivation bool
+			for _, e := range mail.Emails {
+				if e.SubscriptionID == sub.ID && e.Kind == "deactivation" {
+					sawDeactivation = true
 				}
-				if _, err := GetJSONWithHeaders(ctx, env.Client, env.BankingCircleURL+"/sim/emails", hdr, &mail); err != nil {
-					return fmt.Errorf("read emails: %w", err)
-				}
-				var sawDeactivation bool
-				for _, e := range mail.Emails {
-					if e.SubscriptionID == sub.ID && e.Kind == "deactivation" {
-						sawDeactivation = true
-					}
-				}
-				if !sawDeactivation {
-					return fmt.Errorf("no deactivation email for %s; the operator would never learn it stopped", sub.ID)
-				}
+			}
+			if !sawDeactivation {
+				return fmt.Errorf("no deactivation email for %s; the operator would never learn it stopped", sub.ID)
+			}
 
-				var pending bcPendingResp
-				if _, err := GetJSONWithHeaders(ctx, env.Client,
-					fmt.Sprintf("%s/sim/subscription/%s/pending", env.BankingCircleURL, sub.ID), hdr, &pending); err != nil {
-					return fmt.Errorf("read pending notifications: %w", err)
-				}
-				if pending.Pending != 2 {
-					return fmt.Errorf("%d notifications retained, want the 2 that never landed -- "+
-						"dropping them is how a client loses a day of payments", pending.Pending)
-				}
+			var pending bcPendingResp
+			if _, err := env.Lab.Get(ctx, Sim("banking-circle", "subscription/"+sub.ID+"/pending"), &pending); err != nil {
+				return fmt.Errorf("read pending notifications: %w", err)
+			}
+			if pending.Pending != 2 {
+				return fmt.Errorf("%d notifications retained, want the 2 that never landed -- "+
+					"dropping them is how a client loses a day of payments", pending.Pending)
 			}
 
 			// Point it at a live endpoint and reactivate: what it missed
@@ -385,40 +337,17 @@ func BankingCircleRetryDeactivation() Scenario {
 			}
 
 			var activated bcActivateResp
-			if env.UsesPodBankRails() {
-				// Pod: POST .../reactivate redelivers retained notifications.
-				var reactBody map[string]any
-				actStatus, err := PostJSON(ctx, env.Client, base+"/subscription/"+sub.ID+"/reactivate",
-					mergeHeaders(hdr, map[string]string{"If-Match": repointed.RowVersion}), nil, &reactBody)
-				if err != nil {
-					return fmt.Errorf("reactivate subscription: %w", err)
-				}
-				if actStatus != 200 && actStatus != 202 {
-					return fmt.Errorf("reactivate = %d, want 200/202", actStatus)
-				}
-				// redelivering count when present; otherwise rely on capture.
-				if v, ok := reactBody["redelivering"]; ok {
-					n, _ := asMinor(v)
-					if n != 0 && n != 2 {
-						return fmt.Errorf("reactivation redelivering %v, want 2", v)
-					}
-					activated.RedeliveredNotifications = int(n)
-				} else {
-					activated.RedeliveredNotifications = 2 // asserted via capture below
-				}
-			} else {
-				actStatus, err := PutJSON(ctx, env.Client, base+"/subscription/"+sub.ID+"/activate",
-					mergeHeaders(hdr, map[string]string{"If-Match": repointed.RowVersion}), nil, &activated)
-				if err != nil {
-					return fmt.Errorf("activate subscription: %w", err)
-				}
-				if actStatus != 200 {
-					return fmt.Errorf("activate = %d, want 200", actStatus)
-				}
-				if activated.RedeliveredNotifications != 2 {
-					return fmt.Errorf("reactivation redelivered %d notifications, want the 2 that were retained",
-						activated.RedeliveredNotifications)
-				}
+			actStatus, err := PutJSON(ctx, env.Client, base+"/subscription/"+sub.ID+"/activate",
+				mergeHeaders(hdr, map[string]string{"If-Match": repointed.RowVersion}), nil, &activated)
+			if err != nil {
+				return fmt.Errorf("activate subscription: %w", err)
+			}
+			if actStatus != 200 {
+				return fmt.Errorf("activate = %d, want 200", actStatus)
+			}
+			if activated.RedeliveredNotifications != 2 {
+				return fmt.Errorf("reactivation redelivered %d notifications, want the 2 that were retained",
+					activated.RedeliveredNotifications)
 			}
 
 			if err := PollUntil(ctx, 30*time.Second, 250*time.Millisecond, func() (bool, error) {

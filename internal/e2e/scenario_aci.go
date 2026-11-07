@@ -29,7 +29,7 @@ type aciSentRecord struct {
 
 // AciPaymentNotification confirms the ACI card-gateway webhook mock
 // (docs/ARCHITECTURE-phase3-corrections.md section 2): triggering "a card
-// payment just happened" produces a genuinely AES-256-GCM-encrypted
+// payment just happened" (the lab API's POST /sim/payments on aci) produces a genuinely AES-256-GCM-encrypted
 // notification -- non-empty ciphertext/IV/tag, carrying the exact
 // merchantTransactionId/pluginType this scenario asked for -- and actually
 // attempts delivery, not just accepts the trigger. internal/aci's own
@@ -59,20 +59,20 @@ func AciPaymentNotification() Scenario {
 				"result_description":      "Risk check successful",
 			}
 			var sim aciSimulateResp
-			status, err := PostJSON(ctx, env.Client, env.ACIURL+"/internal/simulate-payment", nil, req, &sim)
+			status, err := env.Lab.Post(ctx, Sim("aci", "payments"), req, &sim)
 			if err != nil {
-				return fmt.Errorf("aci simulate-payment: %w", err)
+				return fmt.Errorf("aci POST /sim/payments: %w", err)
 			}
 			if status != 202 {
-				return fmt.Errorf("aci simulate-payment: status %d, want 202", status)
+				return fmt.Errorf("aci POST /sim/payments: status %d, want 202", status)
 			}
 			if sim.ID == "" {
-				return fmt.Errorf("aci simulate-payment: empty id in response")
+				return fmt.Errorf("aci POST /sim/payments: empty id in response")
 			}
 
 			var rec aciSentRecord
 			if err := PollUntil(ctx, 10*time.Second, 100*time.Millisecond, func() (bool, error) {
-				if _, err := GetJSON(ctx, env.Client, env.ACIURL+"/internal/sent/"+sim.ID, &rec); err != nil {
+				if _, err := env.Lab.Get(ctx, Sim("aci", "sent/"+sim.ID), &rec); err != nil {
 					return false, err
 				}
 				if rec.DeliveryStatus == "" || rec.DeliveryStatus == "pending" {
@@ -93,7 +93,7 @@ func AciPaymentNotification() Scenario {
 				return fmt.Errorf("expected non-empty encrypted material, got ciphertext=%d iv=%d tag=%d hex chars", len(rec.CiphertextHex), len(rec.IVHex), len(rec.TagHex))
 			}
 			if rec.DeliveryStatus != "delivered" {
-				return fmt.Errorf("delivery_status = %q, want delivered (target=%s)", rec.DeliveryStatus, env.ACIURL)
+				return fmt.Errorf("delivery_status = %q, want delivered to ACI_WEBHOOK_TARGET_URL", rec.DeliveryStatus)
 			}
 			return nil
 		},

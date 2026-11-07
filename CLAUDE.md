@@ -49,7 +49,14 @@ port + 1000, `internal/simctl`): every `/sim/*` route, plain HTTP, no
 vendor login. Never give the lab API a vendor's credentials or have it call
 a vendor surface; if it needs something a sim only offers there, add a
 `/sim` route that answers the same. Vendor auth is for the platform;
-`LAB_API_TOKEN` is the only lab auth.
+`LAB_API_TOKEN` is the only lab auth. Control ports are never published:
+from outside the lab's network, the lab API is the one way in.
+
+The e2e suite (`cmd/e2e`, `internal/e2e`, `make e2e`) plays the platform
+on the vendor surfaces, with each vendor's login, and steers and reads the
+lab through the lab API (`LAB_API_URL`, `LAB_API_TOKEN`) like any agent. It
+never calls a control port or `/internal/*`, so it runs the same against a
+lab in the cloud; `internal/e2e/lab_test.go` holds it to that.
 
 A trap (`internal/trap`, `docs/lab-api/traps.md`) is armed in the sim that
 applies it and acts through that vendor's own engine: a new hook lives in

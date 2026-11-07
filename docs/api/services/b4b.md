@@ -964,12 +964,15 @@ Puts b4b back to a known state.
 - **e2e suite** (`internal/e2e`): `b4b-oversight-gates`
   (`scenario_b4b.go`) registers a beneficiary, sends mismatched and matching
   payments, polls `GET /oversight/v1/payments/{id}`, blocks the payee with
-  `PUT /sim/beneficiaries/{id}/sanctions` on `:8086`, signed (the old path,
-  until phase 4), and re-reads it;
+  `PUT /sim/beneficiaries/{id}/sanctions` through the lab API, and re-reads
+  it;
   `b4b-company-boarding` (`scenario_b4b_boarding.go`) walks companies,
   addresses, people, uploads, the extended profile (and its read), vIBANs
   and beneficiaries, asserting each refusal; `banking-circle-payout`
-  (`scenario_bankingcircle.go`) reaches b4b only through settlement.
+  (`scenario_bankingcircle.go`) reaches b4b only through settlement;
+  `banking-circle-trap-paths` and `banking-circle-reset-drops-a-payout-in-flight`
+  (`scenario_traps.go`) register a beneficiary and pay it, so that b4b
+  hands Banking Circle the payout a trap is waiting for.
 - **The platform** under test: its own B4B client, configured with
   `B4B_API_BASE_URL`, `B4B_JWT_KEY_ID` and `B4B_JWT_PRIVATE_KEY`; it receives
   callbacks wherever b4b's `B4B_CALLBACK_URL` points (compose carries a

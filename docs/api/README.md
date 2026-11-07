@@ -23,16 +23,20 @@ and health, and each service's `/sim/*` hooks through one passthrough.
   carries the lab's hooks, `/sim/*`, with no vendor login; only the lab
   API calls it. The lab API holds no vendor credentials: those are the
   platform's.
-- **The e2e suite** (`make e2e`) calls the services directly. It needs
-  neither the lab API nor the console, and neither being down stops it.
+- **The e2e suite** (`make e2e`) plays the platform. It calls each
+  vendor's surface with that vendor's login, as your platform does, and
+  steers and reads the lab through the lab API with `LAB_API_TOKEN`, as an
+  agent does. It never calls a control port or `/internal/*`, so the same
+  run works against a lab on your machine or in the cloud.
 
-The lab API is a client of the services, never in their way: nothing in
-the lab can be reached only through it, and every route has a service
-endpoint behind it or is the lab API's own state (the merchant registry and
-the plugin registrations).
+The lab API is a client of the services, never in the platform's way: no
+vendor traffic goes through it, and every route has a service endpoint
+behind it or is the lab API's own state (the merchant registry and the
+plugin registrations). The control ports are not published, so from
+outside the lab's network the lab API is the one way to a service's
+hooks.
 
-What the lab API is still to gain — traps that make a vendor answer a
-future request the way a test needs — is the rest of phase 1 in
+What the lab API is still to gain is in
 [docs/lab-api/plan.md](../lab-api/plan.md).
 
 **Where authentication is.** Between a person, an agent or the console and
@@ -49,8 +53,8 @@ narrows that to the addresses listed.
   console page ───▶ console :8090 ──(forwards /v1)──┐
   (your browser)    page, no state                  │
                                                     ▼
-  scripts, agents ────────────────────────▶┌──────────────────────────────────┐
-                                            │ lab API :8097                    │◀── POST /v1/plugins ──┐
+  scripts, agents ─────────────────────────▶┌──────────────────────────────────┐
+  e2e suite (make e2e) ────────────────────▶│ lab API :8097                    │◀── POST /v1/plugins ──┐
                                             │   GET /v1          the index     │─── buttons, files ──▶ │
                                             │   /v1/*            the lab       │                       │
                                             │   /v1/services/{id}/sim/*  every │                your platform
@@ -60,8 +64,8 @@ narrows that to the addresses listed.
                                                              │ control ports only, no vendor login     │
                                                              ▼                                         │
                                             ┌──────────────────────────────────┐                       │
-  e2e ─────────────────────────────────────▶│ services, one process each       │◀── vendor traffic ────┤
-  (make e2e)                                │   vendor port :808x, :2222       │─── webhooks ────────▶ │
+  e2e suite, as the platform ──────────────▶│ services, one process each       │◀── vendor traffic ────┤
+  (vendor surfaces only)                    │   vendor port :808x, :2222       │─── webhooks ────────▶ │
                                             │     the vendor's API, its login  │                       │
                                             │     /internal/*      plumbing    │                       │
                                             │   control port :908x  /sim/*     │                       │
@@ -75,7 +79,7 @@ narrows that to the addresses listed.
 | Console server | the lab API, forwarding what the page sends | anything else |
 | Scripts and agents | the lab API for everything lab-level; a vendor surface when testing an integration with that vendor | — |
 | Lab API | each service's control port; the clock's `GET /clock`; a plugin's `base_url` | a vendor surface: it holds no vendor credentials |
-| The e2e suite | services' vendor surfaces and `/sim/*` | the lab API, the console |
+| The e2e suite | vendor surfaces, with each vendor's login, as the platform; the lab API for everything lab-level, with `LAB_API_TOKEN` | a control port, `/internal/*`, the console |
 | Your platform | vendor surfaces; the lab API's `POST /v1/plugins`; the clock's `GET /clock` | `/sim/*` or `/internal/*` from production code: the real vendor has neither. Its test harness may use the lab API, like any script |
 | One service, of another | `/internal/*` plumbing (B4B → Banking Circle's bridge, Worldline's wire → Banking Circle, Banking Circle → the business bank), webhooks and callbacks | — |
 
@@ -246,7 +250,7 @@ merged with `GET /v1/logs` ([lab-api.md](lab-api.md)).
 | Test your integration with one vendor | that vendor's surface | exactly the calls your platform makes to the real one |
 | Put your platform's card in the console | the lab API | `POST /v1/plugins` ([plugins.md](../plugins.md)) |
 | Keep your platform's business dates on the lab's | the clock | `GET /clock` every second ([plugins.md](../plugins.md#the-clock)) |
-| Prove every hop is connected | `make e2e` | it calls the services directly |
+| Prove every hop is connected | `make e2e` | it plays the platform on the vendor surfaces and steers the lab through the lab API |
 
 [agent.runbooks.md](../../agent.runbooks.md) is the worked how-to: every
 step of a settlement run as one call.

@@ -46,8 +46,11 @@ Control ports are the vendor port plus 1000. In the podman pod every
 container shares one network namespace, so the ports have to be unique
 across the whole lab, and this rule keeps them unique.
 
-`e2e` does not change. It still talks to the vendor surfaces directly
-and needs neither `lab-api` nor `console`.
+**[DECIDED 2026-11-07, built]** The e2e suite (`cmd/e2e`) plays the
+platform on the vendor surfaces, with each vendor's login, and steers and
+reads the lab through `lab-api` with `LAB_API_TOKEN`, like any agent. It
+calls no control port and no `/internal/*`, so one run works against a lab
+on a developer's machine or in the cloud. It needs no `console`.
 
 ## 2. Three kinds of traffic
 
@@ -128,8 +131,9 @@ Why a separate listener:
 Compatibility: with `SIM_CONTROL_LISTEN` unset, nothing moves; that is the
 default and what a sim run alone gets. In compose it is set. The old paths
 stay as aliases until [phase 4](plan.md#phase-4--retire-the-aliases).
-Whether the control ports are published to the host is
-[OPEN 2](open.md).
+The control ports are not published to the host
+([OPEN 2](open.md), decided): from outside the lab's network, `lab-api` is
+the one way to them.
 
 ## 5. The back link
 

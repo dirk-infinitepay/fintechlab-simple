@@ -77,31 +77,22 @@ func WorldlineSettlementToSFTP() Scenario {
 			// file is what triggers the B4B/Banking Circle payout as a
 			// side effect, and banking-circle-payout needs a true
 			// pre-payout snapshot to assert an exact balance delta.
-			// Banking Circle's real-shaped API requires the same
-			// mTLS + bearer auth that scenario completes.
-			hdr, err := bankingCircleBearer(ctx, env)
-			if err != nil {
-				return err
-			}
 			bcAccountID := bankingcircle.AccountIDFor(merchantIBAN)
-			before, beforeStatus, err := bcReadBalance(ctx, env, hdr, bcAccountID)
+			before, err := bcReadBalance(ctx, env, bcAccountID)
 			if err != nil {
 				return fmt.Errorf("baseline banking-circle balance: %w", err)
-			}
-			if beforeStatus != 200 && beforeStatus != 404 {
-				// Unknown account is fine (0.00); other errors surface above.
-				before = "0.00"
 			}
 			state.Set("bc_merchant_balance_before", before)
 
 			// 1. A card payment happened at the merchant's paypoint. The
-			// acquirer is told, because the acquirer is who would know.
+			// acquirer is told, because the acquirer is who would know:
+			// Worldline's lab hook, through the lab API.
 			txns := []map[string]any{
 				{"mid": merchantIBAN, "currency": "EUR", "amount_cents": 10000, "date": settledDay, "card_scheme_name": "Visa"},
 				{"mid": merchantIBAN, "currency": "EUR", "amount_cents": 5000, "date": settledDay, "card_scheme_name": "Mastercard"},
 			}
 			var seeded map[string]any
-			status, err := PostJSON(ctx, env.Client, env.WorldlineURL+"/sim/transactions", nil, txns, &seeded)
+			status, err := env.Lab.Post(ctx, Sim("worldline", "transactions"), txns, &seeded)
 			if err != nil {
 				return fmt.Errorf("seed worldline transactions: %w", err)
 			}
@@ -112,8 +103,7 @@ func WorldlineSettlementToSFTP() Scenario {
 			// 2. The morning cycle fires: file cut, published encrypted,
 			// lump sum wired.
 			var run cycleRunResp
-			status, err = PostJSON(ctx, env.Client,
-				env.WorldlineURL+"/sim/settlement-cycle/run?slot=morning&date="+settledDay, nil, nil, &run)
+			status, err = env.Lab.Post(ctx, Sim("worldline", "settlement-cycle/run?slot=morning&date="+settledDay), nil, &run)
 			if err != nil {
 				return fmt.Errorf("run morning settlement cycle: %w", err)
 			}
@@ -280,8 +270,7 @@ func WorldlineConfirmationFile() Scenario {
 			}
 
 			var run cycleRunResp
-			status, err := PostJSON(ctx, env.Client,
-				env.WorldlineURL+"/sim/settlement-cycle/run?slot=afternoon&date="+settledDay, nil, nil, &run)
+			status, err := env.Lab.Post(ctx, Sim("worldline", "settlement-cycle/run?slot=afternoon&date="+settledDay), nil, &run)
 			if err != nil {
 				return fmt.Errorf("run afternoon settlement cycle: %w", err)
 			}

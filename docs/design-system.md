@@ -604,10 +604,12 @@ agent reads before calling anything.
   the hash (contract 9): `#docs` is the guide, `#docs/api` the reference,
   `#docs/api:banking-circle` the reference with that service's card open.
 - **A diagram first**, drawn with the guide's own boxes, chips and arrows:
-  who calls which API. The callers (the console page, scripts and agents,
-  the e2e suite, the platform) are on the left, the console in the middle and
-  the services on the right, each with its three surfaces. The system under
-  test is in the identity colour.
+  who calls which API. The lab's own callers are on the left: the console
+  page, and scripts, agents and the e2e suite, which call the lab API for
+  everything lab-level and a vendor surface only as a platform would. The
+  lab API and the services, each with its three surfaces, are in the
+  middle; the platform is on the right. The system under test is in the
+  identity colour.
 - **Which to call comes before any route.** A table maps intent to surface
   ("make a vendor misbehave" goes to that service's `/sim/*`), so a reader
   picks the right API before reading paths.

@@ -448,6 +448,27 @@ on a lab started before B4B's bridge carried the creditor account — `make up`.
 `notify` is left out while the receiver's card is hidden; `hidden` in
 `/v1/flow` says how much it still carried.
 
+## Prove the lab: the e2e suite
+
+```sh
+make e2e                                    # every scenario, against the lab on this host
+E2E_ONLY=banking-circle-trap-paths make e2e # a few, by name
+make e2e-docker                             # the same, as a container on the compose network
+```
+
+It plays the platform: each vendor on its own surface, with its own login
+(keys from `LAB_KEYS_DIR`). Everything lab-level — seeding trading, running
+a cycle, flipping sanctions, landing a wire, traps, reset, reading a
+vendor's books — goes through the lab API, `LAB_API_URL` (default
+`http://127.0.0.1:8097`) with `LAB_API_TOKEN` when the lab sets one. It
+never calls a control port or `/internal/*`, so pointing it at a lab
+elsewhere is `LAB_API_URL`, `LAB_API_TOKEN` and each vendor's URL
+(`internal/e2e/e2e.go`).
+
+It writes: payouts, beneficiaries, a sanctions flip, and its last scenario
+resets Banking Circle (`flow`: subscriptions survive, payments do not). Not
+in the middle of a platform run you care about.
+
 ## Start clean, and read every service's log
 
 Between runs, reset the lab instead of restarting it: a restart loses

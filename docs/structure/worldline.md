@@ -107,7 +107,7 @@ graph TD
 graph LR
     ST["settlement\n(worldlinePuller)"] -->|"SSH/SFTP+PGP :2222\nDial / List / Download"| WL(("worldline"))
     WL -->|"POST :8095/internal/incoming-payments\nlump sum -> SGA"| BC["banking-circle"]
-    HN["e2e"] -->|"HTTP :8084\n/sim/transactions, /sim/cycle/run"| WL
+    HN["e2e"] -->|"lab API :8097\n/sim/transactions, /sim/settlement-cycle/run"| WL
     HN -->|"SSH/SFTP+PGP :2222 directly\nre-dials, re-parses independently"| WL
 ```
 

@@ -10,8 +10,12 @@ this lab — no settlement, B4B, or Banking Circle involvement.
 
 ## 1. Simulate a card payment
 
+The trigger and the record of what was sent are the lab's, so both go
+through the lab API on `:8097` (with `-H "Authorization: Bearer
+$LAB_API_TOKEN"` when the lab sets one).
+
 ```bash
-curl -s -X POST http://127.0.0.1:8087/internal/simulate-payment \
+curl -s -X POST http://127.0.0.1:8097/v1/services/aci/sim/payments \
   -d '{
         "merchant_transaction_id": "demo-tx-1",
         "payment_type": "RX",
@@ -32,7 +36,7 @@ convention as every other webhook sender in this lab).
 ## 2. Inspect what was actually sent
 
 ```bash
-curl -s http://127.0.0.1:8087/internal/sent/aci_evt_XXXXXXXXXXXX | python3 -m json.tool
+curl -s http://127.0.0.1:8097/v1/services/aci/sim/sent/aci_evt_XXXXXXXXXXXX | python3 -m json.tool
 ```
 
 `notification` is the exact plaintext payload (real camelCase field names,

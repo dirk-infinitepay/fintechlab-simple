@@ -29,8 +29,8 @@ That constraint is the whole design, and it is worth stating plainly:
   the e2e suite — which is what actually judges this repo — could never
   assert on it.
 - **The console being down is never why a scenario cannot run.** It is not
-  a dependency of anything. Neither is the lab API: `make e2e` knows
-  neither exists.
+  a dependency of anything: the e2e suite, like an agent, steers the lab
+  through the lab API, and the console is only a page over that.
 - **It holds no vendor contract.** Nothing real-shaped lives here. The
   contracts live in `worldline`, `b4b`, `banking-circle` and `aci`, which
   is where you would go to check them against a vendor's documentation.

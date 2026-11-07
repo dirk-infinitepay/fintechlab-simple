@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -27,6 +28,27 @@ type b4bPaymentStateResp struct {
 	ExternalRef string `json:"external_ref"`
 }
 
+// b4bPaymentBody is a payout through B4B's Oversight API, as the platform
+// sends one: to beneficiary benID, with creditor details that must agree
+// with it. Lifecycle callbacks go to the settlement stand-in, as the
+// platform's would.
+func b4bPaymentBody(env *Env, benID, creditorAccount, creditorFI, creditorName, ref, amount string) map[string]any {
+	return map[string]any{
+		"external_ref":           ref,
+		"beneficiary_id":         benID,
+		"company_id":             "cmp_harness",
+		"callback_url":           env.SettlementURL + "/internal/b4b-webhook",
+		"sca_applied":            true,
+		"amount":                 map[string]any{"amount": json.Number(amount), "currency": "EUR"},
+		"currencyOfTransfer":     "EUR",
+		"debtorViban":            map[string]any{"account": "GB00SIM0000000000001", "country": "GB"},
+		"creditorAccount":        map[string]any{"account": creditorAccount, "financialInstitution": creditorFI, "country": "GB"},
+		"creditorName":           creditorName,
+		"chargeBearer":           "SHA",
+		"requestedExecutionDate": time.Now().UTC().Format("2006-01-02"),
+	}
+}
+
 // B4BOversightGates drives the two checks B4B applies before a payment
 // reaches Banking Circle, and the recovery path for a missed callback.
 //
@@ -39,16 +61,10 @@ func B4BOversightGates() Scenario {
 	return Scenario{
 		Name: "b4b-oversight-gates",
 		Run: func(ctx context.Context, env *Env, state *State) error {
-			token, ok := state.Get("b4b_bearer")
-			if !ok {
-				var err error
-				token, err = b4bBearer(env)
-				if err != nil {
-					return err
-				}
-				state.Set("b4b_bearer", token)
+			hdr, err := b4bHeaders(env, state)
+			if err != nil {
+				return err
 			}
-			hdr := map[string]string{"Authorization": "Bearer " + token}
 			base := env.B4BURL + "/oversight/v1"
 
 			// Register a beneficiary with real details, so the consistency
@@ -74,20 +90,7 @@ func B4BOversightGates() Scenario {
 			}
 
 			payment := func(creditorAccount, creditorFI, creditorName, ref string) map[string]any {
-				return map[string]any{
-					"external_ref":           ref,
-					"beneficiary_id":         ben.ID,
-					"company_id":             "cmp_harness",
-					"callback_url":           env.SettlementURL + "/internal/b4b-webhook",
-					"sca_applied":            true,
-					"amount":                 map[string]any{"amount": 12.34, "currency": "EUR"},
-					"currencyOfTransfer":     "EUR",
-					"debtorViban":            map[string]any{"account": "GB00SIM0000000000001", "country": "GB"},
-					"creditorAccount":        map[string]any{"account": creditorAccount, "financialInstitution": creditorFI, "country": "GB"},
-					"creditorName":           creditorName,
-					"chargeBearer":           "SHA",
-					"requestedExecutionDate": time.Now().UTC().Format("2006-01-02"),
-				}
+				return b4bPaymentBody(env, ben.ID, creditorAccount, creditorFI, creditorName, ref, "12.34")
 			}
 
 			// Creditor details that contradict the beneficiary are refused
@@ -152,7 +155,9 @@ func B4BOversightGates() Scenario {
 			// beneficiary that paid out a moment ago must stop paying out
 			// the moment it does.
 			var blocked b4bBeneficiaryResp
-			if _, err := PutJSON(ctx, env.Client, env.B4BURL+"/sim/beneficiaries/"+ben.ID+"/sanctions", hdr,
+			// Screening is B4B's own, so the lab API flips it: the
+			// beneficiary's sanctions hook on b4b.
+			if _, err := env.Lab.Put(ctx, Sim("b4b", "beneficiaries/"+ben.ID+"/sanctions"),
 				map[string]any{"sanctions_status": "fail"}, &blocked); err != nil {
 				return fmt.Errorf("block beneficiary: %w", err)
 			}
@@ -187,6 +192,20 @@ func B4BOversightGates() Scenario {
 // key b4b itself verifies against is the point: a scenario that skipped
 // the token would not be exercising the auth a real client has to get
 // right.
+// b4bHeaders is B4B's login, as the platform presents it: an RS512 bearer
+// JWT, minted once a run.
+func b4bHeaders(env *Env, state *State) (map[string]string, error) {
+	token, ok := state.Get("b4b_bearer")
+	if !ok {
+		var err error
+		if token, err = b4bBearer(env); err != nil {
+			return nil, err
+		}
+		state.Set("b4b_bearer", token)
+	}
+	return map[string]string{"Authorization": "Bearer " + token}, nil
+}
+
 func b4bBearer(env *Env) (string, error) {
 	pem, err := os.ReadFile(env.B4BJWTPrivateKeyPath)
 	if err != nil {

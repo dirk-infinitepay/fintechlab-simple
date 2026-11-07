@@ -18,6 +18,7 @@ type bcAccountResp struct {
 type bcPayment struct {
 	ID           string `json:"id"`
 	SettlementID string `json:"settlementId"`
+	ToAccountID  string `json:"toAccountId"`
 	Amount       string `json:"amount"`
 	Currency     string `json:"currency"`
 	State        string `json:"state"`
@@ -65,8 +66,8 @@ func bankingCircleBearer(ctx context.Context, env *Env) (map[string]string, erro
 // at zero, so settlement's automatic payout (a side effect of
 // WorldlineSettlementToSFTP's batch) may legitimately observe
 // "awaiting_funding" on this stack's first-ever payout -- this scenario
-// simulates Worldline's lump sum landing (POST /internal/incoming-payments)
-// and retries (POST .../retry-payout) exactly as a developer demoing this
+// simulates Worldline's lump sum landing (through the lab API) and
+// retries (POST .../retry-payout) exactly as a developer demoing this
 // would. A repeat e2e run against the same long-lived stack finds
 // funds already left over from the previous run and skips straight past
 // this step -- both paths are exercised across two consecutive runs, not
@@ -74,10 +75,9 @@ func bankingCircleBearer(ctx context.Context, env *Env) (map[string]string, erro
 // only then does it bridge the payment into Banking Circle, which
 // independently drives OutgoingPaymentBooked -> OutgoingPaymentProcessed
 // and moves ledger funds (docs/ARCHITECTURE-vendor-corrections.md
-// sections 2-4). This scenario observes every hop through authenticated
-// calls -- settlement's own payout-state introspection, then Banking
-// Circle's real mTLS + bearer credentialed API -- not by re-deriving
-// anything from logs.
+// sections 2-4). This scenario observes every hop where it happened --
+// settlement's own payout-state introspection, then Banking Circle's books
+// through the lab API -- not by re-deriving anything from logs.
 //
 // What this does NOT check: Banking Circle's own webhook *content*. Real
 // Banking Circle encrypts webhook notifications with AES-256-GCM (section
@@ -87,8 +87,8 @@ func bankingCircleBearer(ctx context.Context, env *Env) (map[string]string, erro
 // the payload itself. The AES-GCM algorithm already has a real
 // encrypt-then-decrypt round trip covered by internal/bankingcircle's own
 // unit tests; this scenario instead proves the stronger, still-genuine
-// claim that the money actually moved and is queryable through Banking
-// Circle's real, authenticated API -- not a decorative check.
+// claim that the money actually moved in Banking Circle's books -- not a
+// decorative check.
 func BankingCirclePayout() Scenario {
 	return Scenario{
 		Name: "banking-circle-payout",
@@ -117,11 +117,6 @@ func BankingCirclePayout() Scenario {
 			// merchant's (docs section 1/4).
 			bcAccountID := bankingcircle.AccountIDFor(merchantIBAN)
 
-			hdr, err := bankingCircleBearer(ctx, env)
-			if err != nil {
-				return err
-			}
-
 			var payout payoutResp
 			if _, err := GetJSON(ctx, env.Client, env.SettlementURL+"/reports/settlement/"+settlementID+"/payout", &payout); err != nil {
 				return fmt.Errorf("get payout state: %w", err)
@@ -131,8 +126,7 @@ func BankingCirclePayout() Scenario {
 				// Simulate Worldline's lump sum landing in the SGA -- the
 				// e2e suite's "something has landed" trigger (docs section
 				// 1). Funded generously so neither this nor a later run
-				// ever re-hits this gate. Pod twin: POST /sim/funding;
-				// standalone: POST /internal/incoming-payments.
+				// ever re-hits this gate.
 				if err := bcFundSGA(ctx, env, "1000000.00", "worldline-lump-sum-harness"); err != nil {
 					return err
 				}
@@ -166,30 +160,17 @@ func BankingCirclePayout() Scenario {
 				return fmt.Errorf("waiting for B4B approval: %w", err)
 			}
 
-			// Hop 2: B4B -> Banking Circle (Connect surface under test).
-			// Compose still bridges standalone B4B → standalone :8095.
-			// When the e2e suite observes pod-bank-rails, drive the twin's
-			// handoff ourselves (same body shape oversight would POST) and
-			// fund the pod SGA so booking can succeed.
-			const payoutMajor = "150.00" // worldline seeds 10000+5000 cents
-			if env.UsesPodBankRails() {
-				if err := bcFundSGA(ctx, env, "1000000.00", "pod-sga-fund-"+settlementID); err != nil {
-					return err
-				}
-				if err := bcHandoffPayout(ctx, env, settlementID, bcAccountID, payoutMajor); err != nil {
-					return err
-				}
-			}
-
+			// Hop 2: B4B -> Banking Circle. B4B bridges the payout once it
+			// is approved; Banking Circle books and processes it on its
+			// own, and its books say so.
 			var bcPay bcPayment
-			today := time.Now().UTC().Format("2006-01-02")
 			if err := PollUntil(ctx, 15*time.Second, 250*time.Millisecond, func() (bool, error) {
-				var recon bcPaymentsResp
-				if _, err := GetJSONWithHeaders(ctx, env.Client, env.BankingCircleURL+"/reconciliation?date="+today+"&account_id="+bcAccountID, hdr, &recon); err != nil {
+				payments, err := bcPayments(ctx, env)
+				if err != nil {
 					return false, err
 				}
-				for _, p := range recon.Payments {
-					if p.SettlementID == settlementID {
+				for _, p := range payments {
+					if p.SettlementID == settlementID && p.ToAccountID == bcAccountID {
 						bcPay = p
 						return p.State == "OutgoingPaymentProcessed", nil
 					}
@@ -203,7 +184,7 @@ func BankingCirclePayout() Scenario {
 			if err != nil {
 				return err
 			}
-			gotBalance, _, err := bcReadBalance(ctx, env, hdr, bcAccountID)
+			gotBalance, err := bcReadBalance(ctx, env, bcAccountID)
 			if err != nil {
 				return fmt.Errorf("get account balance: %w", err)
 			}

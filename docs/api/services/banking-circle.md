@@ -23,7 +23,7 @@ memory.
 | --- | --- |
 | Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095`.<br>`:9085`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`, default `LISTEN`'s port + 1000), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://banking-circle:9085` |
 | Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
-| A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the e2e suite. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the e2e suite |
+| A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) on the e2e suite, which reaches the rest through the lab API. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the e2e suite |
 | Activity logs | `GET /sim/activity` (on the control port) keeps four logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount; `payment.state` for each state a trap's step took a payout to, with `detail.trap` (green when processed, amber otherwise). `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume; a batch carrying a notification a trap's step made has `detail.trap` (the trap ids, comma-separated). `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `traps` (*Traps*): `trap.armed`, `trap.caught`, `trap.step`, `trap.diverted` (amber), `trap.disarmed`, each with `detail.trap`. `POST /sim/reset` empties all four |
 | Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments, balances and traps. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`) |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
@@ -459,7 +459,8 @@ beneficiary's account. Called by b4b when its payout reaches
 
 Money landing on a safeguarding account: the acquirer's lump sum. Called
 by worldline on each morning slot, by the lab API's
-`POST /v1/actions/fund-sga`, and by the e2e suite.
+`POST /v1/actions/fund-sga`; the e2e suite lands its wires through the
+lab API's `POST /sim/incoming-payments`, the same handler.
 
 - Body: `{"currency": "EUR", "amount": "1250.00", "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24"}`.
   `currency` is `EUR` or `GBP` and picks the account; there is no account
@@ -1092,18 +1093,25 @@ order, after anything already queued. A shortcut for traps
   `GET /sim/accounts/{accountId}/balances` and
   `POST /sim/incoming-payments` (`POST /v1/actions/fund-sga`); and any
   `/sim/*` path through `/v1/services/{id}/sim/…`.
-- **The e2e suite**: `banking-circle-payout`
-  (`internal/e2e/scenario_bankingcircle.go`) authorizes, reads
-  `GET /accounts/{id}`, funds with `POST :8095/internal/incoming-payments`
-  and checks `GET /reconciliation?date=…&account_id=…`.
+- **The e2e suite**, on the Connect API as the platform and through the
+  lab API for every `/sim` route: `banking-circle-payout`
+  (`internal/e2e/scenario_bankingcircle.go`) funds with
+  `POST /sim/incoming-payments`, then finds the payout in
+  `GET /sim/payments` and the creditor's balance in `GET /sim/accounts`.
   `banking-circle-subscription` (`internal/e2e/scenario_bcsubscription.go`)
-  creates a subscription (and a duplicate, expecting `409`), adds an event,
-  tries a `PUT` without `If-Match` (`412`) and with it, then
+  authorizes, creates a subscription (and a duplicate, expecting `409`),
+  adds an event, tries a `PUT` without `If-Match` (`412`) and with it, then
   `POST /sim/subscription/{subscriptionId}/notifications?count=5` and
   checks one batch of five arrives. `banking-circle-retry-deactivation`
   points a subscription at a dead endpoint, enqueues with `flush=true`,
-  waits for the deactivation, reads `GET /sim/emails`, repoints it and
+  waits for the deactivation, reads `GET /sim/emails` and
+  `GET /sim/subscription/{subscriptionId}/pending`, repoints it and
   `PUT …/activate` to see the two retained notifications redelivered.
+  `banking-circle-trap-paths` and
+  `banking-circle-reset-drops-a-payout-in-flight`
+  (`internal/e2e/scenario_traps.go`) arm traps with `POST /sim/traps`,
+  send the payout through b4b, read `GET /sim/traps/{id}` and
+  `GET /sim/payments`, and reset with `POST /v1/services/banking-circle/reset`.
   `b4b-oversight-gates` reaches `POST /internal/payments` through b4b.
 - **Agents and operators** (agent.runbooks.md): `POST`/`GET :8095/internal/payments/outcomes`
   and `POST :8095/internal/payments/{id}/return` and `/reverse`, or the

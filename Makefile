@@ -289,22 +289,22 @@ pod-bundle: pod-images
 e2e:
 	@go run ./cmd/e2e
 
+# The compose network the lab runs on: <project>_default.
+E2E_NETWORK ?= fintechlab-simple_default
+
 e2e-docker:
 	$(ENGINE) build -f docker/Dockerfile.e2e -t fintechlab-simple_e2e .
-	$(ENGINE) run --rm --network fintechlab-simple_default \
+	$(ENGINE) run --rm --network $(E2E_NETWORK) \
 		-e PAYMENT_API_URL=http://payment-api:8080 \
 		-e BANK_URL=http://bank:8081 \
 		-e NOTIFIER_URL=http://notifier:8082 \
 		-e RECEIVER_URL=https://receiver:8443 \
 		-e RECEIVER_DELIVERY_URL=https://receiver:8443 \
 		-e SETTLEMENT_URL=http://settlement:8083 \
-		-e WORLDLINE_URL=http://worldline:8084 \
-		-e BANKING_CIRCLE_URL=https://pod-bank-rails:9085 \
-		-e BANKING_CIRCLE_INTERNAL_URL=https://pod-bank-rails:9085 \
-		-e BANKING_CIRCLE_CONTROL_URL=http://banking-circle:9085 \
-		-e BANKING_CIRCLE_TARGET=pod \
-		-e ACI_URL=http://aci:8087 \
+		-e BANKING_CIRCLE_URL=https://banking-circle:8085 \
 		-e B4B_URL=http://b4b:8086 \
+		-e LAB_API_URL=http://lab-api:8097 \
+		-e LAB_API_TOKEN \
 		-e B4B_JWT_PRIVATE_KEY_PATH=/keys/b4b-keys/private.pem \
 		-e B4B_JWT_KEY_ID=b4b-mock-1 \
 		-e CA_FILE=/keys/certs/ca.pem \

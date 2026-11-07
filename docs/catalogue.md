@@ -61,7 +61,7 @@ your platform, not a model of it.
 | **b4b** | B4B Payments: JWT(RS512)-authed Oversight API, both halves. **Boarding** — companies (422 on a repeated `external_ref`), addresses, people (natural and legal, screened on a callback carrying sanctions *and* PEP status separately), document uploads, the create-once extended profile, vIBANs. **Payout** — beneficiary registration with `pass`/`review`/`fail` sanctions and active/disabled status on a status-change callback, four 422 gates (sanctions, disabled, creditor-consistency, optionally paying company, all forwarding nothing), payout lifecycle (`B4BAccepted`→…→`B4BTMApproved`/`B4BFailed`) with a callback on every regulatory-phase change, `GET /payments/{id}` for a missed callback, and the bridge into Banking Circle once approved. All of it persisted to `b4b-data/state.json`, with an interrupted payment resuming after a restart | No real sanctions/PEP/KYB screening — everything boarded passes, on a delay, with lab-only `PUT /sim/...` endpoints to move any status and a configured force-fail list for payments. Documents are accepted, measured and **discarded**, never stored and never judged. No batch payments | B4B Oversight API shape end to end (byte-exact wire types: JSON-number amounts, `country` refs, `chargeBearer` `SHA`/`BEN`/`OUR`), the boarding rules a client actually trips over, its gates and its callback semantics — this lab's only real inbound-payment caller of Banking Circle |
 | **aci** | Online card-payment gateway: AES-256-GCM encrypted webhook notification (hex IV/tag/body, distinct key encoding from Banking Circle's), simulating "a card payment just happened" | No merchant-onboarding REST client, no SFTP+PGP file-exchange channel (both real but separate ACI surfaces, out of scope) | ACI's real webhook crypto envelope and notification payload shape (known-answer-tested against ACI's own published reference vector) |
 | **verify** | Merchant verification / compliance-check service gating a payout: always-approves by default, `x-internal-api-key` shared-secret auth | No real AML/sanctions/KYC vendor calls (explicitly a sample/stub, per product decision) | verification-service's real trigger-then-read-decision contract and decision-enum values |
-| **lab-api** *(lab)* | Nothing. It holds no vendor contract at all: it reads and drives the services above over exactly the public surfaces a human with `curl` would use, passes their `/sim/*` hooks through with the credentials each asks for, and owns only the lab's own state (the merchant registry, `console-data/registry.json`, and the plugin registrations) | Not a dependency of anything — the e2e suite does not know it exists, and nothing in this lab is reachable only through it | — an API, not a simulation |
+| **lab-api** *(lab)* | Nothing. It holds no vendor contract at all: it reads and drives the services above on their control ports, passes their `/sim/*` hooks through with no vendor credentials, and owns only the lab's own state (the merchant registry, `console-data/registry.json`, and the plugin registrations) | Not a dependency of any service, and no vendor traffic goes through it. The console page, agents and the e2e suite steer the lab through it | — an API, not a simulation |
 | **console** *(control panel)* | Nothing: a page, served with a forward of `/v1` to the lab API. No state, no credentials | Not a dependency of anything | — a UI, not a simulation |
 
 Nothing in this table is a real clearing system.
@@ -119,10 +119,17 @@ PGP decryption all genuinely exercised); the real payout rail — settlement
 (gated on Banking Circle's safeguarding-account balance, simulating
 Worldline's lump sum landing and retrying when the gate first blocks it)
 → B4B (JWT-signed) → B4B's own lifecycle → Banking Circle (mTLS + bearer,
-AES-256-GCM notification model) — confirmed via Banking Circle's
-authenticated reconciliation and balance endpoints; and ACI's card-gateway
-webhook, confirming a genuinely AES-256-GCM-encrypted notification is
-built and delivery attempted. It fails loudly if any hop is disconnected.
+AES-256-GCM notification model) — confirmed in Banking Circle's books;
+ACI's card-gateway webhook, confirming a genuinely AES-256-GCM-encrypted
+notification is built and delivery attempted; and Banking Circle's traps
+and reset. It fails loudly if any hop is disconnected.
+
+It plays the platform: every vendor is reached on its own surface with its
+own login. What a platform could not do — seed trading, run a cycle now,
+flip sanctions, land a wire, arm a trap, read a vendor's books — goes
+through the lab API (`LAB_API_URL`, `LAB_API_TOKEN`), as an agent's would.
+It never calls a control port or `/internal/*`.
+
 `make e2e` runs it locally after `make up`; `make e2e-docker` runs
-the same binary as one container attached to the compose network. See
-`docs/scenarios/`.
+the same binary as one container attached to the compose network
+(`E2E_NETWORK`). `E2E_ONLY=name,name` runs a few. See `docs/scenarios/`.

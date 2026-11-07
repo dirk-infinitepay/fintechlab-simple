@@ -1,7 +1,12 @@
-// Command e2e runs black-box scenarios against a running fintechlab-simple stack.
-// Local:       make e2e                    (after `make up` + `make up-pods`)
+// Command e2e runs black-box scenarios against a running lab: on the vendor
+// surfaces as the platform would, and through the lab API for everything
+// lab-level (internal/e2e).
+//
+// Local:         make e2e  (after `make up`)
 // Containerized: make e2e-docker
-// Some:        E2E_ONLY=banking-circle-trap-paths make e2e
+// Some:          E2E_ONLY=banking-circle-trap-paths make e2e
+// Another lab:   LAB_API_URL, LAB_API_TOKEN, each vendor's URL (e2e.go)
+//
 // Exit code is 0 iff every registered scenario passed.
 package main
 
@@ -29,6 +34,10 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+
+	if err := env.Lab.Check(ctx); err != nil {
+		log.Fatalf("e2e: %v", err)
+	}
 
 	scenarios := []e2e.Scenario{
 		e2e.PaymentAPIToWebhook(),

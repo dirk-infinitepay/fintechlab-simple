@@ -14,6 +14,12 @@ question. Each has the proposal the draft currently assumes.
    *Proposal:* published on `127.0.0.1` in compose (useful for debugging a
    sim on its own); not exposed in a deployed lab, where only `lab-api` is.
 
+   **[DECIDED 2026-11-07]** No, nowhere. There is one API over the lab:
+   people, agents, the console and the e2e suite all reach a sim's hooks
+   through `lab-api`, over HTTP(S) with `LAB_API_TOKEN`, locally and in
+   the cloud alike. A test lab, so a token is enough; `/v1/mcp` can come
+   later over the same API.
+
 3. **Who serves the console page?** A tiny `console` container that also
    proxies `/v1`, or `lab-api` at `/`?
    [architecture.md §7](architecture.md#7-the-console).

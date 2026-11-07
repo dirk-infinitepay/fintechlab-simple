@@ -1,6 +1,11 @@
-// Package e2e runs black-box scenario tests against a running
-// fintechlab-simple stack: payment-api, bank, notifier, receiver, and
-// (once running) settlement, worldline, banking-circle.
+// Package e2e runs black-box scenarios against a running lab: the vendor
+// simulations, the stand-ins for the platform's side, and the lab API.
+//
+// The suite plays the platform. It reaches each vendor the way a platform
+// does, on the vendor's own surface with the vendor's own login, and it
+// steers and reads the lab through the lab API, as the console and agents
+// do (lab.go). Nothing else: no control port, no /internal/* plumbing, so
+// the same run works against a lab on this machine or in the cloud.
 //
 // A scenario is judged the same way this whole repo judges itself: a
 // created record must produce a real, observable downstream effect. A
@@ -16,33 +21,29 @@ import (
 	"time"
 )
 
-// Env holds every peer service's base URL plus a client pre-configured to
-// trust the receiver's TLS certificate. Defaults point at the host-published
-// ports from `make up` (127.0.0.1:*) so `go run ./cmd/e2e` works right
-// after `make up` with no environment variables set, exactly like
-// scripts/demo-payment.sh. Running containerized (docker/Dockerfile.e2e)
-// overrides every URL to the in-network compose service name — see
-// `make e2e-docker`.
+// Env holds the lab API, every surface the suite calls as the platform, and
+// a client pre-configured to trust the lab's TLS certificates. Defaults
+// point at the host-published ports from `make up` (127.0.0.1:*) so
+// `go run ./cmd/e2e` works right after `make up` with no environment
+// variables set, exactly like scripts/demo-payment.sh. Running
+// containerized (docker/Dockerfile.e2e) overrides every URL to the
+// in-network compose service name — see `make e2e-docker`.
 type Env struct {
-	// BankingCircleControlURL is Banking Circle's control port.
-	BankingCircleControlURL string
-	PaymentAPIURL           string
-	BankURL                 string
-	NotifierURL             string
-	ReceiverURL             string
+	// Lab is the lab API: LAB_API_URL, and LAB_API_TOKEN when the lab
+	// asks for one.
+	Lab           Lab
+	PaymentAPIURL string
+	BankURL       string
+	NotifierURL   string
+	ReceiverURL   string
 	// ReceiverDeliveryURL is the base the Banking Circle twin POSTs
 	// webhooks to. Distinct from ReceiverURL when the e2e suite runs on the
 	// host (127.0.0.1) but the twin runs in compose (receiver:8443).
 	ReceiverDeliveryURL string
 	SettlementURL       string
-	WorldlineURL        string
-	BankingCircleURL    string
-	// Lab seams for funding / handoff. On standalone this is plain
-	// INTERNAL_LISTEN (:8095), separate from the mTLS Connect surface on
-	// :8085 — the lab seams are deliberately not behind client certs
-	// BankingCircleURL so the e2e suite presents mTLS like real Connect.
-	BankingCircleInternalURL string
-	ACIURL                   string
+	// Banking Circle's Connect API, mTLS + Basic→Bearer, as the platform
+	// reaches it.
+	BankingCircleURL string
 	// B4B's Oversight API and the keypair needed to sign its RS512 bearer
 	// token. Shared read-only from the same volume the b4b service
 	// generates into, so the e2e suite signs with the key b4b itself
@@ -73,8 +74,9 @@ func EnvFromOS() (*Env, error) {
 	// run against a lab keeping them elsewhere needs one variable,
 	// not five.
 	keys := env("LAB_KEYS_DIR", "keys")
+	caFile := env("CA_FILE", filepath.Join(keys, "certs/ca.pem"))
 	client, err := NewTLSClient(
-		env("CA_FILE", filepath.Join(keys, "certs/ca.pem")),
+		caFile,
 		env("CLIENT_CERT", filepath.Join(keys, "certs/client.pem")),
 		env("CLIENT_KEY", filepath.Join(keys, "certs/client-key.pem")),
 	)
@@ -82,21 +84,14 @@ func EnvFromOS() (*Env, error) {
 		return nil, fmt.Errorf("e2e: tls client: %w", err)
 	}
 	return &Env{
-		PaymentAPIURL:       env("PAYMENT_API_URL", "http://127.0.0.1:8080"),
-		BankURL:             env("BANK_URL", "http://127.0.0.1:8081"),
-		NotifierURL:         env("NOTIFIER_URL", "http://127.0.0.1:8082"),
-		ReceiverURL:         env("RECEIVER_URL", "https://127.0.0.1:8443"),
-		ReceiverDeliveryURL: env("RECEIVER_DELIVERY_URL", ""),
-		SettlementURL:       env("SETTLEMENT_URL", "http://127.0.0.1:8083"),
-		WorldlineURL:        env("WORLDLINE_URL", "http://127.0.0.1:8084"),
-		// The standalone Banking Circle mock: mTLS :8085 for the Connect
-		// surface, plain :8095 for the internal/lab seams.
-		BankingCircleURL:         env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
-		BankingCircleInternalURL: env("BANKING_CIRCLE_INTERNAL_URL", "http://127.0.0.1:8095"),
-		// Banking Circle's control port: /sim/*, traps and reset, plain
-		// HTTP with no vendor login (internal/simctl).
-		BankingCircleControlURL:    env("BANKING_CIRCLE_CONTROL_URL", "http://127.0.0.1:9085"),
-		ACIURL:                     env("ACI_URL", "http://127.0.0.1:8087"),
+		Lab:                        newLab(env("LAB_API_URL", "http://127.0.0.1:8097"), os.Getenv("LAB_API_TOKEN"), caFile),
+		PaymentAPIURL:              env("PAYMENT_API_URL", "http://127.0.0.1:8080"),
+		BankURL:                    env("BANK_URL", "http://127.0.0.1:8081"),
+		NotifierURL:                env("NOTIFIER_URL", "http://127.0.0.1:8082"),
+		ReceiverURL:                env("RECEIVER_URL", "https://127.0.0.1:8443"),
+		ReceiverDeliveryURL:        env("RECEIVER_DELIVERY_URL", ""),
+		SettlementURL:              env("SETTLEMENT_URL", "http://127.0.0.1:8083"),
+		BankingCircleURL:           env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
 		B4BURL:                     env("B4B_URL", "http://127.0.0.1:8086"),
 		B4BJWTPrivateKeyPath:       env("B4B_JWT_PRIVATE_KEY_PATH", filepath.Join(keys, "b4b-keys/private.pem")),
 		B4BJWTKeyID:                env("B4B_JWT_KEY_ID", "b4b-mock-1"),

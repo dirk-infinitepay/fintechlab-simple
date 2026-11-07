@@ -19,7 +19,7 @@ surfaces, out of scope).
 | --- | --- |
 | Listens | HTTP `:8087` (`LISTEN`). Compose service `aci`; from the host `http://127.0.0.1:8087`.<br>`:9087`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://aci:9087`.<br>Outbound: one POST per notification to `ACI_WEBHOOK_TARGET_URL` |
 | Auth | None on either port. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The outbound webhook's only authentication is its encryption: a listener that decrypts it with the shared key knows ACI sent it, and a tag mismatch is the auth failure |
-| A platform points here with | Nothing: the platform is the target. Point `ACI_WEBHOOK_TARGET_URL` at the platform's listener (and allow its host in `WEBHOOK_ALLOWLIST`); the platform decrypts with `ACI_WEBHOOK_SECRET`, which the lab API's connect kit hands out (`GET :8097/v1/connect/env/aci`). Lab peers find ACI with `ACI_URL` (harness) and `CONSOLE_URL_ACI` (lab API) |
+| A platform points here with | Nothing: the platform is the target. Point `ACI_WEBHOOK_TARGET_URL` at the platform's listener (and allow its host in `WEBHOOK_ALLOWLIST`); the platform decrypts with `ACI_WEBHOOK_SECRET`, which the lab API's connect kit hands out (`GET :8097/v1/connect/env/aci`). The lab API finds ACI with `CONSOLE_URL_ACI` |
 | Activity logs | None. ACI serves no `GET /sim/activity`, and its catalogue entry names no activity path, so the console draws no activity panel for it. `GET /sim/sent` is its record of what it built and how each delivery went |
 | Configuration | The important variables are in the table below. Everything is in memory: a restart forgets every record |
 | Design record | [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §2 (the webhook contract and its sources), §6 (the receiver's raw capture sink it delivers to); [plugins.md](../../plugins.md#stand-ins) and [console.md](../../console.md#stand-ins-disconnect-and-hide) for the delivery switch |
@@ -113,7 +113,7 @@ notification.
 ### `POST /internal/simulate-payment`
 
 `POST /sim/payments` on `:8087`, until phase 4: the same handler, so the
-same body, answers and side effects. The e2e suite calls this one.
+same body, answers and side effects.
 
 ### `GET /sim/sent`
 
@@ -149,8 +149,7 @@ One notification: the plaintext, the wire material and how delivery went.
 
 ### `GET /internal/sent/{id}`
 
-`GET /sim/sent/{id}` on `:8087`, until phase 4. The same answers. The
-e2e suite polls this one.
+`GET /sim/sent/{id}` on `:8087`, until phase 4. The same answers.
 
 ### `GET /sim/connected`
 
@@ -207,10 +206,9 @@ set up once.
 
 ## Called by
 
-- **The e2e suite**: `aci-payment-notification`
-  (`internal/e2e/scenario_aci.go`) posts
-  `POST /internal/simulate-payment` on `:8087`, polls
-  `GET /internal/sent/{id}` until the delivery settles, and requires
+- **The e2e suite**, through the lab API: `aci-payment-notification`
+  (`internal/e2e/scenario_aci.go`) posts `POST /sim/payments`, polls
+  `GET /sim/sent/{id}` until the delivery settles, and requires
   `delivered` with non-empty ciphertext, IV and tag and the payload fields
   it sent.
 - **The lab API** (`cmd/labapi`), on the control port only
