@@ -17,7 +17,7 @@ should treat a `2xx` from it as proof a message was understood:
 | Listens | `:8443`, HTTPS only, with a server certificate from the lab CA (`keys/certs/receiver.pem`; SANs `receiver`, `localhost`, `127.0.0.1`, `receiver.local`, `receiver.fintech-sim-lab.test`). Compose service `receiver` (`https://receiver:8443`); host `https://127.0.0.1:8443` (`curl --cacert keys/certs/ca.pem`) |
 | Auth | TLS server authentication only; no client certificate is asked for. `POST /webhooks` requires the lab HMAC; every other route is open |
 | Found with | notifier `WEBHOOK_URL` (`https://receiver:8443/webhooks`).<br>banking-circle `WEBHOOK_URL` (`https://receiver:8443/raw-events`), its seeded subscription's endpoint.<br>aci `ACI_WEBHOOK_TARGET_URL` (`https://receiver:8443/raw-events`).<br>harness `RECEIVER_URL` (where it reads, `https://127.0.0.1:8443`) and `RECEIVER_DELIVERY_URL` (where it tells a vendor to post; defaults to `https://receiver:8443` when `RECEIVER_URL` is loopback).<br>`scripts/demo-payment.sh` `RECEIVER_URL`; console `CONSOLE_URL_RECEIVER`.<br>Senders allowlist it as `receiver` and `receiver:8443` |
-| Activity logs | None. There is no `GET /sim/activity`, and `GET /api/services/receiver/activity` on the console answers `501`. Its two stores are the record: `GET /events` and `GET /raw-events`. Each request line is logged on stdout |
+| Activity logs | None. There is no `GET /sim/activity`, and `GET /v1/services/receiver/activity` on the lab API answers `501`. Its two stores are the record: `GET /events` and `GET /raw-events`. Each request line is logged on stdout |
 | Configuration | `LISTEN` (`:8443`).<br>`TLS_CERT` (`/keys/certs/receiver.pem`), `TLS_KEY` (`/keys/certs/receiver-key.pem`): waited for up to 30 s at start, then the service exits.<br>`HMAC_SECRET` (`sim-hmac-dev-only`): must equal the notifier's.<br>The 10-minute timestamp window and the 1 MiB body caps are fixed in code. Both stores are in memory, unbounded and never evicted; a restart empties them.<br>It has no lab switch of its own: it is disconnected at the senders (Banking Circle's subscriptions to it deactivated, aci's `/sim/connected`) |
 | Design record | [ARCHITECTURE-phase3-corrections.md §6](../../ARCHITECTURE-phase3-corrections.md#6-receiver-a-raw-capture-endpoint-closes-a-documented-gap) (the raw sink; it predates retained bodies), [services/webhooks.md](../../services/webhooks.md), [security/ca-and-tls.md](../../security/ca-and-tls.md), [plugins.md](../../plugins.md#stand-ins), [console.md](../../console.md#stand-ins-disconnect-and-hide) |
 
@@ -91,7 +91,7 @@ Side effects: stores a capture with:
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it over HTTPS.
+Liveness. The lab API's monitor probes it over HTTPS.
 
 Answers `200` with `{"status": "ok", "service": "receiver"}`.
 
@@ -144,11 +144,11 @@ Answers `200`:
   `GET /raw-events` filtered by `path`, and decrypt the bodies with the key
   they chose; `aci-payment-notification` needs this sink to answer `2xx`,
   since it asserts ACI's own delivery status.
-- **console**: `GET /api/overview` and `POST /api/services/receiver/probe`
-  probe `GET /health`. `GET /api/stand-ins` and
-  `POST /api/stand-ins/receiver` never call the receiver: they read and
+- **lab API**: `GET /v1/lab` and `POST /v1/services/receiver/probe`
+  probe `GET /health`. `GET /v1/stand-ins` and
+  `POST /v1/stand-ins/receiver` never call the receiver: they read and
   switch Banking Circle's subscriptions to it and aci's `/sim/connected`.
-  `GET /api/flow` counts its *notification batches* from Banking Circle's
+  `GET /v1/flow` counts its *notification batches* from Banking Circle's
   log, not from here.
 - **by hand**: `make demo-payment` (`scripts/demo-payment.sh`) polls
   `GET /events`; [payment-to-webhook.md](../../scenarios/payment-to-webhook.md)

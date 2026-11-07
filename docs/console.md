@@ -13,26 +13,31 @@ test harness, the runner library and this lab fit, and how to set them up),
 
 ## What it is, and what it deliberately is not
 
-The console is a **client of every other service and nothing more**. Every
-button is exactly one HTTP call to a service's own public API — the same
-call a human with `curl` would make, against the same surface a real
-vendor would expose.
+The console is **a page, and a client of the lab API like any other**.
+Every button is exactly one call to the lab API (`cmd/labapi`, `:8097`,
+`/v1`) — the same call a script or an agent makes, and the lab API's
+route is in turn one call to a service's own public API, the same call a
+human with `curl` would make. The console's server (`cmd/console`) serves
+the page and forwards `/v1` to the lab API, so the page calls its own
+origin; it keeps no state and holds no credential.
 
 That constraint is the whole design, and it is worth stating plainly:
 
-- **Nothing in this lab is reachable only through the console.** If a
-  state could only be produced by clicking, that state would be untestable,
-  and the harness — which is what actually judges this repo — could never
+- **Nothing in this lab is reachable only through the console.** Every
+  button is a lab API route ([api/lab-api.md](api/lab-api.md)), and if a
+  state could only be produced by clicking, that state would be untestable:
+  the harness — which is what actually judges this repo — could never
   assert on it.
 - **The console being down is never why a scenario cannot run.** It is not
-  a dependency of anything. `make harness` does not know it exists.
+  a dependency of anything. Neither is the lab API: `make harness` knows
+  neither exists.
 - **It holds no vendor contract.** Nothing real-shaped lives here. The
   contracts live in `worldline`, `b4b`, `banking-circle` and `aci`, which
   is where you would go to check them against a vendor's documentation.
 
-It owns exactly one piece of state of its own: the merchant registry, in
-`console-data/registry.json`. That is a plain file you can read, diff and
-delete.
+The lab's own state — the merchant registry in
+`console-data/registry.json`, a plain file you can read, diff and delete,
+and the plugin registrations — is the lab API's.
 
 ## Dashboard
 
@@ -113,7 +118,7 @@ is zero, because zero is the number somebody is looking for. Fees are
 deliberately absent — they are computed inside the platform's own workers
 and never leave them, and the panel says so rather than inventing a figure.
 
-The data is `GET /api/flow`, which reads the vendors' activity rings and the
+The data is `GET /v1/flow`, which reads the vendors' activity rings and the
 platform's stage chain (its plugin's `status_path`) and puts them in the shape a sequence needs. The server
 counts; the browser remembers what the count was a second ago and lights
 what changed.
@@ -131,8 +136,8 @@ each stands. The drawer links to the card whose log it reads. Click another
 arrow to switch, `Escape` or `×` to close; `#dashboard/payouts` links
 straight to one. Clicking a box goes to that service's card.
 
-The drawer's data is `GET /api/flow/hops/{id}` — the same step
-`/api/flow` draws, computed by the same code, with its events attached, so
+The drawer's data is `GET /v1/flow/hops/{id}` — the same step
+`/v1/flow` draws, computed by the same code, with its events attached, so
 an arrow saying 6 and a drawer listing 5 cannot happen.
 
 ## Vendors, Platform, Verification
@@ -196,7 +201,7 @@ perfectly and then had every callback rejected looks, from the platform,
 exactly like nothing happening.
 
 The panels read from each service's own `GET /sim/activity`, which the
-console proxies at `/api/services/{id}/activity`. Nothing is persisted:
+lab API proxies at `/v1/services/{id}/activity`. Nothing is persisted:
 it is a ring of the last few hundred events per log, so it is a window onto
 a run and never a record of one. Refusals are amber and failures red;
 an ordinary accepted call is left uncoloured, so the two that went wrong
@@ -219,7 +224,7 @@ And a registered platform brings its own.
 ### The platform under test: a plugin
 
 The console knows no platform by name. A platform **registers its own
-card** — `POST /api/plugins` with a descriptor, renewed every ten seconds —
+card** — `POST /v1/plugins` with a descriptor, renewed every ten seconds —
 and the console draws it at the top of the Platform view with the same
 components as every other card: summary, where it is reached, its logs as
 activity panels, its endpoints, and the buttons it declared, each forwarded
@@ -238,7 +243,7 @@ A platform that settles gets the **settlement files** table: one row per
 file it can run (its `files_path`), with currency, the MIDs it pays, its
 total, and its last run (root, payouts, when).
 
-- **Run** on a row — one `POST /api/plugins/{id}/run {"files":[name]}`,
+- **Run** on a row — one `POST /v1/plugins/{id}/run {"files":[name]}`,
   forwarded to the platform's `run_path`. The runner uploads the file under
   a name not used before, triggers the pipeline, waits for the balance
   check, funds the safeguarding accounts, ticks the check and follows the
@@ -253,11 +258,11 @@ total, and its last run (root, payouts, when).
   is only there when the runnable files span more than one currency.
 - **Delete** — on a file the platform marks deletable (buddy's runner: its
   generated files, never the fixtures the repo tracks), after a confirm
-  that says there is no undo. One `DELETE /api/plugins/{id}/files?name=`,
+  that says there is no undo. One `DELETE /v1/plugins/{id}/files?name=`,
   forwarded to the platform's `delete_path`.
 - **Open location** — the platform opens the file's folder in the file
   manager of the machine it runs on, the file selected where the desktop
-  allows (`POST /api/plugins/{id}/files/reveal`). The console cannot do it
+  allows (`POST /v1/plugins/{id}/files/reveal`). The console cannot do it
   itself — it is in a container, and a web page may not open a local
   folder — so a platform that does not declare `reveal_path` gets no
   button. On a machine with no desktop session the toast says so and gives
@@ -332,17 +337,17 @@ wiring starts connected, so the lab runs end to end with no platform:
 they take a `make up`.
 
 A platform can ask for this itself, in its descriptor's `stand_ins`
-([plugins.md](plugins.md#stand-ins)). The console applies that when the
+([plugins.md](plugins.md#stand-ins)). The lab API applies that when the
 platform registers or its wishes change — not on every renewal, so a
-button pressed here holds. The console keeps *shown* in memory: after a
-console restart every card is back until the platform's next registration
+button pressed here holds. The lab API keeps *shown* in memory: after a
+lab API restart every card is back until the platform's next registration
 re-applies its wishes. *Connected* lives in the services and survives a
-console restart.
+lab API restart.
 
 ```sh
-curl -s localhost:8090/api/stand-ins                                           # each stand-in, its wiring, live
-curl -s -XPOST localhost:8090/api/stand-ins/receiver -d '{"connected":false}'  # disconnect
-curl -s -XPOST localhost:8090/api/stand-ins/settlement -d '{"shown":false}'    # hide
+curl -s localhost:8097/v1/stand-ins                                           # each stand-in, its wiring, live
+curl -s -XPOST localhost:8097/v1/stand-ins/receiver -d '{"connected":false}'  # disconnect
+curl -s -XPOST localhost:8097/v1/stand-ins/settlement -d '{"shown":false}'    # hide
 ```
 
 ### The lab clock
@@ -355,7 +360,7 @@ whether it is a business day on every calendar (GB and SE, with their bank
 holidays), and whether anything holds it. The buttons — *Now* (back to the
 real clock), *+10 min*, *+30 min*, *+1 hour*, *±1 day*, *Nearest business
 day*, *Move to Sunday* — and the *Date (UTC)* / *Time (UTC)* fields with
-*Set clock* are each one `POST /api/clock`, forwarded to the clock
+*Set clock* are each one `POST /v1/clock`, forwarded to the clock
 service's `POST /clock` (`advance`, `at` or `mode`). Its *Clock changes*
 panel is every move and every hold.
 
@@ -412,10 +417,10 @@ B4B and Worldline — each key or certificate file on its own row. The
 The same thing, headless:
 
 ```sh
-curl -OJ localhost:8090/api/connect/env                         # every vendor → fintechlab.env
-curl -OJ localhost:8090/api/connect/env/banking-circle          # one vendor
-curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem
-curl -s  localhost:8090/api/connect                             # what each kit sets and offers (no values)
+curl -OJ localhost:8097/v1/connect/env                         # every vendor → fintechlab.env
+curl -OJ localhost:8097/v1/connect/env/banking-circle          # one vendor
+curl -OJ localhost:8097/v1/connect/files/banking-circle/fintechlab-ca.pem
+curl -s  localhost:8097/v1/connect                             # what each kit sets and offers (no values)
 ```
 
 ### Banking Circle: who is subscribed
@@ -499,7 +504,7 @@ a call the vendor would refuse.
 Each button is one call to the vendor's own hook,
 `POST /sim/payments/{id}/return` or `/reverse` on the credentialed listener
 (the same handlers as `/internal/payments/{id}/…` on the bridge), through
-`POST /api/banking-circle/payouts/{id}/return|reverse` here. Both are
+`POST /v1/banking-circle/payouts/{id}/return|reverse` here. Both are
 irreversible, so the confirm says so rather than asking whether you are
 sure. Pair either with a paused subscription to watch the platform find out
 late.
@@ -551,7 +556,7 @@ platform pays out per MID, not per merchant.
 what it made at the vendors (a beneficiary per outlet at B4B, card payments
 per MID at Worldline). The platform's own database knows none of them. To
 settle them end to end, a platform seeds its records from
-`GET /api/merchants` — each outlet's MID, payout account, country and
+`GET /v1/merchants` — each outlet's MID, payout account, country and
 currency. Testing only the settle path, the platform's own seeder (buddy's
 runner: *Seed merchants*) works the other way round, and these are not
 needed. The view opens with a note saying so.
@@ -597,10 +602,10 @@ at its own typical ticket rather than one amount for all), **Delete** (the
 registry only — B4B and Worldline keep what they were sent).
 
 ```sh
-curl -s -XPOST localhost:8090/api/merchants/batches -d '{"count":50,"max_outlets":3,"country":"","seed":42}'
-curl -s -XPOST localhost:8090/api/merchants/batches/bat_0007/provision
-curl -s -XPOST localhost:8090/api/merchants/batches/bat_0007/trading -d '{"count":5}'
-curl -s -XDELETE localhost:8090/api/merchants/batches/bat_0007
+curl -s -XPOST localhost:8097/v1/merchants/batches -d '{"count":50,"max_outlets":3,"country":"","seed":42}'
+curl -s -XPOST localhost:8097/v1/merchants/batches/bat_0007/provision
+curl -s -XPOST localhost:8097/v1/merchants/batches/bat_0007/trading -d '{"count":5}'
+curl -s -XDELETE localhost:8097/v1/merchants/batches/bat_0007
 ```
 
 The registry is on disk, and so is B4B's beneficiary store
@@ -674,27 +679,40 @@ see afterwards.
 **API reference** (`#docs/api`): every API a caller can use.
 
 - A diagram of who calls which API: the console page, scripts and agents,
-  the harness, and your platform, against the console and the services.
-- *Which to call*: intent to API ("make a vendor misbehave" goes to that
-  service's `/sim/*`).
-- **The console's own routes**, read from the console itself (`GET /api`),
-  grouped, each with what it does and which service it reaches. The table
-  that registers the routes is the table this page draws, so it cannot
-  list a route that does not answer.
+  the harness, and your platform, against the lab API and the services.
+- *Which to call*: intent to API ("make a vendor misbehave" goes to the lab
+  API's passthrough to that service's `/sim/*`).
+- **The lab API's routes**, read from the lab API itself (`GET /v1`),
+  grouped, each with what it does, which service it reaches, and its old
+  `/api` path where it has one. The table that registers the routes is the
+  table this page draws, so it cannot list a route that does not answer.
 - **Each service's API** as a card: where a script on this machine reaches
   it, ports, auth, the endpoints worth knowing, and the path of its full
   reference in the repo. `#docs/api:banking-circle` links straight to one.
 
 The long form is in the repo: [api/README.md](api/README.md) (the
-overview), [api/console-api.md](api/console-api.md) (every console route
+overview), [api/lab-api.md](api/lab-api.md) (every lab API route
 with bodies and answers) and `api/services/<id>.md` (each service). Tests
 hold all three to the code.
 
-## Configuring the console itself
+## Configuring the console and the lab API
+
+The console takes two variables:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `LISTEN` | `:8090` | listen address |
+| `LAB_API_URL` | `http://127.0.0.1:8097` | the lab API it forwards `/v1` (and the old `/api`) to |
+| `LAB_API_TOKEN` | unset | when the lab API asks for a token, the console adds it to everything it forwards |
+
+Everything else is the lab API's. The names keep their `CONSOLE_` prefix
+from when the console's server did this work, so an existing setup keeps
+working:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `LISTEN` | `:8097` | listen address |
+| `LAB_API_TOKEN` | unset | ask every caller but `GET /health` for `Authorization: Bearer <it>` |
 | `CONSOLE_URL_<SERVICE>` | the published `127.0.0.1` port | where to reach a peer (`CONSOLE_URL_BANKING_CIRCLE`, etc.) |
 | `CONSOLE_BROWSE_HOST` | `127.0.0.1` | the host the published ports are on, for the "open in a browser" links |
 | `CONSOLE_STATE_FILE` | `console-data/registry.json` | the merchant registry |
@@ -702,8 +720,8 @@ hold all three to the code.
 | `CONSOLE_BC_DELIVERY_CONFIG` | `config/banking-circle.json` | the delivery table to display |
 | `CONSOLE_KEYS_DIR` | `keys` | the lab's keys directory, for the connect-your-platform downloads |
 | `CONSOLE_BC_INTERNAL_URL` | `http://127.0.0.1:8095` | Banking Circle's internal bridge, for *Fund safeguarding accounts* |
-| `CONSOLE_UPLOAD_MAX_MB` | `512` | the largest settlement file the console passes on to a platform |
-| `CONSOLE_URL_CLOCK` | `http://127.0.0.1:8096` | the lab clock, for the clock card and `/api/clock` |
+| `CONSOLE_UPLOAD_MAX_MB` | `512` | the largest settlement file the lab API passes on to a platform |
+| `CONSOLE_URL_CLOCK` | `http://127.0.0.1:8096` | the lab clock, for the clock card and `/v1/clock` |
 | `CONSOLE_STAND_INS_SHOWN` | `false` | start the stand-ins' cards shown rather than hidden |
 | `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `keys/certs/…` | mTLS material for Banking Circle |
 | `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `keys/b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |

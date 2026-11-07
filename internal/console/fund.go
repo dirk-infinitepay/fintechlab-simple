@@ -111,7 +111,7 @@ func intraDayBalance(ctx context.Context, client *http.Client, base, account str
 
 func credit(ctx context.Context, client *http.Client, base, currency, amount string) error {
 	body, _ := json.Marshal(map[string]string{
-		"currency": currency, "amount": amount, "reference": "lab console: safeguarding top-up",
+		"currency": currency, "amount": amount, "reference": "lab API: safeguarding top-up",
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/internal/incoming-payments", bytes.NewReader(body))
 	if err != nil {

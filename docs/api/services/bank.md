@@ -6,8 +6,8 @@ code), and the account opens the first time money arrives for it. It is
 also the small in-memory ledger `make demo-payment` moves money in.
 [catalogue.md](../../catalogue.md) files it as **the far end**: not a
 vendor a platform integrates with, and not scaffolding standing in for one
-(the console's catalogue gives it the `vendor` kind so it draws as one). A
-platform never calls it; tests, agents and the console read it to see
+(the lab's catalogue gives it the `vendor` kind so it draws as one). A
+platform never calls it; tests, agents and the console (through the lab API) read it to see
 whether money arrived. The IBANs are obviously fake (`GB00SIM…`), and
 everything is in memory: a restart puts every balance back to the seed.
 
@@ -196,7 +196,7 @@ account opened*, with `iban`, `reference`, `opened`, `balance` and
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it.
+Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "bank"}`.
 
@@ -233,12 +233,12 @@ time, not the lab clock.
 - **settlement** (stand-in): `GET /accounts` and `GET /ledger`, when
   `POST /reports/settlement/generate` runs or the daily cutoff batch fires,
   to build its internal reports from the ledger's credit legs.
-- **console**: `GET /api/banks` reads `GET /accounts`;
-  `POST /api/banks/core-ledger/accounts` calls `POST /accounts`;
-  `GET /api/services/bank/activity` proxies `GET /sim/activity`;
-  `GET /api/flow` and `GET /api/flow/hops/{id}` count `credit` events in
+- **lab API**: `GET /v1/banks` reads `GET /accounts`;
+  `POST /v1/banks/core-ledger/accounts` calls `POST /accounts`;
+  `GET /v1/services/bank/activity` proxies `GET /sim/activity`;
+  `GET /v1/flow` and `GET /v1/flow/hops/{id}` count `credit` events in
   the `credits` log for the `land` hop and the *payouts credited* stat;
-  `GET /api/overview` and `POST /api/services/bank/probe` probe
+  `GET /v1/lab` and `POST /v1/services/bank/probe` probe
   `GET /health`.
 - **harness**: `payment-api-to-webhook` reads `GET /accounts/acc_alice`
   and `GET /accounts/acc_merchant` before and after its payment, to prove

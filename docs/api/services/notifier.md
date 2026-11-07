@@ -118,7 +118,7 @@ answer came back; `lastError` is omitted when empty.
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it.
+Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "notifier"}`.
 
@@ -145,9 +145,9 @@ Answers `200`:
 ## Called by
 
 - **payment-api**: `POST /enqueue` after each payment the bank accepted.
-- **console**: `GET /api/services/notifier/activity` proxies
-  `GET /sim/activity`; `GET /api/overview` and
-  `POST /api/services/notifier/probe` probe `GET /health`.
+- **lab API**: `GET /v1/services/notifier/activity` proxies
+  `GET /sim/activity`; `GET /v1/lab` and
+  `POST /v1/services/notifier/probe` probe `GET /health`.
 - **harness**: nothing directly. `payment-api-to-webhook` goes through it
   (payment-api → notifier → receiver) and checks the receiver.
 - **by hand**: `make demo-payment`, through payment-api. Nothing in the repo

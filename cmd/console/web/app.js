@@ -193,50 +193,50 @@ async function load() {
   try {
     if (state.view === 'dashboard') {
       // First, so the widgets below can find the platform in it.
-      state.data.overview = await api('GET', '/api/overview');
+      state.data.overview = await api('GET', '/v1/lab');
       await loadRuns();
-      state.data.flow = await api('GET', '/api/flow');
+      state.data.flow = await api('GET', '/v1/flow');
       flowObserve(state.data.flow);
       // The lab clock heads the diagram. A clock that is not up is a note
       // there, not a broken page.
       try {
-        state.clock = await api('GET', '/api/clock');
+        state.clock = await api('GET', '/v1/clock');
       } catch (err) {
         state.clock = { error: err.message };
       }
     }
     if (isServiceView()) {
-      state.data.overview = await api('GET', '/api/overview');
+      state.data.overview = await api('GET', '/v1/lab');
       await loadActivity();
     }
     if (state.view === 'platform') {
       // Read live from the services that own the wiring, never remembered.
       try {
-        state.standins = await api('GET', '/api/stand-ins');
+        state.standins = await api('GET', '/v1/stand-ins');
       } catch (err) {
         state.standins = { error: err.message };
       }
     }
-    // The index is the console's route table: it changes only with a new
-    // build, which the stale-page note already reports, so it is read once.
+    // The index is the lab API's route table: it changes only with a new
+    // build of the lab API, so it is read once per page load.
     if (state.view === 'docs' && docsPage() === 'api' && (!state.data.apiIndex || state.data.apiIndex.error)) {
       try {
-        state.data.apiIndex = await api('GET', '/api');
+        state.data.apiIndex = await api('GET', '/v1');
       } catch (err) {
         state.data.apiIndex = { error: err.message };
       }
     }
-    if (state.view === 'banks') state.data.banks = await api('GET', '/api/banks');
-    if (state.view === 'merchants') state.data.merchants = await api('GET', '/api/merchants');
+    if (state.view === 'banks') state.data.banks = await api('GET', '/v1/banks');
+    if (state.view === 'merchants') state.data.merchants = await api('GET', '/v1/merchants');
     if (state.view === 'config') {
-      state.data.config = await api('GET', '/api/config');
+      state.data.config = await api('GET', '/v1/config');
       try {
-        state.standins = await api('GET', '/api/stand-ins');
+        state.standins = await api('GET', '/v1/stand-ins');
       } catch (err) {
         state.standins = { error: err.message };
       }
       try {
-        state.connect = await api('GET', '/api/connect');
+        state.connect = await api('GET', '/v1/connect');
       } catch (err) {
         state.connect = { error: err.message };
       }
@@ -245,7 +245,7 @@ async function load() {
     // when the Services view is not the one on screen.
     // The badges are wanted on every view, so the overview is refreshed even
     // when the view on screen is not a service list.
-    if (!isServiceView() && state.view !== 'dashboard') state.data.overview = await api('GET', '/api/overview');
+    if (!isServiceView() && state.view !== 'dashboard') state.data.overview = await api('GET', '/v1/lab');
     state.error = null;
   } catch (err) {
     state.error = err.message;
@@ -424,7 +424,7 @@ function fmtBytes(n) {
 /* The head of a file, in a wide modal: line numbers, the lines as they
    are, and how much of the file that is. */
 async function openPreview(id, name, lines) {
-  const r = await api('GET', `/api/plugins/${encodeURIComponent(id)}/files/preview?name=${encodeURIComponent(name)}&lines=${lines}`);
+  const r = await api('GET', `/v1/plugins/${encodeURIComponent(id)}/files/preview?name=${encodeURIComponent(name)}&lines=${lines}`);
   const rows = r.lines || [];
   const width = String(rows.length).length;
   const other = lines >= 1000 ? 100 : 1000;
@@ -466,7 +466,7 @@ async function openPreview(id, name, lines) {
 function uploadFile(id, file) {
   return new Promise((done, fail) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `/api/plugins/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}`);
+    xhr.open('POST', `/v1/plugins/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}`);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
     xhr.upload.onprogress = (ev) => {
       if (!ev.lengthComputable || !state.uploading) return;
@@ -606,7 +606,7 @@ function nextWeekday(day) {
 }
 
 async function moveClock(body) {
-  const c = await api('POST', '/api/clock', body);
+  const c = await api('POST', '/v1/clock', body);
   state.clock = c;
   toast(
     c.business_day ? 'Clock moved — a business day' : 'Clock moved — not a business day',
@@ -789,7 +789,7 @@ async function loadActivity() {
   // for the same reason.
   if (watched.some((s) => s.id === 'clock')) {
     try {
-      state.clock = await api('GET', '/api/clock');
+      state.clock = await api('GET', '/v1/clock');
     } catch (err) {
       state.clock = { error: err.message };
     }
@@ -803,19 +803,19 @@ async function loadActivity() {
   }
   await Promise.all(settling.map(async (s) => {
     try {
-      state.files[s.id] = await api('GET', `/api/plugins/${encodeURIComponent(s.id)}/files`);
+      state.files[s.id] = await api('GET', `/v1/plugins/${encodeURIComponent(s.id)}/files`);
     } catch (err) {
       state.files[s.id] = { error: err.message };
     }
   }));
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
-      state.subs = await api('GET', '/api/banking-circle/subscriptions');
+      state.subs = await api('GET', '/v1/banking-circle/subscriptions');
     } catch (err) {
       state.subs = { error: err.message };
     }
     try {
-      state.payouts = await api('GET', '/api/banking-circle/payouts');
+      state.payouts = await api('GET', '/v1/banking-circle/payouts');
     } catch (err) {
       state.payouts = { error: err.message };
     }
@@ -824,14 +824,14 @@ async function loadActivity() {
   // since every vendor card carries a panel for it.
   if (ov.services.some((s) => s.kind === VIEWS[state.view].kind && isOpen(s.id))) {
     try {
-      state.connect = await api('GET', '/api/connect');
+      state.connect = await api('GET', '/v1/connect');
     } catch (err) {
       state.connect = { error: err.message };
     }
   }
   await Promise.all(watched.map(async (s) => {
     try {
-      state.activity[s.id] = await api('GET', `/api/services/${encodeURIComponent(s.id)}/activity?limit=100`);
+      state.activity[s.id] = await api('GET', `/v1/services/${encodeURIComponent(s.id)}/activity?limit=100`);
     } catch (err) {
       // Kept against the service rather than thrown: one vendor being down
       // must not blank the whole view, and "this panel could not be read,
@@ -872,11 +872,11 @@ function connectPanel(s) {
           <td class="mono">${esc(f.name)}</td>
           <td>${esc(f.purpose)}</td>
           <td class="actions">${f.present
-            ? `<a class="ghost small" href="/api/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}" download>Download</a>`
+            ? `<a class="ghost small" href="/v1/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}" download>Download</a>`
             : `<span class="hint">not generated yet — ${esc(s.name)} writes it on first start</span>`}</td>
         </tr>`).join('')}</tbody></table></div>` : ''}
       <div class="form">
-        <a class="ghost small" href="/api/connect/env/${encodeURIComponent(s.id)}" download>Download ${esc(envName)}</a>
+        <a class="ghost small" href="/v1/connect/env/${encodeURIComponent(s.id)}" download>Download ${esc(envName)}</a>
       </div>
     </div>` : '';
 
@@ -923,12 +923,12 @@ function connectAllPanel() {
             <td>${esc(k.title)}</td>
             <td class="num">${k.vars.length}</td>
             <td class="num">${files.length}${absent ? ` <span class="pill warn">${absent} not generated</span>` : ''}</td>
-            <td class="actions"><a class="ghost small" href="/api/connect/env/${encodeURIComponent(k.service)}" download>fintechlab-${esc(k.service)}.env</a></td>
+            <td class="actions"><a class="ghost small" href="/v1/connect/env/${encodeURIComponent(k.service)}" download>fintechlab-${esc(k.service)}.env</a></td>
           </tr>`;
         }).join('')}</tbody></table></div>
       <p class="hint">Key and certificate files are on each vendor's own card, under Connect your platform.</p>
       <div class="form">
-        <a class="ghost small" href="/api/connect/env" download>Download fintechlab.env</a>
+        <a class="ghost small" href="/v1/connect/env" download>Download fintechlab.env</a>
       </div>
     </div>` : '';
 
@@ -1484,7 +1484,7 @@ async function loadRuns() {
   const p = settlingPlugin();
   if (!p || !p.activity_path || !isUp(p)) { state.runs = null; return; }
   try {
-    state.runs = { id: p.id, ...(await api('GET', `/api/services/${encodeURIComponent(p.id)}/activity?limit=50`)) };
+    state.runs = { id: p.id, ...(await api('GET', `/v1/services/${encodeURIComponent(p.id)}/activity?limit=50`)) };
   } catch (err) {
     state.runs = { id: p.id, error: err.message };
   }
@@ -1529,7 +1529,7 @@ function widgetPlatform() {
     return `<a class="widget" href="#platform">
         <span class="w-title">Platform under test</span>
         <span class="w-value">none registered</span>
-        ${widgetLine('A platform puts its own card here by registering with the console — see <span class="mono">docs/plugins.md</span>.')}
+        ${widgetLine('A platform puts its own card here by registering with the lab API — see <span class="mono">docs/plugins.md</span>.')}
         <span class="w-foot">Platform →</span>
       </a>`;
   }
@@ -1618,7 +1618,7 @@ function widgetLinks() {
   const p = platformPlugin();
   const links = [
     ['#config/connect', 'Connect your platform', 'every vendor’s .env and keys'],
-    ['/api/connect/env', 'Download fintechlab.env', 'the whole lab, one file', true],
+    ['/v1/connect/env', 'Download fintechlab.env', 'the whole lab, one file', true],
     ['#vendors/worldline', 'Cut a settlement file', 'Worldline’s morning cycle'],
     ['#vendors/banking-circle', 'Notification subscriptions', 'who Banking Circle calls'],
     ['#merchants', 'Merchants and outlets', 'what the money is for'],
@@ -1666,7 +1666,7 @@ async function loadHop() {
   if (!id) return;
   let data;
   try {
-    data = await api('GET', `/api/flow/hops/${encodeURIComponent(id)}`);
+    data = await api('GET', `/v1/flow/hops/${encodeURIComponent(id)}`);
   } catch (err) {
     data = { error: err.message };
   }
@@ -1847,10 +1847,10 @@ const GUIDE_PARTS = [
     name: 'fintechlab',
     tag: 'this lab: the vendors, the console, the clock',
     where: '~/gh/fintechlab-simple',
-    what: 'The third parties, simulated with their real protocols — Worldline over SFTP+PGP, B4B with RS512 JWTs, Banking Circle with mTLS and encrypted webhook batches, ACI — plus this console, the one business clock everyone follows, and the stand-ins that played the platform before one plugged in.',
+    what: 'The third parties, simulated with their real protocols — Worldline over SFTP+PGP, B4B with RS512 JWTs, Banking Circle with mTLS and encrypted webhook batches, ACI — plus the lab API every client calls, this console, the one business clock everyone follows, and the stand-ins that played the platform before one plugged in.',
     needs: [
       'Go 1.22+, Podman or Docker, openssl, make',
-      'ports 8080–8096, 8443 and 2222 free',
+      'ports 8080–8097, 8443 and 2222 free',
       'nothing from the platform: it waits for one to register',
     ],
     cmd: 'git clone https://github.com/webduvet/fintechlab-simple.git\ncd fintechlab-simple && make up',
@@ -1874,7 +1874,7 @@ const GUIDE_LAYOUTS = [
   {
     name: 'All on your laptop',
     note: 'The default, and what the steps above build.',
-    lines: ['platform and lab on one machine', 'the console reaches the platform at host.containers.internal:3109', 'the platform follows the lab clock, so a Sunday is a Sunday everywhere'],
+    lines: ['platform and lab on one machine', 'the lab API reaches the platform at host.containers.internal:3109', 'the platform follows the lab clock, so a Sunday is a Sunday everywhere'],
   },
   {
     name: 'Lab elsewhere, platform local',
@@ -1884,7 +1884,7 @@ const GUIDE_LAYOUTS = [
   {
     name: 'Platform deployed, lab elsewhere',
     note: 'A real stack pointed at the lab.',
-    lines: ['it registers with clock: "wall" — it cannot be moved', 'so the console refuses to move the lab clock while it is live', 'point its vendor URLs at the lab with the downloaded .env'],
+    lines: ['it registers with clock: "wall" — it cannot be moved', 'so the lab API refuses to move the lab clock while it is live', 'point its vendor URLs at the lab with the downloaded .env'],
   },
 ];
 
@@ -2042,14 +2042,14 @@ function guideDiagram() {
     ${chip(160, 374, 90, 'files', 'lib')}
     ${chip(258, 374, 90, 'supervisor', 'lib')}
 
-    ${box(600, 10, 390, 450, 'is-lab', 'fintechlab', 'the lab: vendors, console, clock')}
+    ${box(600, 10, 390, 450, 'is-lab', 'fintechlab', 'the lab: vendors, its API, console, clock')}
     ${chip(620, 64, 170, 'Worldline SFTP :2222')}
     ${chip(800, 64, 170, 'B4B :8086')}
     ${chip(620, 96, 170, 'Banking Circle :8085')}
     ${chip(800, 96, 170, 'ACI :8087')}
     ${chip(620, 128, 350, 'verification · AML · business bank :8081')}
-    ${box(620, 160, 170, 76, 'is-core', 'Console :8090', 'cards · buttons · logs')}
-    ${chip(840, 186, 130, 'your browser', 'browser')}
+    ${box(620, 160, 170, 76, 'is-core', 'Lab API :8097', 'cards · buttons · logs')}
+    ${chip(840, 186, 130, 'console :8090', 'browser')}
     ${arrow(840, 198, 790, '', '', 'is-browse')}
     ${box(620, 254, 170, 44, 'is-core', 'Lab clock :8096', '')}
     <text class="gd-group" x="620" y="330">STAND-INS</text>
@@ -2060,7 +2060,7 @@ function guideDiagram() {
 
     ${arrow(380, 76, 620, 'SFTP+PGP · JWT · mTLS', '', 'is-traffic')}
     ${arrow(620, 108, 380, 'webhooks · callbacks', '', 'is-traffic')}
-    ${arrow(380, 180, 620, 'registers its card, renews it', 'POST /api/plugins')}
+    ${arrow(380, 180, 620, 'registers its card, renews it', 'POST /v1/plugins')}
     ${arrow(620, 222, 380, 'buttons, files, logs', 'on its base_url, :3109')}
     ${arrow(380, 276, 620, 'follows the clock, holds it in a run', 'GET /clock')}
     ${arrow(600, 436, 400, 'fintechlab.env', 'addresses · credentials · keys', 'is-setup')}
@@ -2069,24 +2069,30 @@ function guideDiagram() {
 
 /* --- docs: the API reference ----------------------------------------------
 
-   Every route a caller can use (design-system.md, API reference). The
-   console's own routes come from GET /api, which lists the table the
-   console registers them from, so this page cannot document a route that
-   does not answer. The services come from the overview, like every card. */
+   Every route a caller can use (design-system.md, API reference). The lab
+   API's routes come from GET /v1, which lists the table the lab API
+   registers them from, so this page cannot document a route that does not
+   answer. The services come from the overview, like every card. */
+
+/* Where a script reaches the lab API. This page reaches it through its own
+   origin; the lab API's own address is :8097 on the same host. */
+function labApiURL() {
+  return `${location.protocol}//${location.hostname}:8097`;
+}
 
 const API_INTENTS = [
   ['Drive the lab from a script or an agent: merchants, the clock, a run, what happened',
-    'The console', 'GET /api first, then /api/*'],
+    'The lab API', 'GET /v1 first, then /v1/*'],
+  ['Make a vendor misbehave, or read what it saw',
+    'The lab API’s passthrough', '/v1/services/{id}/sim/* — the credentials are added for you'],
   ['Test your integration with one vendor',
     'That vendor’s own surface', 'exactly the calls your platform makes to the real one'],
-  ['Make a vendor misbehave, or read what it saw',
-    'That service’s /sim/*', 'lab-only hooks; the console wraps the common ones'],
   ['Put your platform’s card in the console',
-    'The console', 'POST /api/plugins — docs/plugins.md'],
+    'The lab API', 'POST /v1/plugins — docs/plugins.md'],
   ['Keep your platform’s business dates on the lab’s',
     'The clock', 'GET /clock every second — docs/plugins.md, The clock'],
   ['Prove every hop is connected',
-    'make harness', 'calls the services directly; it does not need the console'],
+    'make harness', 'calls the services directly; it needs neither the lab API nor the console'],
 ];
 
 const API_KIND_TITLES = [
@@ -2099,16 +2105,17 @@ function renderApiRef() {
   const idx = state.data.apiIndex;
   return `<div class="guide api-ref">
     <section class="guide-hero">
-      <h2>Three kinds of API, and who calls which</h2>
-      <p class="guide-lede">Every service answers on its own address, with up to three surfaces: the
-        <b>vendor surface</b> your platform calls exactly as it would call the real vendor,
-        <b>/internal/*</b> plumbing where one simulation stands in for something that has no API,
-        and <b>/sim/*</b>, the lab-only hooks that drive and observe it. The console is a client of
-        all of them. Its own <span class="mono">/api/*</span> is the backend of this page, and a
-        lab-level API for scripts and agents: one address for merchants, the clock, runs and what
-        happened.</p>
+      <h2>One lab API, and the services behind it</h2>
+      <p class="guide-lede">The <b>lab API</b> is the one address for everything lab-level: merchants,
+        the clock, settlement runs, what happened, and every service's lab hooks. This page calls
+        it exactly as a script or an agent does — the console only serves the page and forwards
+        <span class="mono">/v1</span> to it. Behind it, every service answers on its own address
+        with up to three surfaces: the <b>vendor surface</b> your platform calls exactly as it would
+        call the real vendor, <b>/internal/*</b> plumbing where one simulation stands in for
+        something that has no API, and <b>/sim/*</b>, the lab-only hooks that drive and observe it,
+        which the lab API passes through with the credentials each one needs.</p>
       <div class="guide-diagram">${apiDiagram()}</div>
-      <p class="hint">Purple arrows go to or from the console; grey ones are calls to a service's own API.
+      <p class="hint">Purple arrows go to or from the lab API; grey ones are calls to a service's own API.
         Purple marks the system under test, as on the Dashboard.</p>
     </section>
 
@@ -2119,15 +2126,15 @@ function renderApiRef() {
         <tbody>${API_INTENTS.map(([to, call, how]) => `<tr>
           <td>${esc(to)}</td><td>${esc(call)}</td><td class="mono">${esc(how)}</td></tr>`).join('')}</tbody>
       </table></div>
-      <div class="note">Planned, not built: one lab API at <span class="mono">/v1</span> in a container
-        of its own, with a control port per service and traps that make a vendor answer a future
-        request the way a test needs. The design is in <span class="mono">docs/lab-api/</span>.
-        Until it exists, the console's <span class="mono">/api</span> is the lab-level API.</div>
+      <div class="note">Still to come in the lab API (docs/lab-api/plan.md): a reset of the whole lab,
+        every service's log lines, and traps that make a vendor answer a future request the way a
+        test needs. Until then, a service's own <span class="mono">/sim/*</span> through the passthrough
+        is how to steer it.</div>
     </section>
 
-    <section data-anchor="console-api">
-      <div class="section-title">The console's API <small>${esc(location.origin)}/api — no auth, JSON in and out</small></div>
-      ${apiConsoleRoutes(idx)}
+    <section data-anchor="lab-api">
+      <div class="section-title">The lab API <small>${esc(labApiURL())}/v1 — and through this console at ${esc(location.origin)}/v1</small></div>
+      ${apiLabRoutes(idx)}
     </section>
 
     <section data-anchor="service-apis">
@@ -2139,9 +2146,9 @@ function renderApiRef() {
   </div>`;
 }
 
-function apiConsoleRoutes(idx) {
-  if (!idx) return `<div class="empty">Reading the console's index…</div>`;
-  if (idx.error) return `<div class="note bad">GET /api did not answer: ${esc(idx.error)}</div>`;
+function apiLabRoutes(idx) {
+  if (!idx) return `<div class="empty">Reading the lab API's index…</div>`;
+  if (idx.error) return `<div class="note bad">GET /v1 did not answer: ${esc(idx.error)}</div>`;
   const groups = (idx.groups || []).map((g) => {
     const rows = (idx.routes || []).filter((r) => r.group === g.id);
     if (!rows.length) return '';
@@ -2153,15 +2160,18 @@ function apiConsoleRoutes(idx) {
           <thead><tr><th>Method</th><th>Path</th><th>What it does</th><th>Reaches</th></tr></thead>
           <tbody>${rows.map((r) => `<tr>
             <td><span class="pill">${esc(r.method)}</span></td>
-            <td class="mono">${esc(r.path)}</td>
+            <td class="mono">${esc(r.path)}${r.alias ? `<div class="hint mono">also ${esc(r.alias)}</div>` : ''}</td>
             <td>${esc(r.summary)}</td>
             <td class="api-reaches">${esc(r.reaches)}</td></tr>`).join('')}</tbody>
         </table></div>
       </div>`;
   }).join('');
-  return `<p class="hint">${(idx.routes || []).length} routes, listed by the console itself
-      (<a href="/api" target="_blank" rel="noreferrer" class="mono">GET /api</a>).
-      Bodies, answers and errors for each: <span class="mono">${esc(idx.docs || 'docs/api/console-api.md')}</span>.</p>
+  const aliased = (idx.routes || []).filter((r) => r.alias).length;
+  return `<p class="hint">${(idx.routes || []).length} routes, listed by the lab API itself
+      (<a href="/v1" target="_blank" rel="noreferrer" class="mono">GET /v1</a>).
+      ${aliased} also answer at the console's old <span class="mono">/api</span> path, for plugins that
+      still register there. No auth unless <span class="mono">LAB_API_TOKEN</span> is set; JSON in and out.
+      Bodies, answers and errors for each: <span class="mono">${esc(idx.docs || 'docs/api/lab-api.md')}</span>.</p>
     ${groups}`;
 }
 
@@ -2228,16 +2238,16 @@ function apiDiagram() {
     </g>`;
   };
   return `<svg class="gd" viewBox="0 0 1000 470" role="img"
-      aria-label="Callers on both sides — the console page, scripts and agents, the harness, the platform — and the console and services they call">
-    ${gdBox(20, 20, 210, 60, 'is-lab', 'Console page', 'your browser')}
+      aria-label="Callers on both sides — the console page, scripts and agents, the harness, the platform — and the lab API and services they call">
+    ${gdBox(20, 20, 210, 60, 'is-lab', 'Console page', 'your browser · served on :8090')}
     ${gdBox(20, 110, 210, 230, 'is-lab', 'Scripts and agents', 'curl, a test suite, an LLM')}
-    <text class="gd-note" x="36" y="180">read GET /api first:</text>
-    <text class="gd-note" x="36" y="198">it lists every console route</text>
+    <text class="gd-note" x="36" y="180">read GET /v1 first:</text>
+    <text class="gd-note" x="36" y="198">it lists every route</text>
     <text class="gd-note" x="36" y="216">and what each one reaches</text>
 
-    ${gdBox(380, 20, 240, 150, 'is-core', 'Console :8090', 'the page and its backend')}
-    ${gdChip(396, 76, 208, 'GET /api — the index')}
-    ${gdChip(396, 108, 208, '/api/* — lab-level calls')}
+    ${gdBox(380, 20, 240, 150, 'is-core', 'Lab API :8097', 'the one API over the lab')}
+    ${gdChip(396, 76, 208, 'GET /v1 — the index')}
+    ${gdChip(396, 108, 208, '/v1/services/{id}/sim/*')}
     ${gdChip(396, 140, 208, 'own state: merchants, plugins', 'standin')}
 
     ${gdBox(380, 200, 240, 260, 'is-lab', 'Services', 'one process each, own address')}
@@ -2250,20 +2260,20 @@ function apiDiagram() {
     ${gdBox(770, 20, 210, 290, 'is-sut', 'Your platform', 'a registered plugin')}
     ${gdBox(770, 340, 210, 100, 'is-lab', 'Harness', 'make harness')}
     <text class="gd-note" x="786" y="400">black-box scenarios;</text>
-    <text class="gd-note" x="786" y="418">never through the console</text>
+    <text class="gd-note" x="786" y="418">needs no lab API</text>
 
-    ${gdArrow(230, 50, 380, 'every button', 'one /api call')}
-    ${gdArrow(230, 140, 380, 'lab-level', 'GET /api · /api/*')}
-    ${gdArrow(230, 300, 380, 'vendor-level', '/sim/* · vendor APIs', 'is-traffic')}
+    ${gdArrow(230, 50, 380, 'every button', 'one /v1 call')}
+    ${gdArrow(230, 140, 380, 'everything lab-level', 'GET /v1 · /v1/*')}
+    ${gdArrow(230, 300, 380, 'vendor surfaces', 'as a platform would', 'is-traffic')}
     ${vert(500, 170, 200)}
     <text class="gd-code gd-start" x="510" y="189">calls their own APIs</text>
 
     <text class="gd-note" x="786" y="170">its production code calls</text>
     <text class="gd-note" x="786" y="188">the vendor surfaces only;</text>
     <text class="gd-note" x="786" y="206">its test harness may also</text>
-    <text class="gd-note" x="786" y="224">use /sim/*, like any script</text>
+    <text class="gd-note" x="786" y="224">use the lab API, like any script</text>
 
-    ${gdArrow(770, 60, 620, 'registers its card', 'POST /api/plugins')}
+    ${gdArrow(770, 60, 620, 'registers its card', 'POST /v1/plugins')}
     ${gdArrow(620, 125, 770, 'its buttons, files, logs', 'on its base_url')}
     ${gdArrow(770, 240, 620, 'vendor traffic, the clock', 'SFTP+PGP · JWT · mTLS', 'is-traffic')}
     ${gdArrow(620, 285, 770, 'webhooks · callbacks', '', 'is-traffic')}
@@ -2311,7 +2321,7 @@ function renderServices() {
   // The one thing the Platform view is for, said where it would be.
   const noPlatform = kind === 'platform' && !group.some((s) => s.plugin)
     ? `<div class="note">No platform has registered. A platform under test puts its own card here by
-        posting a descriptor to <span class="mono">/api/plugins</span> and renewing it — see
+        posting a descriptor to the lab API's <span class="mono">/v1/plugins</span> and renewing it — see
         <span class="mono">docs/plugins.md</span>. It then heads this list, with its buttons.</div>`
     : '';
   return html + noPlatform + ordered.map(serviceCard).join('') + hiddenNote(hidden);
@@ -2577,7 +2587,7 @@ function renderMerchants() {
   html += `<div class="note">These merchants are <b>the lab's</b>: this console's registry
       (<span class="mono">console-data/registry.json</span>) and what it made at the vendors — a B4B beneficiary per
       outlet, card payments per MID at Worldline. Your platform's own database knows none of them. To settle them end
-      to end, the platform seeds its records from <span class="mono">GET /api/merchants</span> (each outlet's MID,
+      to end, the platform seeds its records from <span class="mono">GET /v1/merchants</span> (each outlet's MID,
       payout account, country and currency); testing only the settle path, the platform's own seeder — a runner's
       <i>Seed merchants</i> — is the other way round, and these are not needed.</div>`;
 
@@ -2809,9 +2819,9 @@ function standInsConfig() {
     <div class="table-scroll"><table>
       <thead><tr><th>Stand-in</th><th>Plays</th><th>Wiring now</th><th class="actions"></th><th class="actions"></th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-    <p class="hint">Connected lives in the services and survives a console restart. Shown is the console's own and is
+    <p class="hint">Connected lives in the services and survives a lab API restart. Shown is the lab API's own and is
       not: after a restart every card starts hidden again (<span class="mono">CONSOLE_STAND_INS_SHOWN=true</span> on
-      the console starts them shown). A registered platform may ask for either in its descriptor's
+      the lab API starts them shown). A registered platform may ask for either in its descriptor's
       <span class="mono">stand_ins</span>; that is applied when it registers or changes its mind, so a switch pressed
       here holds.</p>
   </div></div>`;
@@ -2841,16 +2851,16 @@ function fmtSeconds(s) {
 /* --- actions ------------------------------------------------------------ */
 
 const ACTIONS = {
-  probe: async (d) => { await api('POST', `/api/services/${d.id}/probe`); },
+  probe: async (d) => { await api('POST', `/v1/services/${d.id}/probe`); },
 
   cycle: async (d) => {
-    const r = await api('POST', `/api/actions/worldline-cycle?slot=${encodeURIComponent(d.slot)}`);
+    const r = await api('POST', `/v1/actions/worldline-cycle?slot=${encodeURIComponent(d.slot)}`);
     const files = (r.files || []).map((f) => f.filename).join('\n');
     toast(`Cycle run (${d.slot})`, files || 'No file cut — nothing had traded in the settled window.', 'good');
   },
 
   pull: async () => {
-    const r = await api('POST', '/api/actions/settlement-pull');
+    const r = await api('POST', '/v1/actions/settlement-pull');
     toast('Pulled from Worldline', r, 'good');
   },
 
@@ -2880,7 +2890,7 @@ const ACTIONS = {
 
   'plugin-delete-file': async (d) => {
     if (!confirm(`Delete ${d.name}? It is removed from disk on the platform's machine. Runs it already did stay done — only the file goes, and there is no undo.`)) return;
-    await api('DELETE', `/api/plugins/${encodeURIComponent(d.id)}/files?name=${encodeURIComponent(d.name)}`);
+    await api('DELETE', `/v1/plugins/${encodeURIComponent(d.id)}/files?name=${encodeURIComponent(d.name)}`);
     if (state.selected[d.id]) state.selected[d.id].delete(d.name);
     toast('Deleted', d.name, 'good');
   },
@@ -2888,7 +2898,7 @@ const ACTIONS = {
   /* The platform opens the folder on its own machine; the toast is its
      answer — the folder, or why it could not and where the file is. */
   'plugin-reveal': async (d) => {
-    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/files/reveal`, { name: d.name });
+    const r = await api('POST', `/v1/plugins/${encodeURIComponent(d.id)}/files/reveal`, { name: d.name });
     toast('Opened its location', r.note || r.path || d.name, 'good');
   },
 
@@ -2896,7 +2906,7 @@ const ACTIONS = {
 
   'plugin-run': async (d) => {
     const files = d.files.split('|');
-    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/run`, { files });
+    const r = await api('POST', `/v1/plugins/${encodeURIComponent(d.id)}/run`, { files });
     if (files.length > 1) delete state.selected[d.id];
     const runs = r.runs || [r];
     toast(runs.length > 1 ? `${runs.length} settlement runs started` : 'Settlement run started',
@@ -2926,7 +2936,7 @@ const ACTIONS = {
   },
 
   'bc-test': async (d) => {
-    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
+    const r = await api('POST', `/v1/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
     toast(r.delivered ? 'Endpoint took it' : 'Nothing took it', r.result, r.delivered ? 'good' : 'bad');
   },
 
@@ -2934,13 +2944,13 @@ const ACTIONS = {
      one call somebody could make with curl — and so a mistyped URL is a 404
      rather than a pause nobody asked for. */
   'bc-pause': async (d) => {
-    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/pause`);
+    const r = await api('POST', `/v1/banking-circle/subscriptions/${encodeURIComponent(d.id)}/pause`);
     toast('Delivery paused', `${r.endpoint}\nNotifications will queue in the log below until you release them.` +
       (r.queued ? `\n${r.queued} already waiting.` : ''));
   },
 
   'bc-resume': async (d) => {
-    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/resume`);
+    const r = await api('POST', `/v1/banking-circle/subscriptions/${encodeURIComponent(d.id)}/resume`);
     toast('Delivery resumed',
       r.released ? `${r.released} notification(s) released to ${r.endpoint}, oldest first.`
                  : `${r.endpoint}\nNothing was waiting.`,
@@ -2952,13 +2962,13 @@ const ACTIONS = {
      undone rather than asking whether you are sure. */
   'bc-return': async (d) => {
     if (!confirm(`Return ${d.id}? It stays processed, and ${d.amount} ${d.currency} comes back to the safeguarding account as a new incoming payment flagged return. A payout comes back once — there is no undo.`)) return;
-    const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/return`);
+    const r = await api('POST', `/v1/banking-circle/payouts/${encodeURIComponent(d.id)}/return`);
     toast('Payout returned', `${r.id} brings ${r.amount} ${r.currency} back, flagged return.\n${d.id} stays processed.`, 'good');
   },
 
   'bc-reverse': async (d) => {
     if (!confirm(`Reverse ${d.id}? It becomes reversed, and ${d.amount} ${d.currency} is booked back to the safeguarding account. There is no undo.`)) return;
-    const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/reverse`);
+    const r = await api('POST', `/v1/banking-circle/payouts/${encodeURIComponent(d.id)}/reverse`);
     toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
   },
 
@@ -2969,7 +2979,7 @@ const ACTIONS = {
     if (d.connected) body.connected = d.connected === 'true';
     if (d.shown) body.shown = d.shown === 'true';
     if (body.connected === false && !confirm('Disconnect this stand-in? Its timers stop and vendors stop delivering to it until it is connected again — nothing already delivered is undone.')) return;
-    const v = await api('POST', `/api/stand-ins/${encodeURIComponent(d.id)}`, body);
+    const v = await api('POST', `/v1/stand-ins/${encodeURIComponent(d.id)}`, body);
     const what = body.shown === undefined ? `now ${v.state}` : body.shown ? 'shown' : 'hidden';
     toast(`${shortName(v.name)} ${what}`, (v.errors || []).join('\n') || '', (v.errors || []).length ? 'bad' : 'good');
   },
@@ -2984,7 +2994,7 @@ const ACTIONS = {
       return;
     }
     if (act.confirm && !confirm(act.confirm)) return;
-    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, {});
+    const r = await api('POST', `/v1/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, {});
     toast(act.label, (r && (r.note || r.output)) || act.note || r, 'good');
   },
 
@@ -2992,7 +3002,7 @@ const ACTIONS = {
     const act = declaredAction(d.id, d.act);
     const body = actionFormBody(act.fields || [], fieldsIn(btn.closest('.modal')));
     if (act.confirm && !confirm(act.confirm)) return;
-    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, body);
+    const r = await api('POST', `/v1/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, body);
     closeModal();
     toast(act.label, (r && (r.note || r.output)) || act.note || r, 'good');
   },
@@ -3001,7 +3011,7 @@ const ACTIONS = {
      come through a morning cycle. An account already holding money is left
      alone, and the toast says which. */
   'fund-sga': async () => {
-    const r = await api('POST', '/api/actions/fund-sga');
+    const r = await api('POST', '/v1/actions/fund-sga');
     const rows = r.results || [];
     const bad = rows.filter((x) => x.error);
     toast(bad.length ? 'Safeguarding funded in part' : 'Safeguarding accounts',
@@ -3013,7 +3023,7 @@ const ACTIONS = {
     const scope = btn.closest('.form');
     const f = fieldsIn(scope);
     if (!f.holder) throw new Error('holder is required');
-    const a = await api('POST', `/api/banks/${d.id}/accounts`, {
+    const a = await api('POST', `/v1/banks/${d.id}/accounts`, {
       holder: f.holder, currency: f.currency || 'EUR', opening_balance: f.opening_balance || '',
     });
     toast('Account opened', `${a.id}  ${a.number}`, 'good');
@@ -3022,7 +3032,7 @@ const ACTIONS = {
   'add-partner': async (_d, btn) => {
     const f = fieldsIn(btn.closest('.form'));
     if (!f.name) throw new Error('name is required');
-    await api('POST', '/api/partners', { name: f.name, country: f.country || '' });
+    await api('POST', '/v1/partners', { name: f.name, country: f.country || '' });
     toast('Partner added', f.name, 'good');
   },
 
@@ -3041,19 +3051,19 @@ const ACTIONS = {
     if (f.line1) {
       body.address = { line1: f.line1, city: f.city, post_code: f.post_code, country: f.country || '' };
     }
-    const m = await api('POST', '/api/merchants', body);
+    const m = await api('POST', '/v1/merchants', body);
     closeModal();
     state.open.add(`merchants:${m.id}`);
     toast('Merchant created', `${m.legal_name}\n${m.outlets.map((o) => o.mid).join('\n')}`, 'good');
   },
 
   'add-outlet': async (d) => {
-    const r = await api('POST', `/api/merchants/${d.id}/outlets`, { name: '' });
+    const r = await api('POST', `/v1/merchants/${d.id}/outlets`, { name: '' });
     toast('Outlet opened', `${r.outlet.name}\nMID ${r.outlet.mid}`, 'good');
   },
 
   provision: async (d) => {
-    const r = await api('POST', `/api/merchants/${d.id}/provision`);
+    const r = await api('POST', `/v1/merchants/${d.id}/provision`);
     const bad = r.outlets.filter((o) => o.error);
     if (bad.length) {
       toast('Provisioned with failures', bad.map((o) => `${o.mid}: ${o.error}`).join('\n'), 'bad');
@@ -3063,20 +3073,20 @@ const ACTIONS = {
   },
 
   'seed-trading': async (d) => {
-    const r = await api('POST', `/api/merchants/${d.id}/trading`, {
+    const r = await api('POST', `/v1/merchants/${d.id}/trading`, {
       count: parseInt(d.count, 10), amount_cents: parseInt(d.amount, 10),
     });
     toast('Worldline acquired the trading', `${r.accepted} transactions dated ${r.date}\n${r.note}`, 'good');
   },
 
   'set-status': async (d) => {
-    await api('POST', `/api/merchants/${d.id}/status`, { status: d.status });
+    await api('POST', `/v1/merchants/${d.id}/status`, { status: d.status });
     toast('Status changed', `${d.id} → ${d.status}`, 'good');
   },
 
   'delete-merchant': async (d) => {
     if (!confirm('Delete this merchant? Anything already registered at B4B stays there — the rail has no delete.')) return;
-    await api('DELETE', `/api/merchants/${d.id}`);
+    await api('DELETE', `/v1/merchants/${d.id}`);
     state.open.delete(`merchants:${d.id}`);
     toast('Merchant deleted', d.id);
   },
@@ -3085,7 +3095,7 @@ const ACTIONS = {
     const ta = btn.closest('.card-body').querySelector('[data-field="json"]');
     let parsed;
     try { parsed = JSON.parse(ta.value); } catch (err) { throw new Error('not valid JSON: ' + err.message); }
-    await api('PUT', '/api/config/worldline-channel', parsed);
+    await api('PUT', '/v1/config/worldline-channel', parsed);
     toast('Channel configuration saved', '', 'good');
   },
 
@@ -3106,7 +3116,7 @@ const ACTIONS = {
       body.seed = seedValue;
     }
     if (!(body.count >= 1 && body.count <= 500)) throw new Error('Merchants is 1 to 500.');
-    const r = await api('POST', '/api/merchants/batches', body);
+    const r = await api('POST', '/v1/merchants/batches', body);
     closeModal();
     toast(`Batch ${r.batch.id} created`, r.note, 'good');
   },
@@ -3115,20 +3125,20 @@ const ACTIONS = {
      and the merchants that failed are the ones worth reading
      (design-system.md, contract 4). */
   'batch-provision': async (d) => {
-    const r = await api('POST', `/api/merchants/batches/${encodeURIComponent(d.id)}/provision`);
+    const r = await api('POST', `/v1/merchants/batches/${encodeURIComponent(d.id)}/provision`);
     toast((r.failed || []).length ? 'Registered with failures' : 'Registered at B4B',
       [r.note, ...(r.failed || [])].join('\n'), (r.failed || []).length ? 'bad' : 'good');
   },
 
   'batch-trading': async (d) => {
-    const r = await api('POST', `/api/merchants/batches/${encodeURIComponent(d.id)}/trading`, { count: parseInt(d.count, 10) });
+    const r = await api('POST', `/v1/merchants/batches/${encodeURIComponent(d.id)}/trading`, { count: parseInt(d.count, 10) });
     toast((r.failed || []).length ? 'Trading seeded with failures' : 'Worldline acquired the trading',
       [r.note, ...(r.failed || [])].join('\n'), (r.failed || []).length ? 'bad' : 'good');
   },
 
   'delete-batch': async (d) => {
     if (!confirm(`Delete batch ${d.id} and its ${d.count} merchants? Anything already registered at B4B or traded at Worldline stays there — neither has a delete.`)) return;
-    const r = await api('DELETE', `/api/merchants/batches/${encodeURIComponent(d.id)}`);
+    const r = await api('DELETE', `/v1/merchants/batches/${encodeURIComponent(d.id)}`);
     toast('Batch deleted', `${r.deleted}: ${r.merchants} merchant(s) gone from the registry`);
   },
   refresh: async () => { },
@@ -3162,7 +3172,7 @@ function bindChanges(root) {
     sel.addEventListener('change', async (ev) => {
       ev.stopPropagation();
       try {
-        await api('POST', `/api/outlets/${sel.dataset.mid}/sanctions`, { sanctions_status: sel.value });
+        await api('POST', `/v1/outlets/${sel.dataset.mid}/sanctions`, { sanctions_status: sel.value });
         toast('Sanctions status moved', `${sel.dataset.mid} → ${sel.value}`, sel.value === 'pass' ? 'good' : 'bad');
       } catch (err) {
         toast('Failed', err.message, 'bad');

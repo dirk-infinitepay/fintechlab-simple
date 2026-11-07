@@ -151,6 +151,11 @@ func (b *BankingCircleBank) Meta() Bank {
 	}
 }
 
+// Bearer is the token a call to Banking Circle's credentialed listener
+// carries, for a caller that builds its own request (the lab API's
+// passthrough to the /sim/* hooks).
+func (b *BankingCircleBank) Bearer(ctx context.Context) (string, error) { return b.bearer(ctx) }
+
 // bearer returns a cached token, exchanging Basic credentials for a new one
 // when it is missing or close to expiry.
 func (b *BankingCircleBank) bearer(ctx context.Context) (string, error) {

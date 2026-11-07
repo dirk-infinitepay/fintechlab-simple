@@ -48,6 +48,11 @@ func NewProvisioner(client *http.Client, reg *Registry, b4bURL, keyPath, keyID, 
 // Ready reports whether payout-rail provisioning is available.
 func (p *Provisioner) Ready() bool { return p != nil && p.B4BKey != nil }
 
+// AuthHeader is the RS512 bearer B4B's API asks for, signed with the key
+// b4b generated, for a caller that builds its own request (the lab API's
+// passthrough to the /sim/* hooks).
+func (p *Provisioner) AuthHeader() (http.Header, error) { return p.authHeader() }
+
 func (p *Provisioner) authHeader() (http.Header, error) {
 	if p.B4BKey == nil {
 		return nil, fmt.Errorf("%w: b4b signing key unavailable, set B4B_JWT_PRIVATE_KEY_PATH to the key b4b generated", ErrInvalid)

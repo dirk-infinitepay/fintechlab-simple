@@ -6,7 +6,7 @@ merchant application may proceed: keyed on an integer
 `UNDERWRITING_APPROVED` (and can later pause settlements).
 [catalogue.md](../../catalogue.md) files it on the **verification** side,
 next to the KYC vendors, but it stands in for the platform's own internal
-verification-service rather than a third party: the console's connect kit
+verification-service rather than a third party: the lab API's connect kit
 says pointing a platform here *replaces* that service. What is real: the
 `/api/v1/verification` path prefix, the `x-internal-api-key` guard with a
 constant-time comparison, the trigger-then-read contract (202, then 404
@@ -22,7 +22,7 @@ memory only.
 | --- | --- |
 | Listens | `:8088`, plain HTTP (the real service is plain HTTP in local development too). Compose service `verify` (`http://verify:8088` on the compose network); host `http://127.0.0.1:8088` |
 | Auth | `x-internal-api-key` header equal to `VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`) on both `/verify/*` routes. The health route is public |
-| A platform points here with | `VERIFICATION_SERVICE_API_URL` (`http://127.0.0.1:8088/api/v1/verification`) and `VERIFICATION_INTERNAL_API_KEY`. The console's connect kit (`GET :8090/api/connect/env/verify`) ships both commented out, because they replace the platform's own service. The settlement stand-in uses `VERIFY_URL` (`http://verify:8088`, no prefix) and `VERIFY_INTERNAL_API_KEY` |
+| A platform points here with | `VERIFICATION_SERVICE_API_URL` (`http://127.0.0.1:8088/api/v1/verification`) and `VERIFICATION_INTERNAL_API_KEY`. the lab API's connect kit (`GET :8097/v1/connect/env/verify`) ships both commented out, because they replace the platform's own service. The settlement stand-in uses `VERIFY_URL` (`http://verify:8088`, no prefix) and `VERIFY_INTERNAL_API_KEY` |
 | Activity logs | None. There is no `GET /sim/activity`. Each request line is logged on stdout |
 | Configuration | `LISTEN` (`:8088`).<br>`VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`): the key every `/verify/*` call must carry.<br>`VERIFY_PROCESSING_DELAY` (`100ms`): how long after a trigger the decision becomes readable. Settlement polls for about 500 ms and then carries on as if approved, so a longer delay makes its gate let everything through.<br>`VERIFY_FORCE_DECLINE_IDS` (empty): comma-separated integer `merchantApplicationId`s that decide `DECLINE`; non-integers are logged and skipped. Settlement derives the id from the merchant id (FNV-32a, read as a signed 32-bit integer and made positive: `fnvPositive` in `cmd/settlement/main.go`), so that number is the one to list.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): `completedAt` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §3 (the service) and §5 (settlement's gate), [catalogue.md](../../catalogue.md) |
@@ -38,7 +38,7 @@ prefix and shapes. Errors have one shape:
 ### `GET /api/v1/verification/health`
 
 Liveness, public like the real service's health route. Also the path the
-console probes.
+lab API probes.
 
 Answers `200` with `{"status": "ok", "service": "verify"}`.
 
@@ -114,9 +114,9 @@ always omitted.
   any other decision sets the record's payout state to
   `verification_declined`. An unreachable service, a non-200 answer or a
   decision that never becomes ready is treated as approved.
-- **console** (`cmd/console`): `GET /api/overview` and
-  `POST /api/services/verify/probe` probe `GET /api/v1/verification/health`.
-  `GET /api/connect/env/verify` hands out the variables without calling this
+- **lab API** (`cmd/labapi`): `GET /v1/lab` and
+  `POST /v1/services/verify/probe` probe `GET /api/v1/verification/health`.
+  `GET /v1/connect/env/verify` hands out the variables without calling this
   service.
 - **harness**: no scenario calls it directly; `banking-circle-payout`
   (`internal/harness/scenario_bankingcircle.go`) passes through it via

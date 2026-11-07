@@ -64,13 +64,13 @@ func TestAPluginSetsTheStandInsWhenItsWishesChangeNotOnEveryRenewal(t *testing.T
 	}
 
 	// The developer brings it back from the console.
-	w := call(t, a, http.MethodPost, "/api/stand-ins/settlement", `{"connected":true,"shown":true}`)
+	w := call(t, a, http.MethodPost, "/v1/stand-ins/settlement", `{"connected":true,"shown":true}`)
 	if w.Code != 200 || !sw.Connected() || a.cat.Hidden("settlement") {
 		t.Fatalf("console reconnect = %d %s", w.Code, w.Body.String())
 	}
 	var v standInView
 	_ = json.Unmarshal(w.Body.Bytes(), &v)
-	if v.State != "connected" || v.SetBy != "console" {
+	if v.State != "connected" || v.SetBy != "lab-api" {
 		t.Errorf("after reconnecting: %+v", v)
 	}
 
@@ -94,11 +94,11 @@ func TestAPluginCannotHideAVendor(t *testing.T) {
 	p := testPlugin("http://127.0.0.1:1")
 	p.StandIns = map[string]console.StandInPref{"worldline": {Shown: boolp(false)}}
 	body, _ := json.Marshal(p)
-	w := call(t, a, http.MethodPost, "/api/plugins", string(body))
+	w := call(t, a, http.MethodPost, "/v1/plugins", string(body))
 	if w.Code != 400 || !strings.Contains(w.Body.String(), "worldline") {
 		t.Errorf("register = %d %s, want a 400 naming worldline", w.Code, w.Body.String())
 	}
-	if w := call(t, a, http.MethodPost, "/api/stand-ins/worldline", `{"shown":false}`); w.Code != 404 {
+	if w := call(t, a, http.MethodPost, "/v1/stand-ins/worldline", `{"shown":false}`); w.Code != 404 {
 		t.Errorf("hiding a vendor from the console = %d, want 404", w.Code)
 	}
 }
@@ -116,7 +116,7 @@ func TestAHiddenReceiverLeavesTheDiagram(t *testing.T) {
 	if _, ok := flowOf(t, a)["notify"]; !ok {
 		t.Fatal("a shown receiver has its hop")
 	}
-	if w := call(t, a, http.MethodPost, "/api/stand-ins/receiver", `{"shown":false}`); w.Code != 200 {
+	if w := call(t, a, http.MethodPost, "/v1/stand-ins/receiver", `{"shown":false}`); w.Code != 200 {
 		t.Fatalf("hide = %d %s", w.Code, w.Body.String())
 	}
 	steps := flowOf(t, a)
@@ -126,7 +126,7 @@ func TestAHiddenReceiverLeavesTheDiagram(t *testing.T) {
 	if _, ok := steps["confirm"]; !ok {
 		t.Error("the platform's own confirmations must stay")
 	}
-	w := call(t, a, http.MethodGet, "/api/flow", "")
+	w := call(t, a, http.MethodGet, "/v1/flow", "")
 	var got flowResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)

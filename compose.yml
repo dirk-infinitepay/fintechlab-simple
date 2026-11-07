@@ -474,14 +474,20 @@ services:
       LISTEN: ":8089"
 
 
-  console:
+  # The lab's one API (/v1): every lab-level call the console page, a
+  # script or an agent makes lands here (docs/api/lab-api.md). It holds
+  # what the console's server used to: the merchant registry, the plugin
+  # registrations, the health monitor and the credentials to reach each
+  # vendor. The variable names keep their CONSOLE_ prefix so an existing
+  # .env or deployment keeps working.
+  lab-api:
     build:
       context: .
-      dockerfile: docker/Dockerfile.console
+      dockerfile: docker/Dockerfile.lab-api
     ports:
-      - "8090:8090"
+      - "8097:8097"
     environment:
-      LISTEN: ":8090"
+      LISTEN: ":8097"
       # Reached over the compose network by service name. The catalogue's
       # own port list is what builds the "open in a browser" links, which
       # have to point at the published host ports instead -- CONSOLE_BROWSE_HOST
@@ -506,22 +512,22 @@ services:
       CONSOLE_STATE_FILE: /console-data/registry.json
       CONSOLE_BC_DELIVERY_CONFIG: /config/banking-circle.json
       # Banking Circle's API requires mTLS by default (BC_MTLS above), so
-      # the console presents the same client certificate the harness does.
+      # the lab API presents the same client certificate the harness does.
       # Basic credentials are not checked by the simulator, but the
-      # exchange is: the console gets a real bearer token like any client.
+      # exchange is: the lab API gets a real bearer token like any client.
       CA_FILE: /keys/certs/ca.pem
       CLIENT_CERT: /keys/certs/client.pem
       CLIENT_KEY: /keys/certs/client-key.pem
-      BC_USER: console
+      BC_USER: lab-api
       BC_PASSWORD: sim-bc-dev-only
       # Registering a merchant outlet as a B4B beneficiary needs the RS512
       # signing key b4b generates -- read-only, same shared volume
       # settlement already uses for exactly this.
       B4B_JWT_PRIVATE_KEY_PATH: /keys/b4b-keys/private.pem
       B4B_JWT_KEY_ID: "b4b-mock-1"
-      # Where the console finds the keys and certificates it hands out: the
+      # Where the lab API finds the keys and certificates it hands out: the
       # "connect your platform" downloads on each vendor card. Every key
-      # the lab generates, read-only -- the console serves only the files a
+      # the lab generates, read-only -- the lab API serves only the files a
       # client needs (never a server's private key or the CA's), from a
       # fixed list in internal/console/connect.go.
       CONSOLE_KEYS_DIR: /keys
@@ -537,6 +543,22 @@ services:
       banking-circle:
         condition: service_started
       settlement:
+        condition: service_started
+
+  # The control panel: the page, and a forward of /v1 (and the old /api
+  # paths a running plugin registers at) to the lab API. No state, no
+  # credentials, no vendor knowledge.
+  console:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.console
+    ports:
+      - "8090:8090"
+    environment:
+      LISTEN: ":8090"
+      LAB_API_URL: http://lab-api:8097
+    depends_on:
+      lab-api:
         condition: service_started
 
 volumes:

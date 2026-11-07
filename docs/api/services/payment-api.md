@@ -102,7 +102,7 @@ Answers `200` with `{"payments": [...]}`, `[]` when there are none.
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it.
+Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "payment-api"}`.
 
@@ -131,9 +131,9 @@ Answers `200`:
 - **harness**: `payment-api-to-webhook` posts `POST /payments` twice with
   one key, expecting `201` then `200` with the same id, and checks one
   debit, one credit and the webhook at the receiver.
-- **console**: `GET /api/services/payment-api/activity` proxies
-  `GET /sim/activity`; `GET /api/overview` and
-  `POST /api/services/payment-api/probe` probe `GET /health`.
+- **lab API**: `GET /v1/services/payment-api/activity` proxies
+  `GET /sim/activity`; `GET /v1/lab` and
+  `POST /v1/services/payment-api/probe` probe `GET /health`.
 - **the platform**: never. No vendor calls it either.
 
 Routes checked against the source at commit db5e695.

@@ -22,7 +22,7 @@ persisted to one state file.
 | --- | --- |
 | Listens | `:8086`, plain HTTP (no TLS). Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086` |
 | Auth | Every `/oversight/v1/*` route and every `PUT /sim/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt). `GET /health` and `GET /sim/activity`: none |
-| A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the console at `GET :8090/api/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names |
+| A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names |
 | Activity logs | `GET /sim/activity` keeps two in-memory rings of 256 events. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. Boarding, beneficiary and `/sim` calls are not logged |
 | Configuration | `LISTEN` (`:8086`).<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-b4b-oversight.md](../../ARCHITECTURE-b4b-oversight.md) (boarding), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §4 and Addendum §A/D/F (payout half), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §4 (wire-shape fixes), [structure/b4b.md](../../structure/b4b.md) (file by file) |
@@ -78,10 +78,10 @@ library:
   writes `private.pem` (PKCS#1) and `public.pem` (PKIX), both mode 0644, and
   prints the public key to stdout. Compose mounts
   `${LAB_KEYS_DIR:-./keys}/b4b-keys` read-write here; settlement and the
-  console mount it read-only and sign with `private.pem`. This is inverted
+  lab API mount it read-only and sign with `private.pem`. This is inverted
   from a real vendor (the lab owns the private key and hands it to the
-  client); the console serves it at `GET :8090/api/connect/env/b4b` and
-  `GET :8090/api/connect/files/b4b/b4b-jwt-private.pem`.
+  client); the lab API serves it at `GET :8097/v1/connect/env/b4b` and
+  `GET :8097/v1/connect/files/b4b/b4b-jwt-private.pem`.
 
 The token a Go client needs is exactly what `b4b.SignBearerToken(key, kid)`
 produces:
@@ -597,7 +597,7 @@ travels as `iban` when the creditor account is IBAN-shaped, otherwise as
 
 ## Lab control
 
-Hooks a test, agent or the console uses to drive or watch b4b. They do not
+Hooks a test, an agent or the lab API uses to drive or watch b4b. They do not
 exist at the real vendor. The `PUT /sim/*` hooks still need the bearer JWT.
 
 ### `GET /health`
@@ -684,15 +684,15 @@ if either status changed. Persisted.
   that record and `callback_url` set to its own `B4B_CALLBACK_URL`
   (`http://settlement:8083/internal/b4b-webhook`). Signs with
   `b4b.SignBearerToken` and the shared `private.pem`.
-- **console** (`cmd/console`):
-  `POST /api/merchants/{id}/provision` and `POST /api/merchants/batches/{id}/provision`
+- **lab API** (`cmd/labapi`):
+  `POST /v1/merchants/{id}/provision` and `POST /v1/merchants/batches/{id}/provision`
   call `POST /oversight/v1/beneficiaries` once per outlet, with
   `external_ref` set to the MID;
-  `POST /api/outlets/{mid}/sanctions` calls `PUT /sim/beneficiaries/{mid}/sanctions`;
-  `GET /api/overview` and `POST /api/services/b4b/probe` probe `GET /health`;
-  `GET /api/services/b4b/activity`, `GET /api/flow` and `GET /api/flow/hops/{id}`
-  read `GET /sim/activity`. `GET /api/connect/env/b4b` and
-  `GET /api/connect/files/b4b/{name}` hand out the signing key without
+  `POST /v1/outlets/{mid}/sanctions` calls `PUT /sim/beneficiaries/{mid}/sanctions`;
+  `GET /v1/lab` and `POST /v1/services/b4b/probe` probe `GET /health`;
+  `GET /v1/services/b4b/activity`, `GET /v1/flow` and `GET /v1/flow/hops/{id}`
+  read `GET /sim/activity`. `GET /v1/connect/env/b4b` and
+  `GET /v1/connect/files/b4b/{name}` hand out the signing key without
   calling b4b.
 - **harness** (`internal/harness`): `b4b-oversight-gates`
   (`scenario_b4b.go`) registers a beneficiary, sends mismatched and matching

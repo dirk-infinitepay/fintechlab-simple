@@ -5,6 +5,25 @@ the lab working end to end, and `make harness` green.
 
 ## Phase 1 — the control contract, lab-api, first traps
 
+**Status, 2026-11-07.** Built: the `lab-api` block below, apart from
+`/v1/lab/reset`, `/v1/logs`, `/v1/traps` and `openapi.yaml`, which wait for
+the shared packages; and the wiring of `lab-api` into `compose.yml` and the
+pod (not the control ports yet). Two choices made on the way:
+
+- **The old `/api` paths are aliases in the lab API's route table**, not a
+  path-mapping proxy in the console. The console forwards `/v1` and `/api`
+  untouched, so it holds no knowledge of the API, and phase 4 retires the
+  aliases by deleting one column.
+- **The console page calls `/v1` already**, pulled forward from phase 2:
+  every route kept its shape, so it was a rename, and it is what makes the
+  console and an agent call the lab the same way. [OPEN 3](open.md) is
+  answered by the proposal: a separate `console` container, so `lab-api`
+  stays headless.
+
+Not built yet: everything under *Shared packages* and *Every sim*, the
+first traps, the reset/logs/traps routes, `openapi.yaml`, and the harness
+scenarios.
+
 Shared packages, generic infra like `internal/activity`:
 
 - `internal/logring`: the tee on `log.SetOutput`, the ring, and the

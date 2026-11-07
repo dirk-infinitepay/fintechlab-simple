@@ -42,24 +42,7 @@ type serviceView struct {
 }
 
 func (a *app) overview(w http.ResponseWriter, r *http.Request) {
-	all := a.cat.All()
-	out := make([]serviceView, 0, len(all))
-	counts := map[string]int{}
-	for _, s := range all {
-		st, _ := a.mon.Get(s.ID)
-		stopped := s.Plugin != nil && s.Plugin.State == console.PluginStopped
-		lapsed := s.Plugin != nil && s.Plugin.State == console.PluginLapsed && st.State != console.StateUp
-		if stopped || lapsed {
-			// A platform that stopped, or stopped renewing, is not a lab
-			// service that is down: grey with the reason, not red. A
-			// stopped one is no longer probed, so its last probe — "up",
-			// a second before it said goodbye — is not believed either.
-			st.State = console.StateUnknown
-			st.Detail = "registration " + s.Plugin.State
-		}
-		counts[st.State]++
-		out = append(out, serviceView{Service: s, Status: st})
-	}
+	out, counts := a.serviceViews()
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"services":           out,
 		"counts":             counts,
@@ -443,7 +426,7 @@ func (a *app) getConfig(w http.ResponseWriter, r *http.Request) {
 		out["banking_circle_path"] = a.bcCfg
 		out["banking_circle_source"] = "the config file — banking-circle could not be asked (" + err.Error() + "), so BC_TIME_SCALE may override this"
 		if _, serr := os.Stat(a.bcCfg); serr != nil {
-			out["banking_circle_note"] = "file not readable from the console (" + serr.Error() + "); showing the built-in defaults"
+			out["banking_circle_note"] = "file not readable from the lab API (" + serr.Error() + "); showing the built-in defaults"
 		}
 	}
 

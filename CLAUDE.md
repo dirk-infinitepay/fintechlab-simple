@@ -20,7 +20,8 @@ new behaviour, it goes in that vendor's own package.
 ## The platform under test is a plugin
 
 The lab knows no platform by name. A platform registers its own card with
-the console (`POST /api/plugins`) and follows the lab's clock service —
+the lab API (`POST /v1/plugins`; the console's old `/api/plugins` still
+forwards there) and follows the lab's clock service —
 [docs/plugins.md](docs/plugins.md). Do not add a catalogue entry, a proxy
 route or a UI special case for one particular platform; if a plugin needs
 something the console cannot draw, add a generic component to
@@ -35,16 +36,24 @@ broken but is not. Read it before driving the lab from a session.
 
 ## APIs
 
-[docs/api/README.md](docs/api/README.md) maps every API in the lab: each
-service's vendor surface, its `/internal/*` plumbing and `/sim/*` lab
-control, and the console's own `/api`, with who calls which. A cold start is
-`GET :8090/api` (every console route and what it reaches), then
-`GET :8090/api/overview` (every service and where it lives).
+There is one API over the lab: the **lab API** (`cmd/labapi`, `:8097`,
+`/v1`). The console page, scripts and agents all call it the same way; the
+console (`cmd/console`) only serves the page and forwards `/v1` to it. Lab
+state and lab-level behaviour go in the lab API, never in the console's
+server; a vendor's behaviour still goes in that vendor's own package, and a
+`/sim` hook it gains is reachable through the lab API's passthrough
+(`/v1/services/{id}/sim/*`) with no lab API change.
 
-A route and its documentation change together. The console's routes are
-registered from the table in `cmd/console/routes.go`; each service's routes
-are documented in `docs/api/services/<id>.md`. `go test ./cmd/console
-./internal/console` fails when a route and its document disagree.
+[docs/api/README.md](docs/api/README.md) maps every API in the lab. A cold
+start is `GET :8097/v1` (every route and what it reaches), then
+`GET :8097/v1/services` (every service and where it lives).
+[docs/lab-api/](docs/lab-api/README.md) is the design and the plan.
+
+A route and its documentation change together. The lab API's routes are
+registered from the table in `cmd/labapi/routes.go` and documented in
+`docs/api/lab-api.md`; each service's routes are documented in
+`docs/api/services/<id>.md`. `go test ./cmd/labapi ./internal/console`
+fails when a route and its document disagree.
 
 ## What this exists to do
 

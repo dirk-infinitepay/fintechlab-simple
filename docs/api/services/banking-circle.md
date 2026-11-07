@@ -23,7 +23,7 @@ memory.
 | --- | --- |
 | Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095` |
 | Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none |
-| A platform points here with | The console's connect kit (`GET :8090/api/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` and `CONSOLE_BC_INTERNAL_URL` on the console, `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
+| A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` and `CONSOLE_BC_INTERNAL_URL` on the console, `BANKING_CIRCLE_URL` (`:8085`) and `BANKING_CIRCLE_INTERNAL_URL` (`:8095`) on the harness. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the harness |
 | Activity logs | `GET /sim/activity` (on `:8085`, Bearer) keeps three logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments`, written from the caller's request so a refused one still shows its amount. `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume. `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found |
 | Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments and balances |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
@@ -451,8 +451,8 @@ beneficiary's account. Called by b4b when its payout reaches
 ### `POST /internal/incoming-payments`
 
 Money landing on a safeguarding account: the acquirer's lump sum. Called
-by worldline on each morning slot, by the console's
-`POST /api/actions/fund-sga`, and by the harness.
+by worldline on each morning slot, by the lab API's
+`POST /v1/actions/fund-sga`, and by the harness.
 
 - Body: `{"currency": "EUR", "amount": "1250.00", "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24"}`.
   `currency` is `EUR` or `GBP` and picks the account; there is no account
@@ -476,8 +476,8 @@ by worldline on each morning slot, by the console's
 ### `GET /internal/accounts/{accountId}/balances`
 
 The balance without mTLS or a token. Called by the settlement stand-in's
-safeguarding gate before each payout, and by the console's
-`POST /api/actions/fund-sga` to skip an account that already holds money.
+safeguarding gate before each payout, and by the lab API's
+`POST /v1/actions/fund-sga` to skip an account that already holds money.
 
 - Answers `200` `{"accountId": "00000000-0000-4000-8000-000000000978", "balances": [{"type": "CurrentBalance", "currency": "EUR", "beginOfDayAmount": "0.00", "financialDate": "2026-09-25", "intraDayAmount": "1250.00", "lastTransactionTimestamp": "…"}]}`,
   each entry as on `GET /api/v1/accounts/{accountId}/balances`. `400`
@@ -569,7 +569,7 @@ Releases a paused subscription.
 ### `POST /sim/payments/{id}/return`
 
 The same handler as `POST /internal/payments/{id}/return`, on `:8085`
-behind the bearer token, because that is the surface the console holds a
+behind the bearer token, because that is the surface the lab API holds a
 token for.
 
 ### `POST /sim/payments/{id}/reverse`
@@ -695,25 +695,25 @@ order, after anything already queued.
   reconciliation sweep's `intraday-reconciliation-paged-report`, with
   `payments/singles/{paymentId}/status` as the fallback. It receives the
   encrypted webhooks.
-- **The console** (`cmd/console`), on `:8085` as `BC_USER` with the client
-  certificate: `GET /health` (health monitor, `GET /api/overview`,
-  `POST /api/services/{id}/probe`); authorize and `GET /accounts`
-  (`GET /api/banks`); `GET …/notificationselfservice/subscription?PageSize=50`
+- **The lab API** (`cmd/labapi`), on `:8085` as `BC_USER` with the client
+  certificate: `GET /health` (health monitor, `GET /v1/lab`,
+  `POST /v1/services/{id}/probe`); authorize and `GET /accounts`
+  (`GET /v1/banks`); `GET …/notificationselfservice/subscription?PageSize=50`
   and `GET /sim/subscription/{subscriptionId}/pending`
-  (`GET /api/banking-circle/subscriptions`); `POST …/clienttest/{subscriptionId}`
-  (`POST /api/banking-circle/subscriptions/{id}/test`);
+  (`GET /v1/banking-circle/subscriptions`); `POST …/clienttest/{subscriptionId}`
+  (`POST /v1/banking-circle/subscriptions/{id}/test`);
   `POST /sim/subscription/{subscriptionId}/pause` and `/resume`
-  (`POST /api/banking-circle/subscriptions/{id}/pause`, `/resume`);
-  `GET /payments` (`GET /api/banking-circle/payouts`);
+  (`POST /v1/banking-circle/subscriptions/{id}/pause`, `/resume`);
+  `GET /payments` (`GET /v1/banking-circle/payouts`);
   `POST /sim/payments/{id}/return` and `/reverse`
-  (`POST /api/banking-circle/payouts/{id}/return`, `/reverse`);
-  `GET /sim/activity` (`GET /api/services/{id}/activity`, `GET /api/flow`,
-  `GET /api/flow/hops/{id}`); `GET /sim/delivery-config` (`GET /api/config`);
+  (`POST /v1/banking-circle/payouts/{id}/return`, `/reverse`);
+  `GET /sim/activity` (`GET /v1/services/{id}/activity`, `GET /v1/flow`,
+  `GET /v1/flow/hops/{id}`); `GET /sim/delivery-config` (`GET /v1/config`);
   the subscription list and `PUT …/subscription/{id}/activate` or
   `/deactivate` with `If-Match` on every subscription pointing at the
-  receiver (`GET /api/stand-ins`, `POST /api/stand-ins/{id}`). On the
+  receiver (`GET /v1/stand-ins`, `POST /v1/stand-ins/{id}`). On the
   bridge: `GET /internal/accounts/{accountId}/balances` and
-  `POST /internal/incoming-payments` (`POST /api/actions/fund-sga`).
+  `POST /internal/incoming-payments` (`POST /v1/actions/fund-sga`).
 - **The harness**: `banking-circle-payout`
   (`internal/harness/scenario_bankingcircle.go`) authorizes, reads
   `GET /accounts/{id}`, funds with `POST :8095/internal/incoming-payments`

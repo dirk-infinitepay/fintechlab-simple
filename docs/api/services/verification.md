@@ -20,7 +20,7 @@ does not read, which is minimal, fixed or echoed. Nothing is persisted.
 | --- | --- |
 | Listens | `:8089`, plain HTTP. Compose service `verification` (`http://verification:8089` on the compose network); host `http://127.0.0.1:8089` |
 | Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes. `/health` and `/sim/*`: none |
-| A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The console hands these out at `GET :8090/api/connect/env/verification` |
+| A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The lab API hands these out at `GET :8097/v1/connect/env/verification` |
 | Activity logs | None. There is no `GET /sim/activity`, so the console card shows no panels. Each request line is logged on stdout |
 | Configuration | `LISTEN` (`:8089`). Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome` |
 | Design record | [integration/verification-vendor-edge.md](../../integration/verification-vendor-edge.md), the package comment in `cmd/verification/main.go`, [catalogue.md](../../catalogue.md) |
@@ -345,11 +345,11 @@ unknown check or outcome, which changes nothing:
 - **The platform** under test: its own Creditsafe, iban.com, KYC6 and
   LexisNexis clients, through the variables in the table above. Nothing in
   the lab calls the vendor routes.
-- **console** (`cmd/console`): `GET /api/overview` and
-  `POST /api/services/verification/probe` probe `GET /health`.
-  `GET /api/connect/env/verification` hands out the variables without
-  calling this service. No console route calls `/sim/outcome`; flip outcomes
-  with curl.
+- **lab API** (`cmd/labapi`): `GET /v1/lab` and
+  `POST /v1/services/verification/probe` probe `GET /health`.
+  `GET /v1/connect/env/verification` hands out the variables without
+  calling this service. No dedicated route calls `/sim/outcome`; flip outcomes through the
+  passthrough, `/v1/services/verification/sim/outcome`.
 - **harness**: no scenario calls this service.
 - **An operator or agent**: `GET` and `POST /sim/outcome` to arm a failure.
 

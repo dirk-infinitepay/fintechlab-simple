@@ -44,19 +44,19 @@ func TestAFileGoesToThePlatformUntouched(t *testing.T) {
 	p.Settlement.PreviewPath = "/sim/files/preview"
 	register(t, a, p)
 
-	w := call(t, a, http.MethodPost, "/api/plugins/test-platform/files?name=my%20file.csv", "hello,world")
+	w := call(t, a, http.MethodPost, "/v1/plugins/test-platform/files?name=my%20file.csv", "hello,world")
 	if w.Code != 201 || gotName != "my file.csv" || gotBody != "hello,world" {
 		t.Fatalf("upload = %d %s; platform got name %q body %q", w.Code, w.Body.String(), gotName, gotBody)
 	}
-	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/files", "x"); w.Code != 400 {
+	if w := call(t, a, http.MethodPost, "/v1/plugins/test-platform/files", "x"); w.Code != 400 {
 		t.Errorf("an upload without a name = %d, want 400", w.Code)
 	}
 
 	// A preview is bounded however many lines are asked for.
-	if w := call(t, a, http.MethodGet, "/api/plugins/test-platform/files/preview?name=mine.csv&lines=1000000", ""); w.Code != 200 || gotLines != "1000" {
+	if w := call(t, a, http.MethodGet, "/v1/plugins/test-platform/files/preview?name=mine.csv&lines=1000000", ""); w.Code != 200 || gotLines != "1000" {
 		t.Errorf("preview = %d, platform asked for %q lines, want 1000", w.Code, gotLines)
 	}
-	if w := call(t, a, http.MethodDelete, "/api/plugins/test-platform/files?name=mine.csv", ""); w.Code != 204 || gotDelete != "mine.csv" {
+	if w := call(t, a, http.MethodDelete, "/v1/plugins/test-platform/files?name=mine.csv", ""); w.Code != 204 || gotDelete != "mine.csv" {
 		t.Errorf("delete = %d, platform got %q", w.Code, gotDelete)
 	}
 }
@@ -70,7 +70,7 @@ func TestNoUploadPathIsNoUploadButton(t *testing.T) {
 	defer srv.Close()
 	a := testApp(t, srv)
 	register(t, a, testPlugin(srv.URL))
-	w := call(t, a, http.MethodPost, "/api/plugins/test-platform/files?name=a.csv", "x")
+	w := call(t, a, http.MethodPost, "/v1/plugins/test-platform/files?name=a.csv", "x")
 	if w.Code != 501 || !strings.Contains(w.Body.String(), "uploads") {
 		t.Errorf("upload without upload_path = %d %s, want 501", w.Code, w.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestDeleteGoesToDeletePathWhenDeclared(t *testing.T) {
 	p.Settlement.UploadPath = "/sim/files/upload"
 	p.Settlement.DeletePath = "/sim/files/delete"
 	register(t, a, p)
-	if w := call(t, a, http.MethodDelete, "/api/plugins/test-platform/files?name=gen.csv", ""); w.Code != 204 || hit != "/sim/files/delete?name=gen.csv" {
+	if w := call(t, a, http.MethodDelete, "/v1/plugins/test-platform/files?name=gen.csv", ""); w.Code != 204 || hit != "/sim/files/delete?name=gen.csv" {
 		t.Fatalf("delete = %d, platform got %q", w.Code, hit)
 	}
 }
@@ -126,14 +126,14 @@ func TestRevealIsForwardedAndOptional(t *testing.T) {
 
 	a := testApp(t, srv)
 	register(t, a, testPlugin(srv.URL))
-	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/files/reveal", `{"name":"a.csv"}`); w.Code != 501 {
+	if w := call(t, a, http.MethodPost, "/v1/plugins/test-platform/files/reveal", `{"name":"a.csv"}`); w.Code != 501 {
 		t.Errorf("reveal without reveal_path = %d %s, want 501", w.Code, w.Body.String())
 	}
 
 	p := testPlugin(srv.URL)
 	p.Settlement.RevealPath = "/sim/files/reveal"
 	register(t, a, p)
-	w := call(t, a, http.MethodPost, "/api/plugins/test-platform/files/reveal", `{"name":"a.csv"}`)
+	w := call(t, a, http.MethodPost, "/v1/plugins/test-platform/files/reveal", `{"name":"a.csv"}`)
 	if w.Code != 200 || got != `{"name":"a.csv"}` || !strings.Contains(w.Body.String(), "Opened /home/me/files") {
 		t.Fatalf("reveal = %d %s; platform got %q", w.Code, w.Body.String(), got)
 	}
@@ -164,7 +164,7 @@ func TestABatchOfMerchantsFromCreateToDelete(t *testing.T) {
 	defer srv.Close()
 	a := testApp(t, srv)
 
-	w := call(t, a, http.MethodPost, "/api/merchants/batches", `{"count":12,"max_outlets":2,"seed":7}`)
+	w := call(t, a, http.MethodPost, "/v1/merchants/batches", `{"count":12,"max_outlets":2,"seed":7}`)
 	if w.Code != 201 {
 		t.Fatalf("create batch = %d %s", w.Code, w.Body.String())
 	}
@@ -179,11 +179,11 @@ func TestABatchOfMerchantsFromCreateToDelete(t *testing.T) {
 	if made.Merchants != 12 || made.Batch.Seed != 7 {
 		t.Fatalf("made %+v", made)
 	}
-	if w := call(t, a, http.MethodGet, "/api/merchants", ""); !strings.Contains(w.Body.String(), `"batches":[{"id":"`+made.Batch.ID) {
+	if w := call(t, a, http.MethodGet, "/v1/merchants", ""); !strings.Contains(w.Body.String(), `"batches":[{"id":"`+made.Batch.ID) {
 		t.Errorf("the batch is not listed: %s", w.Body.String())
 	}
 
-	w = call(t, a, http.MethodPost, "/api/merchants/batches/"+made.Batch.ID+"/trading", `{"count":2}`)
+	w = call(t, a, http.MethodPost, "/v1/merchants/batches/"+made.Batch.ID+"/trading", `{"count":2}`)
 	if w.Code != 201 || posted != 12 {
 		t.Fatalf("trading = %d %s; worldline was called %d times", w.Code, w.Body.String(), posted)
 	}
@@ -191,10 +191,10 @@ func TestABatchOfMerchantsFromCreateToDelete(t *testing.T) {
 		t.Errorf("every merchant traded at the same ticket: %v", amounts)
 	}
 
-	if w := call(t, a, http.MethodDelete, "/api/merchants/batches/"+made.Batch.ID, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"merchants":12`) {
+	if w := call(t, a, http.MethodDelete, "/v1/merchants/batches/"+made.Batch.ID, ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"merchants":12`) {
 		t.Fatalf("delete batch = %d %s", w.Code, w.Body.String())
 	}
-	if w := call(t, a, http.MethodPost, "/api/merchants/batches", `{"count":0}`); w.Code != 400 {
+	if w := call(t, a, http.MethodPost, "/v1/merchants/batches", `{"count":0}`); w.Code != 400 {
 		t.Errorf("an empty batch = %d, want 400", w.Code)
 	}
 }

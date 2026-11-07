@@ -20,7 +20,7 @@ served over plain HTTP rather than SFTP.
 | --- | --- |
 | Listens | HTTP `:8084` (`LISTEN`) and SSH/SFTP `:2222` (`WORLDLINE_SFTP_PORT`), both in one process. Compose service `worldline`; from the host `http://127.0.0.1:8084` and `sftp://127.0.0.1:2222` |
 | Auth | HTTP: none, on every route. SFTP: password (`WORLDLINE_SFTP_PASSWORD`, compose `sim-sftp-dev-only`) and public key (`WORLDLINE_SFTP_AUTHORIZED_KEY`), each enabled independently. The username is never checked. With both unset, any credential is accepted (logged as a warning at start) |
-| A platform points here with | The settlement stand-in (`compose.yml`): `WORLDLINE_SFTP_HOST`, `WORLDLINE_SFTP_PORT`, `WORLDLINE_SFTP_USER`, `WORLDLINE_SFTP_PASSWORD` or `WORLDLINE_SFTP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_KNOWN_HOST_PATH`, `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_DIR` (default `download`). The console's connect kit (`GET :8090/api/connect/env/worldline`) hands a platform `WORLDLINE_SFTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_HOST_KEY_FINGERPRINT`, `_DOWNLOAD_DIR`, `_RECONCILIATION_DIR`, `_DISPUTES_DIR`, `_UPLOAD_DIR`, `WORLDLINE_SETTLEMENT_IDENTIFIER`, `WORLDLINE_PGP_PUBLIC_KEY` and `INFINITE_PGP_PRIVATE_KEY`. The HTTP side is found with `WORLDLINE_URL` (harness) and `CONSOLE_URL_WORLDLINE` (console) |
+| A platform points here with | The settlement stand-in (`compose.yml`): `WORLDLINE_SFTP_HOST`, `WORLDLINE_SFTP_PORT`, `WORLDLINE_SFTP_USER`, `WORLDLINE_SFTP_PASSWORD` or `WORLDLINE_SFTP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_KNOWN_HOST_PATH`, `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_DIR` (default `download`). the lab API's connect kit (`GET :8097/v1/connect/env/worldline`) hands a platform `WORLDLINE_SFTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_HOST_KEY_FINGERPRINT`, `_DOWNLOAD_DIR`, `_RECONCILIATION_DIR`, `_DISPUTES_DIR`, `_UPLOAD_DIR`, `WORLDLINE_SETTLEMENT_IDENTIFIER`, `WORLDLINE_PGP_PUBLIC_KEY` and `INFINITE_PGP_PRIVATE_KEY`. The HTTP side is found with `WORLDLINE_URL` (harness) and `CONSOLE_URL_WORLDLINE` (lab API) |
 | Activity logs | `GET /sim/activity` keeps one log, `sftp` (*File exchange*): `sftp.session` for each SSH login or refused handshake, then one event per SFTP request (`sftp.list`, `sftp.download`, `sftp.upload`, and the jail's other verbs, such as `sftp.rename`, `sftp.remove`, `sftp.mkdir`), each with `user` and `path`; a refused request is amber with the server's error. Stats are not logged. Each file taken over `GET /outbound/{merchant_id}/{category}/{filename}` lands in the same log as `http.download` |
 | Configuration | The important variables are in the table below. Slot times are read in the container's local zone; the image sets no `TZ`, so that is UTC |
 | Design record | [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md) (who owns the file, the two slots, one file per currency), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §1–2 and Addendum E (Bambora format, SFTP+PGP, encryption direction), [ARCHITECTURE-worldline-sftp-channel.md](../../ARCHITECTURE-worldline-sftp-channel.md) (historical; its SFT directory conventions still hold), [structure/worldline.md](../../structure/worldline.md) |
@@ -226,8 +226,8 @@ Replaces the channel configuration.
 
 ## Lab control
 
-Not part of Worldline. Everything under `/sim` is how a test, agent or the
-console says "a card payment happened" or "deliver the file now".
+Not part of Worldline. Everything under `/sim` is how a test, an agent or the
+lab API says "a card payment happened" or "deliver the file now".
 
 ### `GET /health`
 
@@ -355,18 +355,18 @@ Arms a rejection: from now on, a batch naming this submerchant rejects it.
   `./sftp/outbound/{merchant}/daily/` over a shared bind mount, which
   `GET /outbound/{merchant_id}/daily` and the download route serve; that is
   a file, not a call.
-- **The platform under test**: SFTP, with the settings from the console's
-  `GET /api/connect/env/worldline`. It downloads settlement files, uploads
+- **The platform under test**: SFTP, with the settings from the lab API's
+  `GET /v1/connect/env/worldline`. It downloads settlement files, uploads
   enrolment batches to `to_WLNORDIC/` and collects receipts from
   `from_WLNORDIC/`.
-- **The console** (`cmd/console`): `GET /health` (its health monitor, behind
-  `GET /api/overview` and `POST /api/services/{id}/probe`); `GET /sim/activity`
-  (`GET /api/services/{id}/activity`, `GET /api/flow`,
-  `GET /api/flow/hops/{id}`); `POST /sim/transactions`
-  (`POST /api/merchants/{id}/trading`, `POST /api/merchants/batches/{id}/trading`);
-  `POST /sim/settlement-cycle/run` (`POST /api/actions/worldline-cycle`,
-  passing `slot` and `date`); `GET /config` (`GET /api/config`); `PUT /config`
-  (`PUT /api/config/worldline-channel`).
+- **The lab API** (`cmd/labapi`): `GET /health` (its health monitor, behind
+  `GET /v1/lab` and `POST /v1/services/{id}/probe`); `GET /sim/activity`
+  (`GET /v1/services/{id}/activity`, `GET /v1/flow`,
+  `GET /v1/flow/hops/{id}`); `POST /sim/transactions`
+  (`POST /v1/merchants/{id}/trading`, `POST /v1/merchants/batches/{id}/trading`);
+  `POST /sim/settlement-cycle/run` (`POST /v1/actions/worldline-cycle`,
+  passing `slot` and `date`); `GET /config` (`GET /v1/config`); `PUT /config`
+  (`PUT /v1/config/worldline-channel`).
 - **The harness**: `worldline-settlement-to-sftp`
   (`internal/harness/scenario_worldline.go`) seeds two transactions with
   `POST /sim/transactions`, runs

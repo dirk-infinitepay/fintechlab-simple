@@ -40,7 +40,7 @@ func TestTheEnvFileIsADownloadAddressedToTheHostTheConsoleWasOpenedOn(t *testing
 	a := testApp(t, nil)
 	withKeys(t, a)
 
-	w := get(t, a, "lab.example.test:8090", "/api/connect/env/worldline")
+	w := get(t, a, "lab.example.test:8090", "/v1/connect/env/worldline")
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
 	}
@@ -58,7 +58,7 @@ func TestTheEnvFileIsADownloadAddressedToTheHostTheConsoleWasOpenedOn(t *testing
 		t.Errorf("key not inlined from the keys directory:\n%s", body)
 	}
 
-	w = get(t, a, "lab.example.test:8090", "/api/connect/env?host=10.0.0.5")
+	w = get(t, a, "lab.example.test:8090", "/v1/connect/env?host=10.0.0.5")
 	if !strings.Contains(w.Body.String(), "\nWORLDLINE_SFTP_HOST=10.0.0.5\n") {
 		t.Errorf("?host= did not win over the request's host")
 	}
@@ -71,7 +71,7 @@ func TestAHostThatCouldInjectIntoTheFileIsRefused(t *testing.T) {
 	a := testApp(t, nil)
 	withKeys(t, a)
 	for _, h := range []string{"a b", "x\nEVIL=1", "a/b", `"q"`} {
-		w := get(t, a, "127.0.0.1:8090", "/api/connect/env?host="+strings.NewReplacer(" ", "%20", "\n", "%0A", "/", "%2F", `"`, "%22").Replace(h))
+		w := get(t, a, "127.0.0.1:8090", "/v1/connect/env?host="+strings.NewReplacer(" ", "%20", "\n", "%0A", "/", "%2F", `"`, "%22").Replace(h))
 		if w.Code != 400 {
 			t.Errorf("host %q: status %d", h, w.Code)
 		}
@@ -82,14 +82,14 @@ func TestOnlyAKitsOwnFilesCanBeDownloaded(t *testing.T) {
 	a := testApp(t, nil)
 	withKeys(t, a)
 
-	w := get(t, a, "127.0.0.1:8090", "/api/connect/files/worldline/worldline-pgp-private.asc")
+	w := get(t, a, "127.0.0.1:8090", "/v1/connect/files/worldline/worldline-pgp-private.asc")
 	if w.Code != 200 || w.Body.String() != "SECRET-PGP-BYTES" {
 		t.Fatalf("status %d body %q", w.Code, w.Body)
 	}
 	for _, path := range []string{
-		"/api/connect/files/worldline/host_key",
-		"/api/connect/files/worldline/..%2Fworldline%2Fhost_key",
-		"/api/connect/files/bank/anything",
+		"/v1/connect/files/worldline/host_key",
+		"/v1/connect/files/worldline/..%2Fworldline%2Fhost_key",
+		"/v1/connect/files/bank/anything",
 	} {
 		if w := get(t, a, "127.0.0.1:8090", path); w.Code != 404 {
 			t.Errorf("%s: status %d, want 404", path, w.Code)
@@ -97,7 +97,7 @@ func TestOnlyAKitsOwnFilesCanBeDownloaded(t *testing.T) {
 	}
 	// In the kit, but not generated yet: a different answer from "no such
 	// file", because it sends you to a different place.
-	if w := get(t, a, "127.0.0.1:8090", "/api/connect/files/worldline/worldline-sftp-host-key.pub"); w.Code != 503 {
+	if w := get(t, a, "127.0.0.1:8090", "/v1/connect/files/worldline/worldline-sftp-host-key.pub"); w.Code != 503 {
 		t.Errorf("missing-but-expected file: status %d, want 503", w.Code)
 	}
 }
@@ -105,7 +105,7 @@ func TestOnlyAKitsOwnFilesCanBeDownloaded(t *testing.T) {
 func TestTheListingNamesVariablesButCarriesNoKeyMaterial(t *testing.T) {
 	a := testApp(t, nil)
 	withKeys(t, a)
-	w := get(t, a, "127.0.0.1:8090", "/api/connect")
+	w := get(t, a, "127.0.0.1:8090", "/v1/connect")
 	if strings.Contains(w.Body.String(), "SECRET-PGP-BYTES") {
 		t.Fatalf("listing carries a key: %s", w.Body)
 	}

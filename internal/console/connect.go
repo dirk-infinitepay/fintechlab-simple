@@ -311,7 +311,7 @@ func (b kitBuilder) verify() Kit {
 func EnvFile(kits []Kit, host string, at time.Time) string {
 	var sb strings.Builder
 	sb.WriteString("# fintech sim lab v1 — connection settings for a platform under test\n")
-	fmt.Fprintf(&sb, "# Downloaded from the lab console %s, for a lab reached at %s.\n", at.UTC().Format(time.RFC3339), host)
+	fmt.Fprintf(&sb, "# Downloaded from the lab API %s, for a lab reached at %s.\n", at.UTC().Format(time.RFC3339), host)
 	sb.WriteString("#\n" +
 		"# Keys and certificates are the ones the lab was running with at that\n" +
 		"# moment: regenerate the lab's keys and download this again. Addresses,\n" +

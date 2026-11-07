@@ -21,7 +21,7 @@ the same outlets.
 | Listens | `:8083`, plain HTTP. Compose service `settlement` (`http://settlement:8083`); host `http://127.0.0.1:8083`. Outbound it speaks SFTP to `worldline:2222` and HTTP to b4b, verify, banking-circle's bridge (`:8095`) and the bank |
 | Auth | None on its own routes. Outbound: an RS512 JWT for B4B signed with B4B's private key, `x-internal-api-key` for verify, SFTP password or key for Worldline, nothing for Banking Circle's bridge or the bank |
 | Found with | `SETTLEMENT_URL` (`http://127.0.0.1:8083`) in the harness.<br>`B4B_CALLBACK_URL` on settlement itself (`http://settlement:8083/internal/b4b-webhook`), sent to B4B as each payout's `callback_url`; b4b's `WEBHOOK_ALLOWLIST` lists `settlement` and `settlement:8083`.<br>`CONSOLE_URL_SETTLEMENT` on the console |
-| Activity logs | None. There is no `GET /sim/activity`, the console's catalogue declares no activity path, and `GET /api/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout |
+| Activity logs | None. There is no `GET /sim/activity`, the lab's catalogue declares no activity path, and `GET /v1/services/settlement/activity` answers `501`. What it did is read from `GET /worldline/files`, the reports and each record's payout. Each request line is logged on stdout |
 | Configuration | The variables that change behaviour most: `SETTLEMENT_CONNECTED` (`true`), `WORLDLINE_SFTP_HOST` (unset: no pull at all), `CUTOFF_TIME` (`00:00`), `BC_SAFEGUARDING_ACCOUNT_ID_EUR`/`_GBP`. Everything below |
 | Design record | [ARCHITECTURE-reconciliation-api.md](../../ARCHITECTURE-reconciliation-api.md), [ARCHITECTURE-settlement-state-machine.md](../../ARCHITECTURE-settlement-state-machine.md), [ARCHITECTURE-settlement-report.md](../../ARCHITECTURE-settlement-report.md), [ARCHITECTURE-sftp-staging.md](../../ARCHITECTURE-sftp-staging.md), [ARCHITECTURE-phase3-corrections.md §5](../../ARCHITECTURE-phase3-corrections.md#5-settlement-wire-in-verification-and-the-sga-balance-gate), [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md), [structure/worldline.md](../../structure/worldline.md), [scenarios/settlement-to-payout.md](../../scenarios/settlement-to-payout.md), [plugins.md](../../plugins.md#stand-ins) (stand-ins) |
 
@@ -310,7 +310,7 @@ else addressed here.
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it.
+Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "settlement"}`.
 
@@ -443,12 +443,12 @@ again.
   settlement submitted (`callback_url` from `B4B_CALLBACK_URL`), and of
   the harness's own gate-test payments, which name this URL too and are
   answered `ignored`.
-- **console**: `POST /api/actions/settlement-pull` calls
-  `POST /worldline/pull` and passes its answer through; `GET /api/stand-ins`
-  reads `GET /sim/connected` and `POST /api/stand-ins/settlement` sets it
-  with `POST /sim/connected`; `GET /api/overview` and
-  `POST /api/services/settlement/probe` probe `GET /health`.
-  `GET /api/services/settlement/activity` answers `501` without calling
+- **lab API**: `POST /v1/actions/settlement-pull` calls
+  `POST /worldline/pull` and passes its answer through; `GET /v1/stand-ins`
+  reads `GET /sim/connected` and `POST /v1/stand-ins/settlement` sets it
+  with `POST /sim/connected`; `GET /v1/lab` and
+  `POST /v1/services/settlement/probe` probe `GET /health`.
+  `GET /v1/services/settlement/activity` answers `501` without calling
   it.
 - **harness**: `worldline-settlement-to-sftp` posts `/worldline/pull` until
   the published file is processed, then reads

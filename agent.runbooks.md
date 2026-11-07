@@ -7,7 +7,8 @@ against the lab. The design docs say *why*; this says *how*.
 The platform under test is **buddy** (the Infinite monorepo), run locally by
 its `infinite-local-runner` on the host. The lab is this repo, in containers.
 The lab knows no platform by name: the runner **registers itself** with the
-console as a plugin (docs/plugins.md) and **follows the lab's clock**.
+lab as a plugin (docs/plugins.md; it posts to the console's address, which
+forwards to the lab API) and **follows the lab's clock**.
 Paths below: `~/gh/fintechlab-simple` (this repo) and
 `~/infinite/buddy/infinite-local-runner` (the runner) — adjust to your
 checkout.
@@ -16,8 +17,9 @@ checkout.
 
 | Service | Port | Notes |
 | --- | --- | --- |
-| console | 8090 | UI and its `/api/*` — the easiest headless surface |
-| banking-circle | 8085 | Connect API: mTLS + Basic→Bearer. Use the console or the bridge rather than curling it |
+| **lab API** | 8097 | `/v1/*` — the one API over the lab, and the headless surface: `GET /v1` lists every route |
+| console | 8090 | the UI; forwards `/v1` (and the old `/api/*`) to the lab API |
+| banking-circle | 8085 | Connect API: mTLS + Basic→Bearer. Use the lab API (its passthrough adds both) or the bridge rather than curling it |
 | banking-circle bridge | 8095 | plain HTTP, no auth: `/internal/*` lab hooks |
 | worldline | 8084, 2222 | SFT channel over HTTP; SFTP+PGP on 2222 |
 | b4b | 8086 | Oversight API (RS512 JWT) |
@@ -29,9 +31,11 @@ checkout.
 
 The console's service cards list the routes worth knowing for each service
 (Vendors → open a card), from `internal/console/catalogue.go`. Every route,
-with bodies and answers, is in [docs/api/](docs/api/README.md); the console
-lists its own with `curl -s localhost:8090/api`, and draws all of it on
-Docs → API reference (`#docs/api`).
+with bodies and answers, is in [docs/api/](docs/api/README.md); the lab API
+lists its own with `curl -s localhost:8097/v1`, and the console draws all of
+it on Docs → API reference (`#docs/api`). A service's `/sim/*` hooks are all
+reachable through the lab API as `/v1/services/<id>/sim/…`, with Banking
+Circle's mTLS and token and B4B's JWT added for you.
 
 ## Lifecycle
 
@@ -45,7 +49,7 @@ make start    # restart from the images already built
 - **Rebuild the whole lab, not one vendor.** Recreating only banking-circle
   leaves b4b's bridge pointing at its old address and payouts time out. Use
   `make up` / `make start`.
-- **There is no console-only rebuild.** podman-compose 1.0.6 ignores
+- **There is no console-only rebuild** (nor lab-API-only). podman-compose 1.0.6 ignores
   `--no-deps`: `podman-compose up -d --no-deps console` runs the console with
   `--requires` on everything it `depends_on`, and recreates or restarts bank,
   receiver, verify, banking-circle, worldline, b4b and settlement with it —
@@ -57,9 +61,9 @@ make start    # restart from the images already built
 - **After the lab restarts, restart the runner.** A fresh banking-circle has
   no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
   needs the restart to get a new subscription (its id changes every time —
-  read it from `GET :8090/api/banking-circle/subscriptions`). The runner's
+  read it from `GET :8097/v1/banking-circle/subscriptions`). The runner's
   card and clock need nothing: it re-registers within ten seconds of a
-  console restart, and keeps the last offset while the clock is away.
+  lab API restart, and keeps the last offset while the clock is away.
 
 Runner, from `~/infinite/buddy/infinite-local-runner`. Its generic half is
 the library `~/gh/fintechlab-runner`, linked into the runner's
@@ -80,7 +84,7 @@ kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/u
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print([(p['name'],p['state']) for p in d['processes']])"
 # registered, and following the lab clock
 grep -E '🧩|⏰ following' up.log
-curl -s localhost:8090/api/plugins | python3 -c "import json,sys; print([(p['id'],p['plugin']['state']) for p in json.load(sys.stdin)['plugins']])"
+curl -s localhost:8097/v1/plugins | python3 -c "import json,sys; print([(p['id'],p['plugin']['state']) for p in json.load(sys.stdin)['plugins']])"
 ```
 
 Kill it with `kill -INT <pid>`, not `pkill -f up.ts`: that pattern also
@@ -95,9 +99,9 @@ The platform does not need to read it: the console hands out an `.env` with
 the keys inlined, in buddy's variable names.
 
 ```sh
-curl -OJ localhost:8090/api/connect/env                  # every vendor → fintechlab.env
-curl -OJ localhost:8090/api/connect/env/b4b              # one vendor
-curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem   # NODE_EXTRA_CA_CERTS
+curl -OJ localhost:8097/v1/connect/env                  # every vendor → fintechlab.env
+curl -OJ localhost:8097/v1/connect/env/b4b              # one vendor
+curl -OJ localhost:8097/v1/connect/files/banking-circle/fintechlab-ca.pem   # NODE_EXTRA_CA_CERTS
 ```
 
 `LAB_KEYS_DIR` moves them: `make` generates into that path instead. buddy
@@ -135,7 +139,7 @@ curl -s -X POST localhost:8096/clock -d '{"mode":"auto-business-day"}'   # where
 curl -s -X POST localhost:8096/clock -d '{"mode":"real"}'
 ```
 
-`POST localhost:8090/api/clock` is the same through the console (it also
+`POST localhost:8097/v1/clock` is the same through the lab API (it also
 refuses while a platform registered on the wall clock is live).
 
 - A vendor logs `labclock: now … (1h0m0s from real)` when it follows a
@@ -310,7 +314,7 @@ Where the lab shows it:
 
 ## Make Banking Circle misbehave on purpose
 
-Bridge (`:8095`, no auth) or console (`:8090`) — both are one call:
+Bridge (`:8095`, no auth) or the lab API (`:8097`) — both are one call:
 
 ```sh
 # the next payouts end Rejected / stay Pending, one each, in order
@@ -318,14 +322,14 @@ curl -s -X POST localhost:8095/internal/payments/outcomes -d '{"outcomes":["Reje
 curl -s localhost:8095/internal/payments/outcomes                  # what is still queued
 
 # hold one subscription's webhooks, then release them
-curl -s -X POST localhost:8090/api/banking-circle/subscriptions/<sub_id>/pause
-curl -s -X POST localhost:8090/api/banking-circle/subscriptions/<sub_id>/resume
+curl -s -X POST localhost:8097/v1/banking-circle/subscriptions/<sub_id>/pause
+curl -s -X POST localhost:8097/v1/banking-circle/subscriptions/<sub_id>/resume
 
 # after a payout processed: the recipient's bank sends it back, or the scheme reverses it
 curl -s -X POST localhost:8095/internal/payments/<bcPaymentId>/return \
      -d '{"reasonCode":"AC04","reasonDescription":"Closed account number"}'
 curl -s -X POST localhost:8095/internal/payments/<bcPaymentId>/reverse -d '{"reason":"scheme"}'
-curl -s localhost:8090/api/banking-circle/payouts                  # the payouts, and which can be returned/reversed
+curl -s localhost:8097/v1/banking-circle/payouts                  # the payouts, and which can be returned/reversed
 ```
 
 Worked scenario — a rejection and a hang, resolved only by the sweep: pause
@@ -346,22 +350,22 @@ curl -s localhost:3114/api/v1/internal/payments/<bcPaymentId>/status
 The last two go through buddy's own BC client to the lab's report and status
 endpoints — the same path the sweep takes.
 
-The console's panels and diagram are plain JSON underneath:
+The console's panels and diagram are the lab API's JSON underneath:
 
 ```sh
 # a vendor's activity logs — banking-circle has payments, notifications, reports
-curl -s localhost:8090/api/services/banking-circle/activity | python3 -c "
+curl -s localhost:8097/v1/services/banking-circle/activity | python3 -c "
 import json,sys
 for l in json.load(sys.stdin)['logs']:
     if l['name'] == 'reports':
         for e in l['events'][:5]: print(e['at'], e['op'], e['status'], e['summary'])"
 # one diagram arrow: count, when it last moved, and what moved it
-curl -s localhost:8090/api/flow | python3 -c "
+curl -s localhost:8097/v1/flow | python3 -c "
 import json,sys
 for s in json.load(sys.stdin)['steps']:
     if s['id'] == 'recon': print(s['count'], s.get('last_at'), s.get('last_summary'))"
 # the events behind one arrow — exactly what it counted (the hop drawer's data)
-curl -s localhost:8090/api/flow/hops/payouts | python3 -c "
+curl -s localhost:8097/v1/flow/hops/payouts | python3 -c "
 import json,sys; d=json.load(sys.stdin)
 print(d['step']['count'], d['step'].get('source'), d['step'].get('source_log'))
 for e in d['events'][:5]: print('   ', e['at'], e['status'], e['summary'])"
@@ -374,33 +378,33 @@ registration. Their cards start hidden (console: Configuration →
 Stand-ins):
 
 ```sh
-curl -s localhost:8090/api/stand-ins | python3 -c "
+curl -s localhost:8097/v1/stand-ins | python3 -c "
 import json,sys
 for s in json.load(sys.stdin)['stand_ins']: print(s['id'], s['state'], 'shown' if s['shown'] else 'hidden', s.get('set_by'))"
-curl -s -X POST localhost:8090/api/stand-ins/receiver -d '{"connected":false}'   # BC subscription inactive, ACI holds
-curl -s -X POST localhost:8090/api/stand-ins/receiver -d '{"connected":true,"shown":true}'
+curl -s -X POST localhost:8097/v1/stand-ins/receiver -d '{"connected":false}'   # BC subscription inactive, ACI holds
+curl -s -X POST localhost:8097/v1/stand-ins/receiver -d '{"connected":true,"shown":true}'
 ```
 
-The runner's side, through the console — its card is a plugin, so every
-call is under `/api/plugins/infinite-local-runner`:
+The runner's side, through the lab API — its card is a plugin, so every
+call is under `/v1/plugins/infinite-local-runner`:
 
 ```sh
-curl -s localhost:8090/api/plugins/infinite-local-runner/files | python3 -c "
+curl -s localhost:8097/v1/plugins/infinite-local-runner/files | python3 -c "
 import json,sys
 for f in json.load(sys.stdin)['files']:
     r=f['last_run'] or {}
     print(f['name'], f['currency'], f['seeded'], 'busy' if f['in_flight'] else 'free',
           r.get('root'), (r.get('payouts') or {}).get('count'), r.get('finished_at'))"
-curl -s -X POST localhost:8090/api/plugins/infinite-local-runner/run -d '{"files":["worldline-reconciliation-sample-gbp.csv"]}'
-curl -s -X POST localhost:8090/api/plugins/infinite-local-runner/actions/sweep -d '{}'
-curl -s localhost:8090/api/services/infinite-local-runner/activity | python3 -c "
+curl -s -X POST localhost:8097/v1/plugins/infinite-local-runner/run -d '{"files":["worldline-reconciliation-sample-gbp.csv"]}'
+curl -s -X POST localhost:8097/v1/plugins/infinite-local-runner/actions/sweep -d '{}'
+curl -s localhost:8097/v1/services/infinite-local-runner/activity | python3 -c "
 import json,sys
 for l in json.load(sys.stdin)['logs']:
     print(l['name'], l.get('labels'))
     for e in l['events'][:3]: print('   ', e['at'], e['status'], e['summary'])"
 ```
 
-The console passes the body to the path the runner declared
+The lab API passes the body to the path the runner declared
 (`POST :3109/sim/run`, `/sim/sweep`) untouched, and the runner's refusals
 come back as they are (`400` for an unknown file, `409`
 for a busy currency). A log's `labels` is what its amber and red mean; the
@@ -413,7 +417,7 @@ payout credited to the merchant's account there, read from the bank's
 *Payouts credited* log (`curl -s localhost:8081/sim/activity`). It stays at 0
 on a lab started before B4B's bridge carried the creditor account — `make up`.
 `notify` is left out while the receiver's card is hidden; `hidden` in
-`/api/flow` says how much it still carried.
+`/v1/flow` says how much it still carried.
 
 ## Screenshots without a browser window
 

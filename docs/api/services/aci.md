@@ -19,7 +19,7 @@ surfaces, out of scope).
 | --- | --- |
 | Listens | HTTP `:8087` (`LISTEN`). Compose service `aci`; from the host `http://127.0.0.1:8087`. Outbound: one POST per notification to `ACI_WEBHOOK_TARGET_URL` |
 | Auth | None on its own routes. The outbound webhook's only authentication is its encryption: a listener that decrypts it with the shared key knows ACI sent it, and a tag mismatch is the auth failure |
-| A platform points here with | Nothing: the platform is the target. Point `ACI_WEBHOOK_TARGET_URL` at the platform's listener (and allow its host in `WEBHOOK_ALLOWLIST`); the platform decrypts with `ACI_WEBHOOK_SECRET`, which the console's connect kit hands out (`GET :8090/api/connect/env/aci`). Lab peers find ACI with `ACI_URL` (harness) and `CONSOLE_URL_ACI` (console) |
+| A platform points here with | Nothing: the platform is the target. Point `ACI_WEBHOOK_TARGET_URL` at the platform's listener (and allow its host in `WEBHOOK_ALLOWLIST`); the platform decrypts with `ACI_WEBHOOK_SECRET`, which the lab API's connect kit hands out (`GET :8097/v1/connect/env/aci`). Lab peers find ACI with `ACI_URL` (harness) and `CONSOLE_URL_ACI` (lab API) |
 | Activity logs | None. ACI serves no `GET /sim/activity`, and its catalogue entry names no activity path, so the console draws no activity panel for it. `GET /internal/sent` is its record of what it built and how each delivery went |
 | Configuration | The important variables are in the table below. Everything is in memory: a restart forgets every record |
 | Design record | [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §2 (the webhook contract and its sources), §6 (the receiver's raw capture sink it delivers to); [plugins.md](../../plugins.md#stand-ins) and [console.md](../../console.md#stand-ins-disconnect-and-hide) for the delivery switch |
@@ -72,7 +72,7 @@ per attempt.
 
 ## Lab control
 
-Not part of ACI. These are how a test, agent or the console makes a card
+Not part of ACI. These are how a test, an agent or the lab API makes a card
 payment happen and sees what was sent.
 
 ### `GET /health`
@@ -160,10 +160,10 @@ to `POST /internal/simulate-payment` still answers `202` and is recorded
   `POST /internal/simulate-payment`, polls `GET /internal/sent/{id}` until
   the delivery settles, and requires `delivered` with non-empty
   ciphertext, IV and tag and the payload fields it sent.
-- **The console** (`cmd/console`): `GET /health` (health monitor, behind
-  `GET /api/overview` and `POST /api/services/{id}/probe`).
-  `GET /sim/connected` (`GET /api/stand-ins`) and `POST /sim/connected`
-  (`POST /api/stand-ins/{id}` for the `receiver` stand-in), which count
+- **The lab API** (`cmd/labapi`): `GET /health` (health monitor, behind
+  `GET /v1/lab` and `POST /v1/services/{id}/probe`).
+  `GET /sim/connected` (`GET /v1/stand-ins`) and `POST /sim/connected`
+  (`POST /v1/stand-ins/{id}` for the `receiver` stand-in), which count
   only while the target is the receiver: ACI pointed at a real platform is
   that platform's wiring, not the stand-in's.
 - **Nobody in the repo** calls `GET /internal/sent`; it is for operators

@@ -32,7 +32,7 @@ help:
 	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
 	@echo "make keys-regenerate new PKI and keypairs in LAB_KEYS_DIR ($(LAB_KEYS_DIR)), lab restarted"
-	@echo "make rebuild        no-cache rebuild of the console image"
+	@echo "make rebuild        no-cache rebuild of the lab-api and console images"
 	@echo ""
 	@echo "make pod-images     build every image, tagged $(IMAGE_PREFIX)/<service>:$(LAB_VERSION)"
 	@echo "make pod-up         run the whole lab as one podman pod (podman kube play);"
@@ -171,14 +171,16 @@ up: certs sftp-dirs key-dirs console-dir b4b-dir
 	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088  clock :8096"
 	@echo ""
 	@echo "control panel: http://127.0.0.1:8090   (make console)"
+	@echo "lab API:       http://127.0.0.1:8097/v1 (docs/api/lab-api.md)"
 	@echo "next: make demo-payment  (or: make harness)"
 
 
-# The console embeds a Go binary and its web assets. --no-cache is for when
-# a warm layer cache means `up --build` quietly reuses the old one.
+# The console embeds its web assets, and the lab API serves the routes the
+# page calls, so the two are rebuilt together. --no-cache is for when a warm
+# layer cache means `up --build` quietly reuses the old ones.
 rebuild:
-	$(COMPOSE) build --no-cache console
-	@echo "rebuilt console (no cache). next: make up"
+	$(COMPOSE) build --no-cache lab-api console
+	@echo "rebuilt lab-api and console (no cache). next: make up"
 
 # start is `up` without the build step: it still replaces the containers,
 # so the lab reaches a known state, but it does not recompile anything. Use
@@ -238,7 +240,7 @@ LAB_VERSION ?= v1
 IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
-POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
+POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification lab-api console
 POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
 
 pod-images:
@@ -265,6 +267,7 @@ pod-up:
 	$(POD_RENDER) | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
 	@echo ""
 	@echo "lab is up as pod 'fintechlab'. control panel: http://127.0.0.1:8090"
+	@echo "lab API: http://127.0.0.1:8097/v1"
 	@echo "platform env + keys: Configuration -> Connect your platform"
 
 # Keeps the volumes, keys included. New keys are `make pod-up

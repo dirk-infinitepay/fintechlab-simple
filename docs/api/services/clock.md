@@ -142,9 +142,9 @@ Moving past one of Worldline's delivery slots (compose: the morning file
 somewhere in 08:00–10:00, the afternoon one at 15:30) delivers that slot's
 file; moving past settlement's `CUTOFF_TIME` runs its daily batch.
 Recorded as `clock.<mode>` in the `changes` log, or `clock.refused` when
-held. The service itself refuses nothing else: the console's rule against
+held. The service itself refuses nothing else: the lab API's rule against
 moving the clock while a wall-clock platform is registered lives in the
-console (`POST /api/clock`), not here.
+lab API (`POST /v1/clock`), not here.
 
 ### `POST /clock/holds`
 
@@ -192,7 +192,7 @@ Side effects: recorded as `hold.release`.
 
 ### `GET /health`
 
-Liveness. The console's monitor probes it.
+Liveness. The lab API's monitor probes it.
 
 Answers `200` with `{"status": "ok", "service": "clock"}`.
 
@@ -219,12 +219,12 @@ Events carry no `peer`. `at` is wall-clock time.
 - **every vendor, as a follower**: bank, settlement, worldline,
   banking-circle, b4b, aci and verify poll `GET /clock` every second
   (`LAB_CLOCK_URL`). payment-api, notifier, receiver, verification and the
-  console do not follow it.
-- **console**: `GET /api/clock` reads `GET /clock`; `POST /api/clock`
+  lab API do not follow it.
+- **lab API**: `GET /v1/clock` reads `GET /clock`; `POST /v1/clock`
   forwards its body verbatim to `POST /clock`, after refusing with its own
   `409` while a platform registered on the wall clock is live;
-  `GET /api/services/clock/activity` proxies `GET /sim/activity`;
-  `GET /api/overview` and `POST /api/services/clock/probe` probe
+  `GET /v1/services/clock/activity` proxies `GET /sim/activity`;
+  `GET /v1/lab` and `POST /v1/services/clock/probe` probe
   `GET /health`.
 - **the platform**: a plugin registered with `"clock": "follows"` polls
   `GET /clock`; buddy's runner writes the offset into the file its clock

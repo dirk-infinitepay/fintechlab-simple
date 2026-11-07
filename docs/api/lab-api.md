@@ -1,74 +1,89 @@
-# Console API — reference
+# Lab API — reference
 
-The console's `/api/*` is the backend the console page calls, and it is
-also the most convenient lab-level API for a script or an agent: merchants,
-the clock, settlement runs and what happened, at one address. Most routes
-are a call to one or more services' own HTTP endpoints; **Reaches** under
-each route says which, so a caller can go to the service directly instead.
-The rest read or write the console's own state: the merchant registry
-(`console-data/registry.json`), plugin registrations and stand-in
-visibility (both in memory). [README.md](README.md) places this API among
-the others; [../console.md](../console.md) is the page it serves.
+The lab API is the one API over the lab: every lab-level call the console
+page, a script, a test or an agent makes goes here, under `/v1` — the
+merchants, the clock, settlement runs and what happened, every service's
+record and health, and every service's `/sim/*` hooks through one
+passthrough. Most routes are a call to one or more services' own HTTP
+endpoints; **Reaches** under each route says which, so a caller can go to
+the service directly instead. The rest read or write the lab API's own
+state: the merchant registry (`console-data/registry.json`), plugin
+registrations and stand-in visibility (both in memory).
+[README.md](README.md) places this API among the others; the design is
+[../lab-api/](../lab-api/README.md).
 
-From the host the base URL is `http://127.0.0.1:8090` (`LISTEN`, default
-`:8090`). There is no authentication and no CORS header. Requests and
-answers are JSON, except the connect downloads (`text/plain` or
-`application/octet-stream` attachments) and the plugin upload (raw bytes).
-A body marked *strict* below is decoded with unknown fields refused, and
-must be present: no body is `400 {"error": "EOF"}`, so send `{}` for all
-defaults. Every answer, errors included, carries `X-Console-Build`: 12 hex
-characters hashing the embedded page, which changes when the console is
-rebuilt.
+From the host the base URL is `http://127.0.0.1:8097` (`cmd/labapi`;
+`LISTEN`, default `:8097`). The console serves its page on `:8090` and
+forwards `/v1` there, so `http://127.0.0.1:8090/v1/…` reaches the same
+routes. Requests and answers are JSON, except the connect downloads
+(`text/plain` or `application/octet-stream` attachments), the plugin upload
+(raw bytes) and whatever a service answers through the passthrough. A body
+marked *strict* below is decoded with unknown fields refused, and must be
+present: no body is `400 {"error": "EOF"}`, so send `{}` for all defaults.
+
+**Auth.** None by default. With `LAB_API_TOKEN` set, every call but
+`GET /health` must carry `Authorization: Bearer $LAB_API_TOKEN`, or it is
+`401`. The console adds the token for the page when it has the same
+variable.
+
+**Old paths.** Every route the console served before the lab API existed
+still answers at its old `/api` path — `GET /api/overview` is
+`GET /v1/lab`, `GET /api` is `GET /v1`, and every other `/api/…` is the
+same path under `/v1/…` — because a running plugin registers at
+`{console}/api/plugins`. The index lists each route's `alias`. They go in
+phase 4 of [the plan](../lab-api/plan.md).
 
 Errors are `{"error": "<message>", "status": <code>}`, the message in the
 failing peer's own words where there is one. `400` is something the caller
-can fix, `404` an unknown id, `409` a refusal by state (a plugin stopped,
-the clock locked), `413` an upload over the limit, `503` a key file not
-generated yet. `501` means *does not
+can fix, `401` a missing or wrong token, `404` an unknown id, `409` a
+refusal by state (a plugin stopped, the clock locked), `413` an upload over
+the limit, `503` a key file not generated yet. `501` means *does not
 exist here by design* (Banking Circle opens no accounts, a service keeps no
 activity log, a plugin did not declare that path): not a failure, do not
 retry. `502` means an upstream service failed: unreachable (`dial tcp …:
 connection refused`), timed out (10 s per call), or refused. A refusal
 keeps its message but not its status: B4B's `400` reaches you as `502`.
-Routes marked *verbatim* are the exception and pass the upstream's status
-and body through unchanged. `500` is used only when a request to a peer
-cannot be built and should not occur. Views that read several services
-(`/api/overview`, `/api/banks`, `/api/config`, `/api/flow`,
-`/api/stand-ins`) answer `200` with the failure in an error field instead.
+Routes marked *verbatim*, and the passthrough, are the exception and pass
+the upstream's status and body through unchanged. `500` is used only when
+a request to a peer cannot be built and should not occur. Views that read
+several services (`/v1/lab`, `/v1/banks`, `/v1/config`, `/v1/flow`,
+`/v1/stand-ins`) answer `200` with the failure in an error field instead.
 
 ## Lab
 
 ### `GET /health`
 
-Whether the console process is up. Says nothing about the services behind
-it; that is `GET /api/overview`.
+Whether the lab API process is up. Says nothing about the services behind
+it; that is `GET /v1/lab`. Open even when `LAB_API_TOKEN` is set.
 
-**Answers** — `200 {"status": "ok", "service": "console"}`
+**Answers** — `200 {"status": "ok", "service": "lab-api"}`
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `GET /api`
+### `GET /v1`
 
-The index of this API: every route with its group, a one-line summary and
-what it reaches. Read it first when driving the lab cold; this document is
-its long form.
+The index of this API: every route with its alias, its group, a one-line
+summary and what it reaches. Read it first when driving the lab cold; this
+document is its long form. Also at `GET /api`.
 
 **Answers** — `200`
 
 ```json
-{"service": "console", "build": "bf2025448b25", "docs": "docs/api/console-api.md",
- "services": "GET /api/overview lists every service: …",
+{"service": "lab-api", "version": "v1", "build": "3f09c2a1d4e7", "docs": "docs/api/lab-api.md",
+ "services": "GET /v1/services lists every service: …",
  "groups": [{"id": "lab", "title": "Lab", "note": "…"}, …],
- "routes": [{"method": "GET", "path": "/api/overview", "group": "lab",
+ "routes": [{"method": "GET", "path": "/v1/lab", "alias": "/api/overview", "group": "lab",
              "summary": "…", "reaches": "…"}, …]}
 ```
 
-`build` equals the `X-Console-Build` header. Group ids, in order: `lab`,
-`clock`, `config`, `merchants`, `banks`, `actions`, `plugins`, `connect`.
+`build` is a hash of the route table: it changes exactly when the API does.
+`method` is `ANY` for the passthrough, which takes every method. Group ids,
+in order: `lab`, `services`, `clock`, `config`, `merchants`, `banks`,
+`actions`, `plugins`, `connect`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `GET /api/overview`
+### `GET /v1/lab`
 
 Every service in the catalogue, registered plugins first, with its last
 health probe. What the Vendors, Platform and Verification views draw.
@@ -93,8 +108,9 @@ health probe. What the Vendors, Platform and Verification views draw.
 - `kind`: `vendor`, `platform` or `verification`. `state`: `up` (2xx),
   `down` (`detail` says why), `unknown` (not probed yet), `not-probed` (no
   health endpoint). `history` is the last 24 probes, oldest first.
-- `base_url` is where the console reaches the service (a compose name
-  inside the container); `browse_url` is where a browser on the host does.
+- `base_url` is where the lab API reaches the service (a compose name
+  inside the container); `browse_url` is where a browser or a script on the
+  host does.
 - A plugin also carries `plugin`: `clock`, `start_hint`, `actions`,
   `settlement`, `empty_hints`, `state` (`live`, `lapsed`, `stopped`),
   `registered_at`, `last_seen`, `ttl_seconds`. A stopped plugin, or a
@@ -108,52 +124,7 @@ health probe. What the Vendors, Platform and Verification views draw.
 **Reaches** — nothing at request time. A background monitor probes each
 service's `health_path` every `CONSOLE_PROBE_INTERVAL` (5 s).
 
-### `POST /api/services/{id}/probe`
-
-Probe one service's health now instead of waiting for the next tick.
-
-**Path parameters** — `id`: a catalogue id (`worldline`, `b4b`,
-`banking-circle`, `aci`, `bank`, `verify`, `verification`, `clock`,
-`settlement`, `receiver`, `payment-api`, `notifier`) or a registered
-plugin's id.
-
-**Answers** — `200` with the new status, shaped as `status` in
-`GET /api/overview`. A service that is down is still `200`, with
-`"state": "down"`. `404 unknown service <id>`.
-
-**Reaches** — the service's `GET {base_url}{health_path}`
-(`banking-circle` and `receiver` over TLS, Banking Circle with the client
-certificate).
-
-### `GET /api/services/{id}/activity`
-
-One service's recent traffic, from its own activity rings: the panels on
-its card.
-
-**Path / query parameters** — `id`: as for the probe. `limit`: events per
-log, passed through (the service's default is 100; rings hold 256).
-
-**Answers** — `200`, the service's body:
-
-```json
-{"logs": [{"name": "payments", "title": "Payouts received", "note": "…",
-           "total": 1016, "kept": 256, "last": {…},
-           "events": [{"seq": 1016, "at": "2026-11-05T22:47:50.5Z", "op": "payment.create",
-                       "peer": "10.0.2.100", "summary": "payout 323.32 GBP to …",
-                       "status": "ok", "detail": {"amount": "323.32 GBP", …}}, …]}, …]}
-```
-
-`status` is `ok`, `warn` or `bad`. Errors: `404 unknown service <id>`;
-`501 <name> keeps no activity log` for `aci`, `verify`, `verification`,
-`settlement`, `receiver` and a plugin without `activity_path`; `502` when
-the service cannot be read (a non-2xx arrives as `GET <url>: HTTP <code>`,
-its body dropped).
-
-**Reaches** — the service's `GET /sim/activity?limit=` (Banking Circle's
-on its credentialed listener, with a bearer token); for a plugin,
-`base_url` + `activity_path`.
-
-### `GET /api/flow`
+### `GET /v1/flow`
 
 The settlement run as a sequence diagram: the participants, one step per
 arrow with its counts, the platform's run and a closing report. The
@@ -197,12 +168,12 @@ Dashboard polls it every second and diffs the counts between polls.
 `GET /sim/activity?limit=256`; the settling plugin's `activity_path` and
 `settlement.status_path`.
 
-### `GET /api/flow/hops/{id}`
+### `GET /v1/flow/hops/{id}`
 
 The events behind one arrow of the diagram, exactly those its count
 counted, newest first: the drawer that opens when an arrow is clicked.
 
-**Path parameters** — `id`: a step id from `GET /api/flow`.
+**Path parameters** — `id`: a step id from `GET /v1/flow`.
 
 **Answers** — `200`
 
@@ -215,15 +186,15 @@ counted, newest first: the drawer that opens when an arrow is clicked.
  "errors": {…}}
 ```
 
-`step` is the same object `/api/flow` draws. `events` holds at most 100;
+`step` is the same object `/v1/flow` draws. `events` holds at most 100;
 `kept` says how many. `stages` is set only for `ingest` and `reports`, when
 the plugin maps them; a stage the run has not reached has `"status": ""`.
 `404 {"error": "no hop \"<id>\" in the diagram"}` (no `status` field).
-`notify` is served even while the receiver is hidden from `/api/flow`.
+`notify` is served even while the receiver is hidden from `/v1/flow`.
 
-**Reaches** — the same reads as `GET /api/flow`.
+**Reaches** — the same reads as `GET /v1/flow`.
 
-### `GET /api/stand-ins`
+### `GET /v1/stand-ins`
 
 The lab's stand-ins (services that play the platform's part until one
 plugs in): whether each card is shown, and how its wiring stands, read live
@@ -234,7 +205,7 @@ from the services that own it.
 ```json
 {"stand_ins": [
    {"id": "settlement", "name": "Settlement (platform stand-in)", "shown": false,
-    "set_by": "console", "set_at": "…", "plays": "…",
+    "set_by": "lab-api", "set_at": "…", "plays": "…",
     "starts_off": "SETTLEMENT_CONNECTED=false on the settlement service",
     "state": "connected",
     "connections": [{"id": "timer", "label": "Worldline pull and cutoff payouts",
@@ -256,7 +227,7 @@ somewhere else.
 /api/v1/notificationselfservice/subscription?PageSize=50` (the
 subscriptions whose endpoint host is `receiver`); `aci GET /sim/connected`.
 
-### `POST /api/stand-ins/{id}`
+### `POST /v1/stand-ins/{id}`
 
 Show or hide a stand-in's card, and connect or disconnect its wiring.
 
@@ -269,13 +240,13 @@ Show or hide a stand-in's card, and connect or disconnect its wiring.
 {"connected": false, "shown": false}
 ```
 
-`shown` is the console's memory and is lost on a console restart;
+`shown` is the lab API's memory and is lost on a lab API restart;
 `connected` is switched where the wiring lives and survives one.
 `payment-api` and `notifier` have no wiring: `connected` is accepted and
 changes nothing.
 
 **Answers** — `200` with the stand-in read again after the change, shaped
-as one entry of `GET /api/stand-ins`, plus `errors` listing wiring that
+as one entry of `GET /v1/stand-ins`, plus `errors` listing wiring that
 did not switch. `502` with the same body when nothing took.
 `400 want {"connected": true|false} and/or {"shown": true|false}`;
 `404 "<id>" is not a stand-in; the lab's are [...]`.
@@ -284,11 +255,114 @@ did not switch. `502` with the same body when nothing took.
 `banking-circle PUT /api/v1/notificationselfservice/subscription/{id}/activate`
 or `/deactivate`, with `If-Match`, per receiver subscription; `aci POST
 /sim/connected` (only while ACI delivers to the receiver); then the reads
-of `GET /api/stand-ins`.
+of `GET /v1/stand-ins`.
+
+## Services
+
+### `GET /v1/services`
+
+Every service, the lab's own and the registered plugins, each as one entry
+of `services` in `GET /v1/lab`: its catalogue record (`base_url`,
+`browse_url`, `auth`, `endpoints`, …) and its last health probe in
+`status`.
+
+**Answers** — `200 {"services": [ … ]}`
+
+**Reaches** — nothing at request time; the background monitor probes each
+service's `health_path`.
+
+### `GET /v1/services/{id}`
+
+One service, shaped as an entry of `GET /v1/services`.
+
+**Path parameters** — `id`: a catalogue id or a registered plugin's id.
+
+**Answers** — `200` with the entry. `404 unknown service <id>`.
+
+**Reaches** — nothing at request time.
+
+### `POST /v1/services/{id}/probe`
+
+Probe one service's health now instead of waiting for the next tick.
+
+**Path parameters** — `id`: a catalogue id (`worldline`, `b4b`,
+`banking-circle`, `aci`, `bank`, `verify`, `verification`, `clock`,
+`settlement`, `receiver`, `payment-api`, `notifier`) or a registered
+plugin's id.
+
+**Answers** — `200` with the new status, shaped as `status` in
+`GET /v1/lab`. A service that is down is still `200`, with
+`"state": "down"`. `404 unknown service <id>`.
+
+**Reaches** — the service's `GET {base_url}{health_path}`
+(`banking-circle` and `receiver` over TLS, Banking Circle with the client
+certificate).
+
+### `GET /v1/services/{id}/activity`
+
+One service's recent traffic, from its own activity rings: the panels on
+its card.
+
+**Path / query parameters** — `id`: as for the probe. `limit`: events per
+log, passed through (the service's default is 100; rings hold 256).
+
+**Answers** — `200`, the service's body:
+
+```json
+{"logs": [{"name": "payments", "title": "Payouts received", "note": "…",
+           "total": 1016, "kept": 256, "last": {…},
+           "events": [{"seq": 1016, "at": "2026-11-05T22:47:50.5Z", "op": "payment.create",
+                       "peer": "10.0.2.100", "summary": "payout 323.32 GBP to …",
+                       "status": "ok", "detail": {"amount": "323.32 GBP", …}}, …]}, …]}
+```
+
+`status` is `ok`, `warn` or `bad`. Errors: `404 unknown service <id>`;
+`501 <name> keeps no activity log` for `aci`, `verify`, `verification`,
+`settlement`, `receiver` and a plugin without `activity_path`; `502` when
+the service cannot be read (a non-2xx arrives as `GET <url>: HTTP <code>`,
+its body dropped).
+
+**Reaches** — the service's `GET /sim/activity?limit=` (Banking Circle's
+on its credentialed listener, with a bearer token); for a plugin,
+`base_url` + `activity_path`.
+
+### `ANY /v1/services/{id}/sim/{path...}`
+
+The passthrough: any of a service's `/sim/*` lab hooks, through the one
+address, with the credentials that service asks for added here. Method,
+query and body go to the service as sent; its status, `Content-Type` and
+body come back as it gave them. A hook a service gains is reachable here
+the moment it exists.
+
+```sh
+curl -s -XPOST localhost:8097/v1/services/worldline/sim/settlement-cycle/run?slot=morning
+curl -s -XPOST localhost:8097/v1/services/banking-circle/sim/subscription/sub_1/pause
+curl -s -XPUT  localhost:8097/v1/services/b4b/sim/beneficiaries/ben_1/sanctions -d '{"status":"fail"}'
+curl -s -XPOST localhost:8097/v1/services/verification/sim/outcome -d '{…}'
+```
+
+**Path parameters** — `id`: a catalogue id (not a plugin's: a platform's
+own hooks are its declared actions). `path`: the rest of the service's
+`/sim/…` path, escaping kept.
+
+**Headers carried on** — `Content-Type`, `Accept`, `If-Match`,
+`If-None-Match`. The caller's `Authorization` is not: it was for the lab
+API. Instead, `banking-circle` gets the lab API's bearer token over mTLS,
+and `b4b` an RS512 JWT signed with the key b4b generated; every other
+service's hooks need nothing.
+
+**Answers** — *verbatim*: whatever the service answered. `404 no lab
+service <id>`. `502` when the service cannot be reached, or the
+credentials for it cannot be had (no client certificate, B4B's key not
+generated yet), saying which. Bodies up to 32 MB.
+
+**Reaches** — the service's `{method} {base_url}/sim/{path}?{query}`. Each
+service's hooks are in its reference, [services/](services/), under *Lab
+control*.
 
 ## Clock
 
-### `GET /api/clock`
+### `GET /v1/clock`
 
 The lab clock as it stands: the lab's now, its offset from real time, its
 mode, each calendar's business day and any holds.
@@ -309,7 +383,7 @@ cannot be read.
 
 **Reaches** — `clock GET /clock`.
 
-### `POST /api/clock`
+### `POST /v1/clock`
 
 Move the lab clock, or change its mode. Every vendor follows within a
 second, and so does a plugin registered with `"clock": "follows"`.
@@ -327,17 +401,42 @@ plus an optional `"reason"`. `advance` is a number and `d`, `h` or `m`:
 `"1d"`, `"-90m"`, `"1.5h"`.
 
 **Answers** — *verbatim* from the clock: `200` with the new clock (as
-`GET /api/clock`); `400` with its reason (no field, two fields, a bad
-timestamp); `409 clock is held: …` while a run holds it. The console
+`GET /v1/clock`); `400` with its reason (no field, two fields, a bad
+timestamp); `409 clock is held: …` while a run holds it. The lab API
 answers `409` itself, without calling the clock, while a live plugin is
 registered with `"clock": "wall"`: `<name> is registered on the wall
 clock and cannot follow the lab's; …`. `502` when the clock is unreachable.
+That refusal is the lab API's own: a `POST` straight to the clock service
+still moves it.
 
 **Reaches** — `clock POST /clock`.
 
+### `POST /v1/clock/holds`
+
+Hold the lab clock while a run is in flight: until the hold is released or
+lapses, every move is refused with the clock's `409`. A run that holds the
+clock through the lab API holds the same clock its vendors follow.
+
+**Body** — the clock's own: `{"holder": "runner", "reason": "settlement run", "ttl_seconds": 600}`
+([services/clock.md](services/clock.md)).
+
+**Answers** — *verbatim*: the clock service's status and body.
+
+**Reaches** — clock `POST /clock/holds`.
+
+### `DELETE /v1/clock/holds/{holder}`
+
+Release a hold.
+
+**Path parameters** — `holder`: the holder named when it was taken.
+
+**Answers** — *verbatim*: the clock service's status and body.
+
+**Reaches** — clock `DELETE /clock/holds/{holder}`.
+
 ## Configuration
 
-### `GET /api/config`
+### `GET /v1/config`
 
 What the lab is set to: the documented environment knobs, Banking Circle's
 notification delivery table, and Worldline's file-exchange channel.
@@ -349,8 +448,8 @@ notification delivery table, and Worldline's file-exchange channel.
              "settings": [{"key": "WORLDLINE_FILE_SOURCE", "service": "worldline",
                            "purpose": "…", "configured": "generate"}, …]},
             …,
-            {"title": "This console", "note": "…",
-             "settings": [{"key": "LISTEN", "service": "console", "purpose": "…",
+            {"title": "The lab API", "note": "…",
+             "settings": [{"key": "LISTEN", "service": "lab-api", "purpose": "…",
                            "configured": "", "live": ":8090"}, …]}],
  "banking_circle": {"retry_schedule": [{"after": "15s"}, {"after": "…", "email": "warning"}, …],
                     "time_scale": 86400, "deactivate_after_retries": 11,
@@ -365,7 +464,7 @@ notification delivery table, and Worldline's file-exchange channel.
 ```
 
 - `configured` is what compose.yml ships: documentation, not a reading of
-  the running container. `live` is set only for the console's own
+  the running container. `live` is set only for the lab API's own
   variables; one that looks like a credential reads `(set, hidden)`.
 - `banking_circle` is the table Banking Circle is running. When it cannot
   be asked, it is the file at `CONSOLE_BC_DELIVERY_CONFIG`, with
@@ -379,10 +478,10 @@ notification delivery table, and Worldline's file-exchange channel.
 **Reaches** — `banking-circle GET /sim/delivery-config` (bearer), or the
 config file; `worldline GET /config`.
 
-### `PUT /api/config/worldline-channel`
+### `PUT /v1/config/worldline-channel`
 
 Change Worldline's SFT file-exchange channel config, the one setting the
-console changes live.
+lab API changes live.
 
 **Body** — forwarded *verbatim*; Worldline decodes it strictly and stores
 it whole, so a field left out is cleared.
@@ -397,16 +496,16 @@ it whole, so a field left out is cleared.
 
 **Answers** — *verbatim* from Worldline: `200` with the saved config;
 `400` with its reason (`merchant_id required`, `json: unknown field …`).
-The console answers `400 body must be JSON: …` for a body it cannot parse,
+The lab API answers `400 body must be JSON: …` for a body it cannot parse,
 and `502` when Worldline is unreachable.
 
 **Reaches** — `worldline PUT /config`.
 
 ## Merchants
 
-### `GET /api/merchants`
+### `GET /v1/merchants`
 
-The console's merchant registry (distributor → partner → merchant →
+The lab's merchant registry (distributor → partner → merchant →
 outlet), its batches, and the countries it dresses merchants in. A
 platform that settles these merchants seeds its own records from this.
 
@@ -436,9 +535,9 @@ An outlet has `beneficiary_id` and `sanctions_status` once registered at
 B4B. Ids come from one counter: `dst_`, `prt_`, `mer_`, `out_`, `bat_`
 and four digits. Countries: GB, NL, DE, FR, IE, ES, SE, PL.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/merchants`
+### `POST /v1/merchants`
 
 Create a merchant and its opening outlets. Everything except `legal_name`
 is optional and derived from the merchant's id when left out: address,
@@ -459,13 +558,13 @@ MCC, email, and per outlet a MID, terminal id and payout account.
   country's.
 - `address` is used only when `line1` is set.
 
-**Answers** — `201` with the merchant, shaped as in `GET /api/merchants`.
+**Answers** — `201` with the merchant, shaped as in `GET /v1/merchants`.
 `400` for a missing `legal_name`, `outlets` out of range, or a bad body;
 `404` for an unknown `partner_id`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `DELETE /api/merchants/{id}`
+### `DELETE /v1/merchants/{id}`
 
 Delete a merchant from the registry. Nothing registered at B4B or seeded at
 Worldline is undone: B4B has no beneficiary-delete endpoint.
@@ -474,9 +573,9 @@ Worldline is undone: B4B has no beneficiary-delete endpoint.
 
 **Answers** — `200 {"deleted": "mer_0003"}`; `404`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/merchants/batches`
+### `POST /v1/merchants/batches`
 
 Generate many merchants at once, drawn from a seed: names, trades and
 their MCCs, countries, company forms, outlet counts. The same seed makes
@@ -506,9 +605,9 @@ the same population again, with new ids and so new MIDs.
 
 `400` for the validation above; `404` for an unknown `partner_id`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `DELETE /api/merchants/batches/{id}`
+### `DELETE /v1/merchants/batches/{id}`
 
 Delete a batch and every merchant in it, from the registry only. B4B and
 Worldline keep what they were sent.
@@ -517,12 +616,12 @@ Worldline keep what they were sent.
 
 **Answers** — `200 {"deleted": "bat_0007", "merchants": 50}`; `404`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/merchants/batches/{id}/provision`
+### `POST /v1/merchants/batches/{id}/provision`
 
 Register every outlet of a batch as a B4B beneficiary, merchant by
-merchant: `POST /api/merchants/{id}/provision` for the whole batch.
+merchant: `POST /v1/merchants/{id}/provision` for the whole batch.
 
 **Path parameters** — `id`: a batch id.
 
@@ -541,7 +640,7 @@ whole batch may take up to two minutes.
 **Reaches** — `b4b POST /oversight/v1/beneficiaries`, once per outlet,
 with an RS512 bearer token.
 
-### `POST /api/merchants/batches/{id}/trading`
+### `POST /v1/merchants/batches/{id}/trading`
 
 Seed card payments at Worldline for every outlet of a batch. Each merchant
 trades at its own typical ticket (3.00 to 150.00, derived from its id)
@@ -549,7 +648,7 @@ unless `amount_cents` is given.
 
 **Path parameters** — `id`: a batch id.
 
-**Body** — strict; the fields of `POST /api/merchants/{id}/trading`.
+**Body** — strict; the fields of `POST /v1/merchants/{id}/trading`.
 
 ```json
 {"count": 5}
@@ -568,7 +667,7 @@ body; `404` for an unknown batch.
 
 **Reaches** — `worldline POST /sim/transactions`, once per merchant.
 
-### `POST /api/merchants/{id}/outlets`
+### `POST /v1/merchants/{id}/outlets`
 
 Open another outlet, with a new MID, for a merchant. It is not known to
 B4B until the merchant is provisioned again.
@@ -586,9 +685,9 @@ B4B until the merchant is provisioned again.
 **Answers** — `201 {"merchant": {…}, "outlet": {"id": "out_0009", "mid": "…", …}}`;
 `404` for an unknown merchant.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/merchants/{id}/status`
+### `POST /v1/merchants/{id}/status`
 
 Set a merchant's status. Registry-only: nothing in the lab acts on it.
 
@@ -604,9 +703,9 @@ Set a merchant's status. Registry-only: nothing in the lab acts on it.
 
 **Answers** — `200` with the merchant; `400` for any other status; `404`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/merchants/{id}/provision`
+### `POST /v1/merchants/{id}/provision`
 
 Register each outlet of a merchant as a B4B beneficiary, keyed on its MID
 (`external_ref`), and record the beneficiary id and sanctions status on the
@@ -630,7 +729,7 @@ B4B_JWT_PRIVATE_KEY_PATH …` when provisioning is unavailable.
 `{"external_ref", "account_name", "account_number",
 "financial_institution", "country"}`, with an RS512 bearer token.
 
-### `POST /api/merchants/{id}/trading`
+### `POST /v1/merchants/{id}/trading`
 
 Tell Worldline the merchant's outlets took card payments. This is the
 acquirer's own data: the platform learns of it only through the next
@@ -665,7 +764,7 @@ settlement file.
 entries per outlet, each `{"mid", "currency", "amount_cents", "date",
 "mcc", "terminal_id"}`.
 
-### `POST /api/outlets/{mid}/sanctions`
+### `POST /v1/outlets/{mid}/sanctions`
 
 Move an outlet's beneficiary at B4B between `pass`, `review` and `fail`, to
 watch the payout gate stop or release it.
@@ -687,7 +786,7 @@ been changed by then.
 **Reaches** — `b4b PUT /sim/beneficiaries/{mid}/sanctions`, with an RS512
 bearer token.
 
-### `POST /api/partners`
+### `POST /v1/partners`
 
 Add a partner under a distributor.
 
@@ -705,11 +804,11 @@ from the countries list is stored as `""`.
 **Answers** — `201 {"id": "prt_0010", "distributor_id": "dst_0001", "name": "…", "country": "IE", "created_at": "…"}`;
 `400` for a missing name; `404` for an unknown distributor.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
 ## Banks
 
-### `GET /api/banks`
+### `GET /v1/banks`
 
 Both banks and their accounts: the business bank (the merchants' own,
 where payouts land) and Banking Circle (the safeguarding accounts and a
@@ -736,7 +835,7 @@ catalogue id.
 /api/v1/authorizations/authorize` (Basic for Bearer, cached) and `GET
 /accounts`, over mTLS.
 
-### `POST /api/banks/{id}/accounts`
+### `POST /v1/banks/{id}/accounts`
 
 Open an account at the business bank. Banking Circle has no
 account-opening endpoint: its accounts appear when first paid into.
@@ -760,7 +859,7 @@ bank's refusal: `502 POST /accounts: HTTP 400: …`.
 **Reaches** — `bank POST /accounts` `{"holder", "currency",
 "openingBalance"}`.
 
-### `GET /api/banking-circle/subscriptions`
+### `GET /v1/banking-circle/subscriptions`
 
 Banking Circle's notification subscriptions: where each delivers, for which
 events, its status, and how much is waiting.
@@ -791,7 +890,7 @@ events, its status, and how much is waiting.
 /api/v1/notificationselfservice/subscription?PageSize=50`, then `GET
 /sim/subscription/{id}/pending` per subscription.
 
-### `POST /api/banking-circle/subscriptions/{id}/test`
+### `POST /v1/banking-circle/subscriptions/{id}/test`
 
 Fire Banking Circle's own test notification at one subscription, and report
 what the endpoint did with it, not only that it was sent.
@@ -816,7 +915,7 @@ delivery. `502` when the test call fails, an unknown id included.
 /api/v1/notificationselfservice/clienttest/{id}`, and `GET
 /sim/activity?limit=1` before it and every 200 ms after.
 
-### `POST /api/banking-circle/subscriptions/{id}/pause`
+### `POST /v1/banking-circle/subscriptions/{id}/pause`
 
 Stop Banking Circle delivering to one subscription. Notifications queue in
 order, and show in its *Notifications sent* log as queued; payments still
@@ -831,7 +930,7 @@ unreachable.
 
 **Reaches** — `banking-circle POST /sim/subscription/{id}/pause`.
 
-### `POST /api/banking-circle/subscriptions/{id}/resume`
+### `POST /v1/banking-circle/subscriptions/{id}/resume`
 
 Release a paused subscription: what it queued goes out oldest first, in
 the batches it would have gone out in.
@@ -844,7 +943,7 @@ the batches it would have gone out in.
 
 **Reaches** — `banking-circle POST /sim/subscription/{id}/resume`.
 
-### `GET /api/banking-circle/payouts`
+### `GET /v1/banking-circle/payouts`
 
 Banking Circle's outgoing payments, newest first, with whether each can
 still be returned or reversed.
@@ -868,7 +967,7 @@ Banking Circle's `paymentReferenceNumber`; `external_ref` is the payout's
 
 **Reaches** — `banking-circle GET /payments` (lab introspection, bearer).
 
-### `POST /api/banking-circle/payouts/{id}/return`
+### `POST /v1/banking-circle/payouts/{id}/return`
 
 The beneficiary's bank sends a processed payout back. The payout stays
 processed and records `returnedBy`; the money arrives as a new incoming
@@ -884,14 +983,14 @@ payment flagged `return`. Cannot be undone.
  "paymentReferenceNumber": "…", "state": "IncomingPaymentBooked", "createdAt": "…", …}
 ```
 
-The console sends no reason code. `502` when Banking Circle refuses (not
+The lab API sends no reason code. `502` when Banking Circle refuses (not
 processed, already returned, unknown id) or is unreachable.
 
 **Reaches** — `banking-circle POST /sim/payments/{id}/return` on the
 credentialed listener (the same handler as the bridge's
 `/internal/payments/{id}/return`).
 
-### `POST /api/banking-circle/payouts/{id}/reverse`
+### `POST /v1/banking-circle/payouts/{id}/reverse`
 
 The scheme undoes a processed payout: it becomes `Reversed`, with a second
 booking. Cannot be undone.
@@ -905,14 +1004,14 @@ booking. Cannot be undone.
 **Reaches** — `banking-circle POST /sim/payments/{id}/reverse` on the
 credentialed listener.
 
-### `POST /api/actions/fund-sga`
+### `POST /v1/actions/fund-sga`
 
 Top up the empty safeguarding accounts: the wire Worldline makes on its
 morning slot, for a run that did not come through one. An account already
 holding money is left alone, so pressing twice is not twice the money.
 
 **Query parameters** — `amount`: the credit per account as a decimal
-string, default `1000000.00`; not checked by the console.
+string, default `1000000.00`; not checked by the lab API.
 
 **Answers** — `200`, per currency (EUR, then GBP), partial success
 included:
@@ -934,7 +1033,7 @@ then `POST /internal/incoming-payments` `{"currency", "amount",
 
 ## Vendor actions
 
-### `POST /api/actions/worldline-cycle`
+### `POST /v1/actions/worldline-cycle`
 
 Make Worldline cut and publish its settlement files now rather than at its
 slot: one PGP-encrypted file per currency onto its SFTP root and, on the
@@ -963,7 +1062,7 @@ not JSON.
 
 **Reaches** — `worldline POST /sim/settlement-cycle/run?slot=&date=`.
 
-### `POST /api/actions/settlement-pull`
+### `POST /v1/actions/settlement-pull`
 
 Make the settlement stand-in pull Worldline's SFTP now rather than on its
 timer. Works while the stand-in is disconnected: that stops only its
@@ -979,16 +1078,16 @@ timers.
 
 `files` is the whole pull history, not only this pull. `502 pull from
 <host>:<port> failed: …` from settlement when SFTP fails; `502` from the
-console when settlement is unreachable.
+lab API when settlement is unreachable.
 
 **Reaches** — `settlement POST /worldline/pull`.
 
 ## Plugins
 
-### `GET /api/plugins`
+### `GET /v1/plugins`
 
 The registered platforms, each as a catalogue entry plus how its
-registration stands. Registrations live in memory: after a console restart
+registration stands. Registrations live in memory: after a lab API restart
 the list is empty until each plugin renews.
 
 **Answers** — `200`
@@ -1004,11 +1103,11 @@ the list is empty until each plugin renews.
 ```
 
 `state` is `live` (renewed within 30 s), `lapsed` or `stopped`. In
-registration order. No health here: `GET /api/overview` has it.
+registration order. No health here: `GET /v1/lab` has it.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/plugins`
+### `POST /v1/plugins`
 
 Register a platform's card, or renew it: the same call every
 `renew_seconds`, and a changed descriptor replaces the old one.
@@ -1046,9 +1145,9 @@ Refused with `400 bad plugin descriptor: …` unless:
 **Reaches** — nothing before answering. After: the plugin's `health_path`
 (an immediate probe) and, when `stand_ins` differs from what was last
 applied for this plugin, the stand-in wiring as in
-`POST /api/stand-ins/{id}`.
+`POST /v1/stand-ins/{id}`.
 
-### `DELETE /api/plugins/{id}`
+### `DELETE /v1/plugins/{id}`
 
 Unregister on a clean shutdown. The card stays, grey and `stopped`, showing
 `start_hint`; the plugin is no longer probed and its buttons answer `409`.
@@ -1057,9 +1156,9 @@ Unregister on a clean shutdown. The card stays, grey and `stopped`, showing
 
 **Answers** — `204`; `404 no plugin <id>`.
 
-**Reaches** — nothing — console state only.
+**Reaches** — nothing — the lab API's own state.
 
-### `POST /api/plugins/{id}/actions/{action}`
+### `POST /v1/plugins/{id}/actions/{action}`
 
 Press one of the plugin's declared buttons: the body goes to the method and
 path the plugin declared for it.
@@ -1080,7 +1179,7 @@ still called.
 **Reaches** — the plugin's `base_url` + the action's `path`, with the
 action's method.
 
-### `GET /api/plugins/{id}/files`
+### `GET /v1/plugins/{id}/files`
 
 The settlement files the platform can run: the files table on its card.
 
@@ -1102,7 +1201,7 @@ stopped; `502` when the platform is unreachable or answers non-2xx
 
 **Reaches** — the plugin's `base_url` + `settlement.files_path`.
 
-### `POST /api/plugins/{id}/run`
+### `POST /v1/plugins/{id}/run`
 
 Start settlement runs on the platform. Several files in one call start
 together; one file per currency.
@@ -1117,14 +1216,14 @@ together; one file per currency.
 
 **Answers** — *verbatim* from the platform: `202 {"runs": [{"currency": "GBP", "run": "…"}]}`,
 or its `409` for a currency already running. `404`, `409` and `502` as for
-`GET /api/plugins/{id}/files`.
+`GET /v1/plugins/{id}/files`.
 
 **Reaches** — `POST` the plugin's `base_url` + `settlement.run_path`.
 
-### `POST /api/plugins/{id}/files`
+### `POST /v1/plugins/{id}/files`
 
 Upload a settlement file from anywhere to the platform, which keeps it and
-lists it with its own. The bytes are streamed through; the console holds
+lists it with its own. The bytes are streamed through; the lab API holds
 none of them.
 
 **Path / query parameters** — `id`: a plugin id. `name`: the file's name,
@@ -1141,7 +1240,7 @@ and `502` as above. No timeout but the caller's own.
 
 **Reaches** — `POST` the plugin's `base_url` + `settlement.upload_path?name=`.
 
-### `DELETE /api/plugins/{id}/files`
+### `DELETE /v1/plugins/{id}/files`
 
 Delete a file on the platform: any listed file it marks `deletable` when
 it declares `delete_path`, otherwise only files uploaded to it.
@@ -1157,7 +1256,7 @@ when it declares neither `delete_path` nor `upload_path`; `404`, `409` and
 **Reaches** — `DELETE` the plugin's `base_url` + `settlement.delete_path?name=`,
 or `settlement.upload_path?name=` without one.
 
-### `GET /api/plugins/{id}/files/preview`
+### `GET /v1/plugins/{id}/files/preview`
 
 The first lines of one settlement file, read no further however long it
 is.
@@ -1171,10 +1270,10 @@ is.
 
 **Reaches** — `GET` the plugin's `base_url` + `settlement.preview_path?name=&lines=`.
 
-### `POST /api/plugins/{id}/files/reveal`
+### `POST /v1/plugins/{id}/files/reveal`
 
 Open the folder a file is in, in the file manager of the machine the
-platform runs on. Only the platform can: the console may be in a
+platform runs on. Only the platform can: the lab API may be in a
 container, and a web page may not open a local folder.
 
 **Path parameters** — `id`: a plugin id.
@@ -1194,7 +1293,7 @@ that machine has no desktop. `501` without `reveal_path`; `404`, `409` and
 
 ## Connect
 
-### `GET /api/connect`
+### `GET /v1/connect`
 
 What each vendor asks of a platform that connects to it: the variables it
 sets, and the key files on offer and whether they exist yet. Names only, no
@@ -1222,22 +1321,22 @@ Kits, in order: `worldline`, `b4b`, `banking-circle`, `aci`,
 commented out in the `.env`. `400 host must be a hostname or an IP
 address`.
 
-**Reaches** — nothing — console state and the keys directory
+**Reaches** — nothing — the lab API's own state and the keys directory
 (`CONSOLE_KEYS_DIR`).
 
-### `GET /api/connect/env`
+### `GET /v1/connect/env`
 
 Download `fintechlab.env`: every vendor's variables with their values, for
 a platform's `.env`.
 
-**Query parameters** — `host`: as for `GET /api/connect`.
+**Query parameters** — `host`: as for `GET /v1/connect`.
 
 **Answers** — `200`, `text/plain`, `Content-Disposition: attachment;
 filename="fintechlab.env"`, `Cache-Control: no-store`:
 
 ```
 # fintech sim lab v1 — connection settings for a platform under test
-# Downloaded from the lab console 2026-11-07T12:00:00Z, for a lab reached at 127.0.0.1.
+# Downloaded from the lab API 2026-11-07T12:00:00Z, for a lab reached at 127.0.0.1.
 …
 # ── Worldline ───────────────────────────────────────────────────────
 …
@@ -1252,23 +1351,23 @@ addresses, account ids and credentials are what compose.yml ships.
 Multi-line values are double-quoted. A key not generated yet is a comment
 on its variable, never a value. `400` (JSON) for a bad `host`.
 
-**Reaches** — nothing — console state and the keys directory.
+**Reaches** — nothing — the lab API's own state and the keys directory.
 
-### `GET /api/connect/env/{service}`
+### `GET /v1/connect/env/{service}`
 
 Download one vendor's part of `fintechlab.env`, as
 `fintechlab-<service>.env`.
 
 **Path / query parameters** — `service`: `worldline`, `b4b`,
 `banking-circle`, `aci`, `verification` or `verify`. `host`: as for
-`GET /api/connect`.
+`GET /v1/connect`.
 
-**Answers** — `200` as for `GET /api/connect/env`. `404 <service> has
+**Answers** — `200` as for `GET /v1/connect/env`. `404 <service> has
 nothing a platform needs to connect`; `400` for a bad `host`.
 
-**Reaches** — nothing — console state and the keys directory.
+**Reaches** — nothing — the lab API's own state and the keys directory.
 
-### `GET /api/connect/files/{service}/{name}`
+### `GET /v1/connect/files/{service}/{name}`
 
 Download one key or certificate file, the one the lab is running with now.
 Only client-side material is offered.

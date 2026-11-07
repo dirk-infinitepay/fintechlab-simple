@@ -291,7 +291,7 @@ func (a *app) setStandIn(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, `want {"connected": true|false} and/or {"shown": true|false}`)
 		return
 	}
-	errs := a.applyStandIn(ctx, id, pref, "console")
+	errs := a.applyStandIn(ctx, id, pref, "lab-api")
 	v := a.standIn(ctx, id)
 	v.Errors = errs
 	code := 200
@@ -312,9 +312,9 @@ func (a *app) applyPluginStandIns(p console.Plugin) {
 		defer cancel()
 		for id, pref := range p.StandIns {
 			for _, e := range a.applyStandIn(ctx, id, pref, p.ID) {
-				log.Printf("console: stand-in %s for plugin %s: %s", id, p.ID, e)
+				log.Printf("lab-api: stand-in %s for plugin %s: %s", id, p.ID, e)
 			}
 		}
-		log.Printf("console: applied %s's stand_ins", p.ID)
+		log.Printf("lab-api: applied %s's stand_ins", p.ID)
 	}()
 }

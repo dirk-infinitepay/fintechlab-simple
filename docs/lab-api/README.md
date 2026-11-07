@@ -1,8 +1,17 @@
 # Lab API: draft spec
 
-**Draft for review, 2026-10-20.** Nothing in this directory is built. It is
-written to be edited: change a tag, strike a line, answer an
-[open question](open.md), and the next pass builds on what is left.
+**Draft for review, 2026-10-20.** It is written to be edited: change a tag,
+strike a line, answer an [open question](open.md), and the next pass builds
+on what is left.
+
+**Built so far (2026-11-07):** the `lab-api` service itself, the first part
+of [phase 1](plan.md#phase-1--the-control-contract-lab-api-first-traps).
+`cmd/labapi` serves `/v1` on `:8097` with everything the console's server
+did, plus `/v1/services`, the passthrough to every sim's `/sim/*` and the
+clock holds; `LAB_API_TOKEN`; the console is a page that forwards `/v1` to
+it, and the page already calls `/v1`. The reference for what answers today
+is [../api/lab-api.md](../api/lab-api.md); this directory stays the design
+for the rest.
 
 ## What this is
 
