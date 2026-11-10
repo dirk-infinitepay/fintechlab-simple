@@ -60,11 +60,11 @@ func TestEngineHopTakesAPaymentOneStateAtATime(t *testing.T) {
 		t.Fatal("Accept started the default walk")
 	}
 
-	if err := engine.Hop("b4bp_trapped", started, StateTMPending, "trp_0001", ""); err == nil {
+	if err := engine.Hop("", "b4bp_trapped", started, StateTMPending, "trp_0001", ""); err == nil {
 		t.Fatal("a hop to a state that does not directly follow was taken")
 	}
 	for _, st := range []PaymentState{StateSanctionsPending, StateFailed} {
-		if err := engine.Hop("b4bp_trapped", started, st, "trp_0001", "sanctions hit"); err != nil {
+		if err := engine.Hop("", "b4bp_trapped", started, st, "trp_0001", "sanctions hit"); err != nil {
 			t.Fatalf("hop to %s: %v", st, err)
 		}
 		if ev := <-events; ev.State != st || ev.Trap != "trp_0001" {
@@ -75,10 +75,10 @@ func TestEngineHopTakesAPaymentOneStateAtATime(t *testing.T) {
 	if got.State != StateFailed || got.FailureReason != "sanctions hit" {
 		t.Fatalf("after the hops: %s, reason %q", got.State, got.FailureReason)
 	}
-	if err := engine.Hop("b4bp_trapped", started, StateTMApproved, "trp_0001", ""); err == nil {
+	if err := engine.Hop("", "b4bp_trapped", started, StateTMApproved, "trp_0001", ""); err == nil {
 		t.Fatal("a failed payment moved on")
 	}
-	if err := engine.Hop("nope", started, StateSanctionsPending, "trp_0001", ""); err != ErrPaymentNotFound {
+	if err := engine.Hop("", "nope", started, StateSanctionsPending, "trp_0001", ""); err != ErrPaymentNotFound {
 		t.Fatalf("hop on an unknown payment: %v", err)
 	}
 }

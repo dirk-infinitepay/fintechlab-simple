@@ -16,6 +16,10 @@ import (
 // this lab, and answering 400 to a field the real vendor accepts would
 // teach a client to remove it -- which is a worse outcome than not
 // modelling it.
+//
+// Every route acts in the caller's environment (envs.go): a company another
+// environment boarded reads as unknown, and an external_ref is taken only
+// within the environment that used it.
 
 func (a *app) createCompany(w http.ResponseWriter, r *http.Request) {
 	var p b4b.CompanyParams
@@ -25,7 +29,7 @@ func (a *app) createCompany(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Extra = extra
-	c, err := a.dir.CreateCompany(p)
+	c, err := a.dir.In(envOf(r)).CreateCompany(p)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -36,11 +40,11 @@ func (a *app) createCompany(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listCompanies(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"companies": a.dir.Companies()})
+	httputilx.WriteJSON(w, 200, map[string]any{"companies": a.dir.In(envOf(r)).Companies()})
 }
 
 func (a *app) getCompany(w http.ResponseWriter, r *http.Request) {
-	c, err := a.dir.Company(r.PathValue("id"))
+	c, err := a.dir.In(envOf(r)).Company(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -56,7 +60,7 @@ func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Extra = extra
-	addr, err := a.dir.AddAddress(r.PathValue("id"), p)
+	addr, err := a.dir.In(envOf(r)).AddAddress(r.PathValue("id"), p)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -65,7 +69,7 @@ func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listAddresses(w http.ResponseWriter, r *http.Request) {
-	list, err := a.dir.Addresses(r.PathValue("id"))
+	list, err := a.dir.In(envOf(r)).Addresses(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -89,7 +93,7 @@ func (a *app) createExtended(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Extra = extra
-	prof, err := a.dir.CreateExtended(r.PathValue("id"), p)
+	prof, err := a.dir.In(envOf(r)).CreateExtended(r.PathValue("id"), p)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -105,7 +109,7 @@ func (a *app) createExtended(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) getExtended(w http.ResponseWriter, r *http.Request) {
-	prof, err := a.dir.Extended(r.PathValue("id"))
+	prof, err := a.dir.In(envOf(r)).Extended(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -134,7 +138,7 @@ func (a *app) createViban(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	v, err := a.dir.AddViban(r.PathValue("id"), req.Currency)
+	v, err := a.dir.In(envOf(r)).AddViban(r.PathValue("id"), req.Currency)
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -143,7 +147,7 @@ func (a *app) createViban(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listVibans(w http.ResponseWriter, r *http.Request) {
-	list, err := a.dir.Vibans(r.PathValue("id"))
+	list, err := a.dir.In(envOf(r)).Vibans(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -167,7 +171,7 @@ func (a *app) setCompanySanctions(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	c, _, err := a.dir.SetCompanySanctions(r.PathValue("id"), req.SanctionsStatus)
+	c, _, err := a.dir.In(envOf(r)).SetCompanySanctions(r.PathValue("id"), req.SanctionsStatus)
 	if err != nil {
 		writeStoreError(w, err)
 		return

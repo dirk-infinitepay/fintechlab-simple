@@ -17,11 +17,23 @@ import (
 // mutation (state.go), which is what makes a boarded merchant survive a
 // restart. A merchant boarded yesterday that has to be boarded again today
 // is not a test bed, it is a demo.
+//
+// A Directory is one environment's view of the store (env.go): the one
+// NewDirectory returns is the default's, and In gives another's over the
+// same records. Snapshot, Restore and the clears act on the whole store,
+// whichever view they are called on.
 type Directory struct {
+	*directory
+	own string // the environment this view acts for, as records store it
+}
+
+type directory struct {
 	mu    sync.Mutex
 	newID func(prefix string) string
 
-	companies       map[string]*Company
+	companies map[string]*Company
+	// companiesByRef indexes companies by refKey(owner, external_ref):
+	// an external_ref is unique within an environment.
 	companiesByRef  map[string]*Company
 	addresses       map[string][]*CompanyAddress
 	people          map[string]*Person
@@ -49,7 +61,7 @@ func NewDirectory(newID func(prefix string) string) *Directory {
 	if newID == nil {
 		newID = defaultID
 	}
-	return &Directory{
+	return &Directory{directory: &directory{
 		newID:           newID,
 		companies:       map[string]*Company{},
 		companiesByRef:  map[string]*Company{},
@@ -59,8 +71,38 @@ func NewDirectory(newID func(prefix string) string) *Directory {
 		extended:        map[string]*ExtendedProfile{},
 		documents:       map[string]*Document{},
 		vibans:          map[string][]*Viban{},
-	}
+	}}
 }
+
+// In is the directory as env sees it: only env's companies, and everything
+// hanging off them, and env's uploads.
+func (d *Directory) In(env string) *Directory {
+	return &Directory{directory: d.directory, own: owner(env)}
+}
+
+// companyLocked is one of this view's companies by B4B's own id or by the
+// caller's external_ref, in that order. Callers hold d.mu.
+func (d *Directory) companyLocked(id string) (*Company, bool) {
+	if c, ok := d.companies[id]; ok && c.Env == d.own {
+		return c, true
+	}
+	c, ok := d.companiesByRef[refKey(d.own, id)]
+	return c, ok
+}
+
+// ownerLocked is the owner of the company cid, as stored: the default's
+// for one the store does not have. Callers hold d.mu.
+func (d *directory) ownerLocked(cid string) string {
+	if c, ok := d.companies[cid]; ok {
+		return c.Env
+	}
+	return ""
+}
+
+// vendor is c as the wire shows it: without its owner.
+func (c Company) vendor() *Company { c.Env = ""; return &c }
+
+func (doc Document) vendor() *Document { doc.Env = ""; return &doc }
 
 func defaultID(prefix string) string { return prefix + "_" + shortHex() }
 
@@ -69,7 +111,7 @@ func now() string { return labclock.Now().Format(time.RFC3339) }
 // changed releases the lock and fires OnChange. Every mutating method ends
 // with `defer d.changed()` after taking the lock, so a persist can never
 // run while the store is half-written.
-func (d *Directory) changed() {
+func (d *directory) changed() {
 	if d.OnChange != nil {
 		d.OnChange()
 	}
@@ -90,7 +132,7 @@ func (d *Directory) CreateCompany(p CompanyParams) (*Company, error) {
 	}
 	d.mu.Lock()
 	if p.ExternalRef != "" {
-		if existing, ok := d.companiesByRef[p.ExternalRef]; ok {
+		if existing, ok := d.companiesByRef[refKey(d.own, p.ExternalRef)]; ok {
 			d.mu.Unlock()
 			return nil, fmt.Errorf("%w: a company with external_ref %q already exists (id %s)",
 				ErrDuplicate, p.ExternalRef, existing.ID)
@@ -99,6 +141,7 @@ func (d *Directory) CreateCompany(p CompanyParams) (*Company, error) {
 	ts := now()
 	c := &Company{
 		ID:                     d.newID("cmp"),
+		Env:                    d.own,
 		ExternalRef:            p.ExternalRef,
 		LegalName:              p.LegalName,
 		TradingName:            p.TradingName,
@@ -117,7 +160,7 @@ func (d *Directory) CreateCompany(p CompanyParams) (*Company, error) {
 	}
 	d.companies[c.ID] = c
 	if c.ExternalRef != "" {
-		d.companiesByRef[c.ExternalRef] = c
+		d.companiesByRef[refKey(d.own, c.ExternalRef)] = c
 	}
 	// The registered office supplied inline is also materialized as a
 	// readable address, so GET .../addresses is not mysteriously empty on
@@ -132,10 +175,10 @@ func (d *Directory) CreateCompany(p CompanyParams) (*Company, error) {
 		}
 		d.addresses[c.ID] = append(d.addresses[c.ID], a)
 	}
-	cp := *c
+	cp := c.vendor()
 	d.mu.Unlock()
 	d.changed()
-	return &cp, nil
+	return cp, nil
 }
 
 // Company returns one company by B4B's own id or by the caller's
@@ -143,30 +186,22 @@ func (d *Directory) CreateCompany(p CompanyParams) (*Company, error) {
 func (d *Directory) Company(id string) (*Company, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c, ok := d.resolveCompanyLocked(id)
+	c, ok := d.companyLocked(id)
 	if !ok {
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, id)
 	}
-	cp := *c
-	return &cp, nil
+	return c.vendor(), nil
 }
 
-func (d *Directory) resolveCompanyLocked(id string) (*Company, bool) {
-	if c, ok := d.companies[id]; ok {
-		return c, true
-	}
-	c, ok := d.companiesByRef[id]
-	return c, ok
-}
-
-// Companies returns every company, newest last.
+// Companies returns every one of this view's companies, newest last.
 func (d *Directory) Companies() []*Company {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	out := make([]*Company, 0, len(d.companies))
 	for _, c := range d.companies {
-		cp := *c
-		out = append(out, &cp)
+		if c.Env == d.own {
+			out = append(out, c.vendor())
+		}
 	}
 	sortByCreated(out, func(c *Company) string { return c.CreatedAt + c.ID })
 	return out
@@ -179,7 +214,7 @@ func (d *Directory) SetCompanySanctions(id, status string) (*Company, bool, erro
 		return nil, false, err
 	}
 	d.mu.Lock()
-	c, ok := d.resolveCompanyLocked(id)
+	c, ok := d.companyLocked(id)
 	if !ok {
 		d.mu.Unlock()
 		return nil, false, fmt.Errorf("%w: company %q", ErrNotFound, id)
@@ -187,10 +222,10 @@ func (d *Directory) SetCompanySanctions(id, status string) (*Company, bool, erro
 	changed := c.SanctionsStatus != status
 	c.SanctionsStatus = status
 	c.UpdatedAt = now()
-	cp := *c
+	cp := c.vendor()
 	d.mu.Unlock()
 	d.changed()
-	return &cp, changed, nil
+	return cp, changed, nil
 }
 
 // --- addresses --------------------------------------------------------
@@ -201,7 +236,7 @@ func (d *Directory) AddAddress(companyID string, p AddressParams) (*CompanyAddre
 		return nil, err
 	}
 	d.mu.Lock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
@@ -225,7 +260,7 @@ func (d *Directory) AddAddress(companyID string, p AddressParams) (*CompanyAddre
 func (d *Directory) Addresses(companyID string) ([]*CompanyAddress, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
 	}
@@ -242,7 +277,7 @@ func (d *Directory) Addresses(companyID string) ([]*CompanyAddress, error) {
 // AddPerson attaches a natural person or a shareholding company.
 func (d *Directory) AddPerson(companyID string, p PersonParams) (*Person, error) {
 	d.mu.Lock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
@@ -295,11 +330,11 @@ func (d *Directory) AddPerson(companyID string, p PersonParams) (*Person, error)
 	return &cp, nil
 }
 
-// Person returns one person by id.
+// Person returns one person by id: one of this view's companies' people.
 func (d *Directory) Person(id string) (*Person, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	p, ok := d.people[id]
+	p, ok := d.personLocked(id)
 	if !ok {
 		return nil, fmt.Errorf("%w: person %q", ErrNotFound, id)
 	}
@@ -307,11 +342,20 @@ func (d *Directory) Person(id string) (*Person, error) {
 	return &cp, nil
 }
 
+// personLocked is one of this view's people. Callers hold d.mu.
+func (d *Directory) personLocked(id string) (*Person, bool) {
+	p, ok := d.people[id]
+	if !ok || d.ownerLocked(p.CompanyID) != d.own {
+		return nil, false
+	}
+	return p, true
+}
+
 // People lists a company's people.
 func (d *Directory) People(companyID string) ([]*Person, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
 	}
@@ -345,7 +389,7 @@ func (d *Directory) SetPersonSanctions(id, status, pep string) (*Person, bool, e
 		return nil, false, fmt.Errorf("%w: one of sanctions_status or pep_sanctions_status is required", ErrInvalid)
 	}
 	d.mu.Lock()
-	p, ok := d.people[id]
+	p, ok := d.personLocked(id)
 	if !ok {
 		d.mu.Unlock()
 		return nil, false, fmt.Errorf("%w: person %q", ErrNotFound, id)
@@ -375,7 +419,7 @@ func (d *Directory) SetPersonSanctions(id, status, pep string) (*Person, bool, e
 // hitting this.
 func (d *Directory) CreateExtended(companyID string, p ExtendedParams) (*ExtendedProfile, error) {
 	d.mu.Lock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
@@ -389,7 +433,7 @@ func (d *Directory) CreateExtended(companyID string, p ExtendedParams) (*Extende
 	}
 	unknownDocs := []string{}
 	for _, ref := range p.Documents {
-		if _, ok := d.documents[ref]; !ok {
+		if doc, ok := d.documents[ref]; !ok || doc.Env != d.own {
 			unknownDocs = append(unknownDocs, ref)
 		}
 	}
@@ -435,7 +479,7 @@ func (d *Directory) CreateExtended(companyID string, p ExtendedParams) (*Extende
 func (d *Directory) Extended(companyID string) (*ExtendedProfile, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
 	}
@@ -453,6 +497,7 @@ func (d *Directory) Extended(companyID string) (*ExtendedProfile, error) {
 func (d *Directory) AddDocument(p DocumentParams) *Document {
 	doc := &Document{
 		ID:           d.newID("doc"),
+		Env:          d.own,
 		DocumentType: p.DocumentType,
 		FileName:     p.FileName,
 		ContentType:  p.ContentType,
@@ -462,22 +507,21 @@ func (d *Directory) AddDocument(p DocumentParams) *Document {
 	}
 	d.mu.Lock()
 	d.documents[doc.ID] = doc
-	cp := *doc
+	cp := doc.vendor()
 	d.mu.Unlock()
 	d.changed()
-	return &cp
+	return cp
 }
 
-// Document returns one upload receipt.
+// Document returns one of this view's upload receipts.
 func (d *Directory) Document(id string) (*Document, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	doc, ok := d.documents[id]
-	if !ok {
+	if !ok || doc.Env != d.own {
 		return nil, fmt.Errorf("%w: document %q", ErrNotFound, id)
 	}
-	cp := *doc
-	return &cp, nil
+	return doc.vendor(), nil
 }
 
 // --- vIBANs -----------------------------------------------------------
@@ -492,7 +536,7 @@ func (d *Directory) AddViban(companyID, currency string) (*Viban, error) {
 		return nil, fmt.Errorf("%w: currency must be a 3-letter ISO 4217 code, got %q", ErrInvalid, currency)
 	}
 	d.mu.Lock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		d.mu.Unlock()
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
@@ -526,7 +570,7 @@ func (d *Directory) AddViban(companyID, currency string) (*Viban, error) {
 func (d *Directory) Vibans(companyID string) ([]*Viban, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	c, ok := d.resolveCompanyLocked(companyID)
+	c, ok := d.companyLocked(companyID)
 	if !ok {
 		return nil, fmt.Errorf("%w: company %q", ErrNotFound, companyID)
 	}

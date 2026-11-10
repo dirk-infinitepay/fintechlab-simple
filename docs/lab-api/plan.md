@@ -167,26 +167,89 @@ Only once the reference plugin (buddy's runner) is on `lab_url`:
   `:8085`; B4B's JWT on `/sim/*`; ACI's `/internal/*`;
 - `console_url` and `clock_url` in the runner.
 
-## Phase 5 — parallel environments (deferred)
+## Phase 5 — environments
 
-**[DECIDED 2026-10-20: in the plan, deferred.]** The lab is one
-long-running tenant for local development until this phase starts.
+**[DECIDED 2026-11-10, the owner]:** one lab serves several platforms, each
+one an *environment* with its own token and its own customers at the
+vendors, and no heartbeat. The design is [environments.md](environments.md).
+It replaces this phase's earlier sketch, which was deferred on 2026-10-20.
+That sketch also had one fact wrong: Banking Circle's safeguarding accounts
+are constants in the sim, not `BC_SAFEGUARDING_ACCOUNT_ID_*`, which only
+Worldline and settlement read.
 
-The goal: several isolated runs side by side, each with its own copy of
-the platform and its settle DB, created through the API
-(`POST /v1/environments`, `DELETE /v1/environments/{id}`).
+**Status, 2026-11-10: built**, all of 5.1–5.6, in one pass rather than
+step by step. Where the build differs from the steps below is listed at
+the top of [environments.md](environments.md). The e2e suite gained
+`environments-keep-platforms-apart`, and its other scenarios stay in the
+default environment.
 
-What it takes, as far as is known now:
+Each step ends with the lab working end to end, `make e2e` green, and its
+routes and documents changed together (`docs/api/lab-api.md`,
+`docs/api/services/<id>.md`).
 
-| Piece | Today | Per environment |
-| --- | --- | --- |
-| Platform + settle DB | one, the developer's | one copy each: the platform's job; each registers its own plugin |
-| B4B | already multi-company | likely enough to give each environment its own test companies (the owner's view); the JWT key is shared |
-| Banking Circle | one set of safeguarding accounts (`BC_SAFEGUARDING_ACCOUNT_ID_*`), shared subscriptions | its own safeguarding accounts and subscriptions; reports filtered to its accounts. Separate companies may be most of it |
-| Worldline | one identifier, one SFTP user and root, one transaction store: the naive one | its own SFTP user, root and store |
-| Clock | one offset for the whole lab | **the hard part.** Either environments share one clock that none may move, or every vendor stamps time per environment |
-| Traps, logs, activity | per sim | tagged with the environment, and filtered by it |
+### 5.1 Environments in the lab API
 
-The alternative to weigh when the phase starts: one whole lab per
-environment (a pod per test run). That needs no vendor changes, at the
-cost of more containers.
+- The lab DB: SQLite on the lab API's volume (a pure-Go driver, so the
+  images stay static). It holds the environments, their tokens, their
+  customers and kits, and the merchant registry moved in from
+  `registry.json`.
+- `/v1/environments` ([environments.md §5](environments.md#5-creating-an-environment)).
+  Environment tokens, with the admin token chosen by `Lab-Environment`.
+  `default` owns today's state.
+- The scoping in [§6](environments.md#6-scoping-the-lab-api). A sim says it
+  supports environments in `/sim/info`. Until one does, an environment
+  token is refused at that sim, and the console says it is shared.
+- The console: the selector in `design-system.md` first, then in the
+  header, and the Environments page.
+
+**Done when** an admin creates `sbx`, gets its token and kit, and the
+console switches between `sbx` and `default`. The kit holds `default`'s
+values until the vendors split, and the page says so.
+
+### 5.2 Banking Circle
+
+- Customers pushed with `PUT /sim/customers/{env}`, and pushed again when
+  the sim's epoch changes.
+- Tokens that record their customer, safeguarding accounts per
+  environment, and payouts, subscriptions, notifications and reports that
+  are the owner's.
+- Calls on the `:8095` bridge say whose they are.
+- `fund-sga`, traps, activity and reset scoped by environment.
+- From here on, **the e2e suite runs in an environment of its own**,
+  created for the run and deleted after it.
+
+**Done when** two environments pay out at the same time, each sees only
+its own payouts and notifications, and their safeguarding balances stay
+apart.
+
+### 5.3 B4B
+
+- A key id and key pair per environment.
+- Companies, beneficiaries and payments are owned, and `external_ref` is
+  unique per customer.
+- Callbacks go to the environment's hosts.
+- `state.json` gains owners, and records without one are `default`'s.
+
+### 5.4 Worldline
+
+- SFTP users jailed at `{root}/{env}`.
+- Transactions, cycles, lump sums and enrolment owned by an environment.
+- One file per currency per environment, under its own
+  `settlement_identifier`.
+- MIDs that take the environment into account.
+
+**Done when** sbx can have an environment of its own on the cloud lab
+([environments.md §12](environments.md#12-what-this-means-for-sbx)).
+
+### 5.5 The rest
+
+- verification, verify and ACI per environment.
+- The business bank tagged by environment.
+- The stand-ins confined to `default`.
+
+### 5.6 Plugins become optional
+
+- Environment status comes from vendor traffic.
+- A plugin registers under its environment's token, only for its buttons,
+  files and logs.
+- `stand_ins` applies only to `default`.

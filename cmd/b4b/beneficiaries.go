@@ -17,6 +17,11 @@ import (
 // place this mock is knowingly more forgiving than the real API, which
 // answers 404 -- so an id that is wrong reads back as a plausible payee
 // here and as nothing at all in production. Register your payees.
+//
+// Every route acts in the caller's environment (envs.go): another
+// environment's payee is not found, so its id reads, and auto-vivifies, as
+// an unknown one; and an external_ref names a payee only within its own
+// environment.
 
 type registerBeneficiaryReq struct {
 	// CompanyID is the boarded company the payee belongs to. Optional, and
@@ -39,15 +44,16 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	env := envOf(r)
 	if req.CallbackURL != "" {
-		if err := b4b.ValidateCallbackURL(a.list, req.CallbackURL); err != nil {
+		if err := a.allowed(env, req.CallbackURL); err != nil {
 			httputilx.Error(w, 400, "callback_url rejected: "+err.Error())
 			return
 		}
 	}
 	companyID := req.CompanyID
 	if companyID != "" {
-		c, err := a.dir.Company(companyID)
+		c, err := a.dir.In(env).Company(companyID)
 		if err != nil {
 			writeStoreError(w, err)
 			return
@@ -56,8 +62,8 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 	}
 	var ben *b4b.Beneficiary
 	var err error
-	started := a.engine.Gate().Begin(func() {
-		ben, err = a.beneficiaries.Register(b4b.RegisterParams{
+	started := a.engine.GateFor(env).Begin(func() {
+		ben, err = a.beneficiaries.In(env).Register(b4b.RegisterParams{
 			CompanyID:            companyID,
 			ExternalRef:          req.ExternalRef,
 			AccountName:          req.AccountName,
@@ -75,7 +81,7 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 	// The screening result is reported through the callback, not only in
 	// this response: a client must be built to receive it asynchronously,
 	// because under continuous screening it can change again later.
-	a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
+	a.later(env, started, func(started uint64) { a.deliverSanctionsCallback(env, started, ben) })
 	httputilx.WriteJSON(w, 201, ben)
 }
 
@@ -85,7 +91,7 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 // sanctions callback is missed: read the current status rather than trying
 // to replay the event.
 func (a *app) getBeneficiary(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, a.beneficiaries.Get(r.PathValue("id")))
+	httputilx.WriteJSON(w, 200, a.beneficiaries.In(envOf(r)).Get(r.PathValue("id")))
 }
 
 // setSanctions moves a beneficiary's consolidated status. Lab-only: real
@@ -98,18 +104,19 @@ func (a *app) setSanctions(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	env := envOf(r)
 	var ben *b4b.Beneficiary
 	var changed bool
 	var err error
-	started := a.engine.Gate().Begin(func() {
-		ben, changed, err = a.beneficiaries.SetSanctions(r.PathValue("id"), req.SanctionsStatus)
+	started := a.engine.GateFor(env).Begin(func() {
+		ben, changed, err = a.beneficiaries.In(env).SetSanctions(r.PathValue("id"), req.SanctionsStatus)
 	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
+		a.later(env, started, func(started uint64) { a.deliverSanctionsCallback(env, started, ben) })
 	}
 	httputilx.WriteJSON(w, 200, ben)
 }
@@ -128,18 +135,19 @@ func (a *app) setBeneficiaryStatus(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	env := envOf(r)
 	var ben *b4b.Beneficiary
 	var changed bool
 	var err error
-	started := a.engine.Gate().Begin(func() {
-		ben, changed, err = a.beneficiaries.SetStatus(r.PathValue("id"), req.Status)
+	started := a.engine.GateFor(env).Begin(func() {
+		ben, changed, err = a.beneficiaries.In(env).SetStatus(r.PathValue("id"), req.Status)
 	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		a.later(started, func(started uint64) { a.deliverSanctionsCallback(started, ben) })
+		a.later(env, started, func(started uint64) { a.deliverSanctionsCallback(env, started, ben) })
 	}
 	httputilx.WriteJSON(w, 200, ben)
 }
@@ -164,9 +172,9 @@ type sanctionsCallback struct {
 // day, and a subscriber that answers 500 once should not lose a screening
 // result permanently. The current status is always readable from
 // GET /oversight/v1/beneficiaries/{id}, which is the documented recovery
-// path for a missed callback.
-func (a *app) deliverSanctionsCallback(started uint64, ben *b4b.Beneficiary) {
-	a.deliverCallback(started, "beneficiary "+ben.ID, a.callbackTarget(ben.CallbackURL), sanctionsCallback{
+// path for a missed callback. ben is one of env's.
+func (a *app) deliverSanctionsCallback(env string, started uint64, ben *b4b.Beneficiary) {
+	a.deliverCallback(env, started, "beneficiary "+ben.ID, a.callbackTarget(env, ben.CallbackURL), sanctionsCallback{
 		ID:              ben.ID,
 		ExternalRef:     ben.ExternalRef,
 		SanctionsStatus: ben.SanctionsStatus,
@@ -185,10 +193,11 @@ func (a *app) deliverSanctionsCallback(started uint64, ben *b4b.Beneficiary) {
 //
 // All return 422 with the reason, and nothing reaches Banking Circle.
 // Creditor fields are a consistency check, not a recipient override --
-// accepting a mismatch silently is how money reaches the wrong account.
-func (a *app) gateBeneficiary(w http.ResponseWriter, req createPaymentReq) *b4b.Beneficiary {
+// accepting a mismatch silently is how money reaches the wrong account. The
+// beneficiary is one of env's, the paying environment's.
+func (a *app) gateBeneficiary(w http.ResponseWriter, env string, req createPaymentReq) *b4b.Beneficiary {
 	id := req.BeneficiaryID
-	ben := a.beneficiaries.Get(id)
+	ben := a.beneficiaries.In(env).Get(id)
 	if ben.SanctionsStatus != b4b.SanctionsPass {
 		httputilx.Error(w, 422, "beneficiary "+id+" has sanctions_status "+ben.SanctionsStatus+"; only \"pass\" permits payments")
 		return nil

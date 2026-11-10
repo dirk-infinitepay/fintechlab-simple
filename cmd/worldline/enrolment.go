@@ -29,11 +29,16 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
 
+// enrolmentDesk answers one environment's batches (environments.go): those
+// its platform uploads into its own jail, root. A batch is boarded with
+// that environment's MIDs.
 type enrolmentDesk struct {
+	env  string
 	root string
 	keys *wlsftp.PGPKeys
 	// delay is how long the acquirer appears to take. Zero answers on the
@@ -66,21 +71,24 @@ func newEnrolmentDesk(root string, keys *wlsftp.PGPKeys, delay, sweep time.Durat
 	}
 }
 
-func (d *enrolmentDesk) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /sim/enrolment", d.list)
-	mux.HandleFunc("POST /sim/enrolment/process", d.processNow)
-	mux.HandleFunc("POST /sim/enrolment/reject", d.armRejection)
+func (s *sim) enrolmentRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /sim/enrolment", s.listEnrolment)
+	mux.HandleFunc("POST /sim/enrolment/process", s.processEnrolment)
+	mux.HandleFunc("POST /sim/enrolment/reject", s.armRejection)
 }
 
-// watch sweeps the inbox until the process ends.
-func (d *enrolmentDesk) watch() {
+// watchEnrolment sweeps every environment's inbox, the default's first,
+// until the process ends.
+func (s *sim) watchEnrolment() {
 	for {
-		if n, err := d.process(false); err != nil {
-			log.Printf("worldline: enrolment sweep: %v", err)
-		} else if n > 0 {
-			log.Printf("worldline: answered %d enrolment batch(es)", n)
+		for _, e := range s.in(tenant.All) {
+			if n, err := e.desk.process(false); err != nil {
+				log.Printf("worldline: enrolment sweep (%s): %v", e.env, err)
+			} else if n > 0 {
+				log.Printf("worldline: answered %d enrolment batch(es) for %s", n, e.env)
+			}
 		}
-		time.Sleep(d.sweep)
+		time.Sleep(s.desk.sweep)
 	}
 }
 
@@ -186,7 +194,7 @@ func (d *enrolmentDesk) answer(name, path string, started uint64) error {
 	d.mu.Unlock()
 
 	receipt := worldline.BuildReceipt(batch, worldline.ReceiptOptions{
-		FileID: fileID, SequenceDate: sequenceDate, RejectCodes: rejects,
+		FileID: fileID, SequenceDate: sequenceDate, RejectCodes: rejects, Env: owner(d.env),
 	})
 	body, err := worldline.MarshalReceipt(receipt)
 	if err != nil {
@@ -222,8 +230,8 @@ func (d *enrolmentDesk) answer(name, path string, started uint64) error {
 	if werr != nil {
 		return werr
 	}
-	log.Printf("worldline: %s -> %s (%d approved, %d rejected)",
-		name, outName, receipt.Summary.ApprovedCount, receipt.Summary.RejectedCount)
+	log.Printf("worldline: %s -> %s (env %s, %d approved, %d rejected)",
+		name, outName, tenant.Normalize(d.env), receipt.Summary.ApprovedCount, receipt.Summary.RejectedCount)
 	return nil
 }
 
@@ -291,12 +299,14 @@ func looksLikeXML(b []byte) bool {
 }
 
 // --- the operator seam --------------------------------------------------
+//
+// Each acts in the environment the call names (environments.go).
 
-func (d *enrolmentDesk) list(w http.ResponseWriter, r *http.Request) {
+// state is the desk as GET /sim/enrolment answers it.
+func (d *enrolmentDesk) state() (map[string]any, error) {
 	names, err := d.pending()
 	if err != nil {
-		httputilx.Error(w, 500, err.Error())
-		return
+		return nil, err
 	}
 	d.mu.Lock()
 	answered := make([]string, 0, len(d.seen))
@@ -309,21 +319,57 @@ func (d *enrolmentDesk) list(w http.ResponseWriter, r *http.Request) {
 	}
 	d.mu.Unlock()
 	sort.Strings(answered)
-	httputilx.WriteJSON(w, 200, map[string]any{
+	return map[string]any{
 		"waiting":  names,
 		"answered": answered,
 		"rejects":  rejects,
 		"delay":    d.delay.String(),
-	})
+	}, nil
 }
 
-func (d *enrolmentDesk) processNow(w http.ResponseWriter, r *http.Request) {
-	n, err := d.process(true)
-	if err != nil {
-		httputilx.Error(w, 500, err.Error())
+// listEnrolment is the named environment's desk; with "*", every
+// environment's, as {"environments": [{"env", …}]}.
+func (s *sim) listEnrolment(w http.ResponseWriter, r *http.Request) {
+	scope, envs, ok := s.scope(w, r)
+	if !ok {
 		return
 	}
-	httputilx.WriteJSON(w, 200, map[string]any{"answered": n})
+	desks := make([]map[string]any, 0, len(envs))
+	for _, e := range envs {
+		st, err := e.desk.state()
+		if err != nil {
+			httputilx.Error(w, 500, err.Error())
+			return
+		}
+		desks = append(desks, st)
+		if scope == tenant.All {
+			st["env"] = e.env
+		}
+	}
+	if scope != tenant.All {
+		httputilx.WriteJSON(w, 200, desks[0])
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"environments": desks})
+}
+
+// processEnrolment answers the named environment's waiting batches now, or
+// with "*" every environment's.
+func (s *sim) processEnrolment(w http.ResponseWriter, r *http.Request) {
+	_, envs, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	total := 0
+	for _, e := range envs {
+		n, err := e.desk.process(true)
+		if err != nil {
+			httputilx.Error(w, 500, err.Error())
+			return
+		}
+		total += n
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"answered": total})
 }
 
 type rejectReq struct {
@@ -331,12 +377,18 @@ type rejectReq struct {
 	ReasonCode  string `json:"reason_code"`
 }
 
-// armRejection tells the desk to refuse one submerchant on the next batch.
+// armRejection tells the named environment's desk to refuse one
+// submerchant on the next batch; "*" is refused.
 //
 // Armed beforehand rather than applied afterwards, because that is the only
 // order in which it is true: the acquirer decides when it reads the file,
 // and a receipt already written cannot be changed.
-func (d *enrolmentDesk) armRejection(w http.ResponseWriter, r *http.Request) {
+func (s *sim) armRejection(w http.ResponseWriter, r *http.Request) {
+	e, ok := s.one(w, r)
+	if !ok {
+		return
+	}
+	d := e.desk
 	var req rejectReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httputilx.Error(w, 400, err.Error())

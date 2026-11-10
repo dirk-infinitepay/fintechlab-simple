@@ -26,6 +26,18 @@
 // Every outcome is flippable at POST /sim/outcome on the control port, so
 // the unhappy paths are reachable when somebody wants them. Defaulting to
 // "pass" is a convenience, not a limitation.
+//
+// # Environments
+//
+// Each environment the lab created is a customer here (internal/tenant),
+// known by its verification login: a username and password, where the
+// username is the Creditsafe username and the LexisNexis client id, and the
+// password is the Creditsafe password, the LexisNexis client secret, the
+// KYC6 and iban.com API key and the LexisNexis IVI key. A call made with a
+// customer's login is that environment's, and so is every token it was
+// issued; any other login is the default environment's, as every login was
+// before. Each environment has outcomes of its own, so one platform's flip
+// never moves another's answers.
 package main
 
 import (
@@ -43,6 +55,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // outcomes holds the answer each vendor currently gives. One lock, because
@@ -126,20 +139,112 @@ func (o *outcomes) snapshot() map[string]string {
 }
 
 type app struct {
-	out *outcomes
-	// tokens are the bearer tokens this service has issued. Each vendor
+	// customers are the environments besides the default, each known by
+	// its verification login.
+	customers *tenant.Customers
+
+	mu   sync.Mutex
+	envs map[string]*envState
+
+	// tokens are the bearer tokens this service has issued, each to the
+	// environment whose login asked for it (an issued). Each vendor
 	// authenticates differently and they are checked, because a client
 	// that forgets its token should find out here rather than in
 	// production.
 	tokens sync.Map
+}
 
+// envState is one environment's part of the service: the answers its
+// checks give, and its Creditsafe portfolio ids.
+type envState struct {
+	out          *outcomes
 	portfolioIDs atomic.Int64
+}
+
+// issued is a bearer token's record: whose it is, and when it was issued.
+type issued struct {
+	env string
+	at  time.Time
+}
+
+func newApp() *app {
+	a := &app{customers: tenant.NewCustomers(), envs: map[string]*envState{}}
+	a.customers.OnDelete = a.forget
+	return a
+}
+
+// in is env's state, made on first use: every check at its default.
+func (a *app) in(env string) *envState {
+	env = tenant.Normalize(env)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.envs[env]
+	if s == nil {
+		s = &envState{out: newOutcomes()}
+		a.envs[env] = s
+	}
+	return s
+}
+
+// outcomes is what env's checks answer.
+func (a *app) outcomes(env string) *outcomes { return a.in(env).out }
+
+// answer is what check answers the caller: the environment its login
+// named.
+func (a *app) answer(r *http.Request, check string) string {
+	return a.outcomes(tenant.Of(r.Context())).get(check)
+}
+
+// statesIn is every environment's state in scope that exists yet: one
+// that never had any is at its defaults, with nothing to clear.
+func (a *app) statesIn(scope string) []*envState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []*envState
+	for env, s := range a.envs {
+		if tenant.InScope(scope, env) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// dropTokens forgets every token issued in scope and says how many.
+func (a *app) dropTokens(scope string) int {
+	n := 0
+	a.tokens.Range(func(k, v any) bool {
+		if tenant.InScope(scope, v.(issued).env) {
+			a.tokens.Delete(k)
+			n++
+		}
+		return true
+	})
+	return n
+}
+
+// forget is a customer's removal: its outcomes and its tokens go with it.
+func (a *app) forget(env string) error {
+	a.dropTokens(env)
+	a.mu.Lock()
+	delete(a.envs, env)
+	a.mu.Unlock()
+	return nil
+}
+
+// known reports whether env is one this service serves: the default, every
+// environment ("*"), or a customer's.
+func (a *app) known(env string) bool {
+	if env == tenant.Default || env == tenant.All {
+		return true
+	}
+	_, ok := a.customers.Get(env)
+	return ok
 }
 
 func main() {
 	logring.Install()
 	addr := env("LISTEN", ":8089")
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	mux, ctl, err := a.routes(addr)
 	if err != nil {
 		log.Fatalf("verification: %v", err)
@@ -160,6 +265,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
 		Reset:     a.reset,
+		Customers: a.customers,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, nil, err
@@ -205,32 +311,52 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	return mux, ctl, nil
 }
 
-// reset is POST /sim/reset. Every scope puts the outcomes back to their
-// defaults: a flipped check is a run's trap. flow keeps what a platform
-// obtained once and holds on to — the bearer tokens it was issued, the
-// monitoring portfolios it created — because taking them away mid-session
-// fails its next call with a 401 that no run caused. all is first start:
-// no token is valid and portfolio ids count from 1 again.
+// reset is POST /sim/reset, of the environment it names, or of every one
+// for "*". Every scope puts the outcomes back to their defaults: a flipped
+// check is a run's trap. flow keeps what a platform obtained once and holds
+// on to — the bearer tokens it was issued, the monitoring portfolios it
+// created — because taking them away mid-session fails its next call with a
+// 401 that no run caused. all is first start: no token is valid and
+// portfolio ids count from 1 again.
 func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
-	cleared := map[string]int{"outcomes": a.out.reset()}
+	scope := tenant.Normalize(req.Env)
+	states := a.statesIn(scope)
+	flipped := 0
+	for _, s := range states {
+		flipped += s.out.reset()
+	}
+	cleared := map[string]int{"outcomes": flipped}
 	if req.Scope != simctl.ScopeAll {
 		return simctl.ResetResult{Cleared: cleared, Kept: []string{"tokens", "portfolios"}}, nil
 	}
-	tokens := 0
-	a.tokens.Range(func(k, _ any) bool {
-		a.tokens.Delete(k)
-		tokens++
-		return true
-	})
-	cleared["tokens"] = tokens
-	cleared["portfolios"] = int(a.portfolioIDs.Swap(0))
+	cleared["tokens"] = a.dropTokens(scope)
+	portfolios := 0
+	for _, s := range states {
+		portfolios += int(s.portfolioIDs.Swap(0))
+	}
+	cleared["portfolios"] = portfolios
 	return simctl.ResetResult{Cleared: cleared}, nil
 }
 
 // --- the lab seam -------------------------------------------------------
 
+// readOutcomes is GET /sim/outcome: what the named environment's checks
+// answer, or, for "*", every environment's.
 func (a *app) readOutcomes(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"outcomes": a.out.snapshot()})
+	env := tenant.FromRequest(r)
+	if !a.known(env) {
+		httputilx.Error(w, 404, "no environment "+env+" at verification")
+		return
+	}
+	if env != tenant.All {
+		httputilx.WriteJSON(w, 200, map[string]any{"env": env, "outcomes": a.outcomes(env).snapshot()})
+		return
+	}
+	all := map[string]map[string]string{}
+	for _, e := range a.customers.Envs() {
+		all[e] = a.outcomes(e).snapshot()
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "environments": all})
 }
 
 type outcomeReq struct {
@@ -238,18 +364,30 @@ type outcomeReq struct {
 	Outcome string `json:"outcome"`
 }
 
+// setOutcome is POST /sim/outcome: flips one check in the named
+// environment, for that environment's later calls only.
 func (a *app) setOutcome(w http.ResponseWriter, r *http.Request) {
+	env := tenant.FromRequest(r)
+	switch {
+	case env == tenant.All:
+		httputilx.Error(w, 400, "an outcome is set in one environment, not in all of them")
+		return
+	case !a.known(env):
+		httputilx.Error(w, 404, "no environment "+env+" at verification")
+		return
+	}
 	var req outcomeReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	if err := a.out.set(req.Check, req.Outcome); err != nil {
+	out := a.outcomes(env)
+	if err := out.set(req.Check, req.Outcome); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	log.Printf("verification: %s now answers %q", req.Check, req.Outcome)
-	httputilx.WriteJSON(w, 200, map[string]any{"outcomes": a.out.snapshot()})
+	log.Printf("verification: %s now answers %q in environment %s", req.Check, req.Outcome, env)
+	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "outcomes": out.snapshot()})
 }
 
 // --- auth ---------------------------------------------------------------
@@ -259,7 +397,8 @@ func (a *app) setOutcome(w http.ResponseWriter, r *http.Request) {
 // It checks the token rather than waving it through: a client that never
 // calls authenticate, or caches a token past its life, should learn that
 // here. The whole value of a contract-shaped stub is that the parts which
-// are real are actually real.
+// are real are actually real. The call is the environment's the token was
+// issued to.
 func (a *app) bearer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -267,30 +406,67 @@ func (a *app) bearer(next http.HandlerFunc) http.HandlerFunc {
 			httputilx.Error(w, 401, "bearer token required")
 			return
 		}
-		if _, ok := a.tokens.Load(tok); !ok {
+		v, ok := a.tokens.Load(tok)
+		if !ok {
 			httputilx.Error(w, 401, "unknown or expired token")
 			return
 		}
-		next(w, r)
+		next(w, a.as(r, v.(issued).env))
 	}
 }
 
 // apiKey guards the vendors that authenticate with a header key. Any
 // non-empty key is accepted: this lab holds no vendor credentials, and
 // checking the *shape* is what catches a client that forgot to send one.
+// A customer's key makes the call its environment's.
 func (a *app) apiKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("x-api-key") == "" {
+		key := r.Header.Get("x-api-key")
+		if key == "" {
 			httputilx.Error(w, 401, "x-api-key header required")
 			return
 		}
-		next(w, r)
+		next(w, a.as(r, a.byKey(key)))
 	}
 }
 
-func (a *app) issue(prefix string) string {
+// as is r, the call of env: the environment goes into its context, for the
+// handler's outcomes, and env is recorded as seen.
+func (a *app) as(r *http.Request, env string) *http.Request {
+	a.customers.Seen(env)
+	return r.WithContext(tenant.With(r.Context(), env))
+}
+
+// byKey is the environment whose key key is (its login's password): the
+// KYC6, iban.com and LexisNexis IVI key. Any other key is the default's.
+func (a *app) byKey(key string) string {
+	c, ok := a.customers.Find(func(c tenant.Customer) bool {
+		return c.Verification != nil && c.Verification.Password != "" && c.Verification.Password == key
+	})
+	if !ok {
+		return tenant.Default
+	}
+	return c.Env
+}
+
+// byLogin is the environment a username and password log in as: the
+// Creditsafe username and password, or the LexisNexis client id and
+// secret. A username no customer has is the default's, whatever the
+// password, as every login was before; a customer's username with another
+// password is refused, as the real vendor would refuse it.
+func (a *app) byLogin(username, password string) (string, bool) {
+	c, ok := a.customers.Find(func(c tenant.Customer) bool {
+		return c.Verification != nil && c.Verification.Username != "" && c.Verification.Username == username
+	})
+	if !ok {
+		return tenant.Default, true
+	}
+	return c.Env, c.Verification.Password == password
+}
+
+func (a *app) issue(prefix, env string) string {
 	tok := fmt.Sprintf("%s_%d", prefix, time.Now().UnixNano())
-	a.tokens.Store(tok, time.Now())
+	a.tokens.Store(tok, issued{env: env, at: time.Now()})
 	return tok
 }
 
@@ -303,7 +479,13 @@ func (a *app) creditsafeAuthenticate(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "username and password required")
 		return
 	}
-	httputilx.WriteJSON(w, 200, map[string]any{"token": a.issue("cs")})
+	env, ok := a.byLogin(str(body["username"]), str(body["password"]))
+	if !ok {
+		httputilx.Error(w, 401, "invalid username or password")
+		return
+	}
+	a.customers.Seen(env)
+	httputilx.WriteJSON(w, 200, map[string]any{"token": a.issue("cs", env)})
 }
 
 // creditsafeBankVerification answers the UK bank-account check.
@@ -316,7 +498,7 @@ func (a *app) creditsafeBankVerification(w http.ResponseWriter, r *http.Request)
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	result, nameMatch := true, "MATCH"
-	switch a.out.get(checkBankAccount) {
+	switch a.answer(r, checkBankAccount) {
 	case "mismatch":
 		nameMatch = "NOMATCH"
 	case "invalid":
@@ -349,7 +531,7 @@ func (a *app) creditsafeCompanySearch(w http.ResponseWriter, r *http.Request) {
 func (a *app) creditsafeCompany(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	status := "Active"
-	if a.out.get(checkCompany) == "dissolved" {
+	if a.answer(r, checkCompany) == "dissolved" {
 		status = "Dissolved"
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{
@@ -374,7 +556,7 @@ func (a *app) creditsafeCreatePortfolio(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	isDefault, _ := body["isDefault"].(bool)
 	httputilx.WriteJSON(w, 200, map[string]any{
-		"portfolioId": a.portfolioIDs.Add(1),
+		"portfolioId": a.in(tenant.Of(r.Context())).portfolioIDs.Add(1),
 		"name":        str(body["name"]),
 		"isDefault":   isDefault,
 	})
@@ -410,10 +592,12 @@ func (a *app) creditsafeEvents(w http.ResponseWriter, r *http.Request) {
 // unchanged to its own caller, so the shape here is the shape the platform
 // sees.
 func (a *app) ibanVerify(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("x-api-key") == "" {
+	key := r.Header.Get("x-api-key")
+	if key == "" {
 		httputilx.Error(w, 401, "x-api-key header required")
 		return
 	}
+	r = a.as(r, a.byKey(key))
 	var body struct {
 		IBAN string `json:"IBAN"`
 		Name string `json:"name"`
@@ -425,7 +609,7 @@ func (a *app) ibanVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	valid, nameMatch := true, "yes"
-	switch a.out.get(checkBankAccount) {
+	switch a.answer(r, checkBankAccount) {
 	case "mismatch":
 		nameMatch = "no"
 	case "invalid":
@@ -454,7 +638,7 @@ func (a *app) kyc6Screen(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	matches := []map[string]any{}
-	if a.out.get(checkScreening) == "hit" {
+	if a.answer(r, checkScreening) == "hit" {
 		matches = append(matches, map[string]any{
 			"resourceId": "sim-match-1",
 			"name":       str(body["name"]),
@@ -504,8 +688,14 @@ func (a *app) lexisToken(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "client_id and client_secret required")
 		return
 	}
+	env, ok := a.byLogin(str(body["client_id"]), str(body["client_secret"]))
+	if !ok {
+		httputilx.Error(w, 401, "invalid client_id or client_secret")
+		return
+	}
+	a.customers.Seen(env)
 	httputilx.WriteJSON(w, 200, map[string]any{
-		"access_token": a.issue("ln"),
+		"access_token": a.issue("ln", env),
 		"expires_in":   3600,
 		"token_type":   "Bearer",
 	})
@@ -523,7 +713,7 @@ func (a *app) lexisIDU(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
 	result, score := "PASS", 850
-	switch a.out.get(checkIdentity) {
+	switch a.answer(r, checkIdentity) {
 	case "refer":
 		result, score = "REFER", 500
 	case "fail":
@@ -547,9 +737,10 @@ func (a *app) lexisIVI(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "org_id, api_key and policy required")
 		return
 	}
+	r = a.as(r, a.byKey(str(body["api_key"])))
 
 	status, score := "PASS", 850
-	switch a.out.get(checkIdentity) {
+	switch a.answer(r, checkIdentity) {
 	case "refer":
 		status, score = "REFER", 500
 	case "fail":

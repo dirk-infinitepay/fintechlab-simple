@@ -36,6 +36,25 @@ clock service still answers `GET /clock` on `:8096`: a runner that knows
 only those addresses keeps working, until phase 4 of
 [the lab API plan](lab-api/plan.md) retires the old paths.
 
+## Environments
+
+A lab can serve several platforms, each in an **environment** of its own
+([lab-api/environments.md](lab-api/environments.md)). For a plugin, three
+things follow:
+
+- **A card is its environment's.** Register with that environment's token
+  (its kit's `FINTECH_SIM_LAB_TOKEN`), and the card shows when the console
+  shows that environment. The admin token registers into the environment it
+  names (`Lab-Environment`), or the default. A plugin id is one platform's
+  across the lab: registering one another environment holds is refused.
+- **A card is optional.** An environment is green once a vendor has seen
+  its platform log in, with no heartbeat. Register only for buttons,
+  settlement files or logs. A lapsed card greys out its buttons, not its
+  environment.
+- **`stand_ins` is the default environment's.** The stand-ins play the
+  default's platform, so only a default-environment card switches them. An
+  environment of its own never meets them.
+
 ## Register
 
 ```http

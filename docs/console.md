@@ -639,6 +639,24 @@ before the console existed to notice.
 Every one of those steps is a plain HTTP call you can make yourself; the
 console just saves you finding it.
 
+## Environments
+
+A lab can serve several platforms, each in an environment of its own
+([lab-api/environments.md](lab-api/environments.md)). The view lists them,
+the default first, each with its state: green once a vendor has seen its
+platform log in, grey until then. Open one for its token, its config, the
+vendors that have seen it, and its kit, which is the `.env` its platform
+runs with. *+ Create environment* asks for a name and the optional config
+(settlement file name, callback hosts, ACI target, clock). *Rotate token*
+and *Delete* ask first. Deleting makes every vendor forget the
+environment's records.
+
+With more than the default, the topbar has a **selector**: every view then
+shows that environment's merchants, payouts, files, traps and activity,
+and every download is its own. A vendor that does not keep environments
+apart yet is named in a note and left out. The choice is remembered per
+browser ([design-system.md](design-system.md#environment-selector--whose-lab-you-are-looking-at)).
+
 ## Configuration
 
 Four things, kept strictly apart by whether they are **live** or merely

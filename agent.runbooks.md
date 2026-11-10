@@ -133,6 +133,32 @@ reads the same directory as `FINTECH_SIM_LAB`, whose default is this repo's
 (`make pod-up REGENERATE_KEYS=true` for the pod). Every copy the platform
 holds stops working: restart the runner, and download the `.env` again.
 
+### Environments: one lab, several platforms
+
+A lab that serves more than one platform keeps each in an environment of
+its own ([docs/lab-api/environments.md](docs/lab-api/environments.md)). Its
+token reaches only its own data, and every vendor knows it by its own
+login. With no environment named, every call is the default
+environment's, so everything in this runbook works as written.
+
+```sh
+A="Authorization: Bearer ${LAB_API_TOKEN:-}"            # the admin token (none on an open lab)
+curl -s -H "$A" localhost:8097/v1/environments          # every environment, last seen per vendor
+curl -s -H "$A" localhost:8097/v1/environments -d '{"name": "e2e-1"}'   # → its token, once
+curl -OJ -H "$A" "localhost:8097/v1/connect/env?env=e2e-1"              # its kit: fintechlab-e2e-1.env
+curl -s -H "$A" -H 'Lab-Environment: e2e-1' localhost:8097/v1/banking-circle/payouts   # read as e2e-1
+curl -s -H "$A" -X DELETE localhost:8097/v1/environments/e2e-1          # gone, at every vendor
+```
+
+- **An environment's own token** (`lenv_…`) is all its platform needs: the
+  lab knows the environment from it. Naming another environment is a 403,
+  and so is a lab-wide route (`/v1/logs`, the stand-ins, the clock moves).
+- **A reset is one environment's.** `POST /v1/lab/reset` clears the
+  environment it is called in, and `Lab-Environment: *` clears every
+  environment.
+- **The stand-ins are the default's.** An environment of its own never has
+  to switch them off.
+
 ## Running it as one pod instead
 
 `make pod-images && make pod-up` runs the same lab as one podman pod from

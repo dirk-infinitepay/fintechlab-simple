@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Funding the safeguarding accounts.
@@ -28,8 +30,8 @@ import (
 // the platform, one per settlement currency — the ids the connect kit hands
 // out as BC_SAFEGUARDING_ACCOUNT_ID_<CCY>.
 var SafeguardingAccounts = []struct{ Currency, Account string }{
-	{"EUR", kitSGAEUR},
-	{"GBP", kitSGAGBP},
+	{"EUR", tenant.DefaultSafeguardingEUR},
+	{"GBP", tenant.DefaultSafeguardingGBP},
 }
 
 // FundResult is what happened to one currency's account.
@@ -46,10 +48,15 @@ type FundResult struct {
 // empty, through Banking Circle's control port at controlURL: the same
 // money landing as Worldline's wire on the bridge. An account already
 // holding money is left alone, so pressing twice is not twice the money.
-func FundSafeguarding(ctx context.Context, client *http.Client, controlURL, amount string) []FundResult {
+//
+// The accounts are env's (internal/tenant): the default's are the two
+// fixed ones, every other environment's are derived from its id. The call
+// reaches Banking Circle with ctx, which carries env to its control port.
+func FundSafeguarding(ctx context.Context, client *http.Client, controlURL, amount, env string) []FundResult {
 	base := strings.TrimRight(controlURL, "/")
-	out := make([]FundResult, 0, len(SafeguardingAccounts))
-	for _, sga := range SafeguardingAccounts {
+	out := make([]FundResult, 0, len(tenant.Currencies))
+	for _, cur := range tenant.Currencies {
+		sga := struct{ Currency, Account string }{cur, tenant.SafeguardingAccount(env, cur)}
 		res := FundResult{Currency: sga.Currency, Account: sga.Account}
 		before, err := intraDayBalance(ctx, client, base, sga.Account)
 		switch {

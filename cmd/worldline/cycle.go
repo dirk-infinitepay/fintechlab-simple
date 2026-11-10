@@ -7,11 +7,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -24,9 +26,13 @@ import (
 // that knows what was acquired, so Worldline is the one that cuts the file
 // and moves the money; the platform's only way to learn either is to
 // download the file and watch its account.
+//
+// There is one per environment (environments.go): env names whose it is,
+// and root is that environment's SFTP jail.
 type settlementApp struct {
+	env   string
 	store *worldline.Store
-	cfg   worldline.CycleConfig
+	cfg   worldline.CycleConfig // its Identifier under mu: a customer put again changes it
 	root  string
 	keys  *wlsftp.PGPKeys
 
@@ -37,7 +43,7 @@ type settlementApp struct {
 	// directly: it is the arrival of the money that is being simulated,
 	// not the mechanism that delivers it.
 	sgaURL     string
-	sgaAccount map[string]string // currency -> Banking Circle account id
+	sgaAccount map[string]string // currency -> Banking Circle account id, env's own
 	httpClient *http.Client
 
 	// guard drops a run that a reset lands in the middle of (reset.go).
@@ -50,6 +56,9 @@ type settlementApp struct {
 // CycleRun records one execution of the settlement cycle, so an operator
 // (or the e2e suite) can see what was cut without reading the SFTP root.
 type CycleRun struct {
+	// Env is the environment the run settled (internal/tenant): empty for
+	// the default's.
+	Env       string              `json:"env,omitempty"`
 	At        time.Time           `json:"at"`
 	Slot      string              `json:"slot"`
 	FromDate  string              `json:"from_date"`
@@ -89,9 +98,9 @@ func (s *settlementApp) run(slot string, at time.Time, fromDate, toDate string) 
 	// A reset that lands while this runs drops what is left of it: no file
 	// is published, no wire sent and no run recorded after the reset.
 	started := s.guard.start()
-	run := CycleRun{At: at.UTC(), Slot: slot, FromDate: fromDate, ToDate: toDate}
+	run := CycleRun{Env: owner(s.env), At: at.UTC(), Slot: slot, FromDate: fromDate, ToDate: toDate}
 
-	files, err := worldline.Cut(s.store, s.cfg, slot, fromDate, toDate, at)
+	files, err := worldline.Cut(s.store, s.config(), slot, fromDate, toDate, at)
 	if err != nil {
 		run.Errors = append(run.Errors, err.Error())
 		if !s.guard.apply(started, func() { s.record(run) }) {
@@ -132,23 +141,40 @@ func (s *settlementApp) run(slot string, at time.Time, fromDate, toDate string) 
 	if !s.guard.apply(started, func() { s.record(run) }) {
 		return dropped(run)
 	}
-	log.Printf("worldline: settlement cycle slot=%s coverage=%s..%s files=%d published=%d lump_sums=%d errors=%d",
-		slot, fromDate, toDate, len(files), len(run.Published), len(run.LumpSums), len(run.Errors))
+	log.Printf("worldline: settlement cycle env=%s slot=%s coverage=%s..%s files=%d published=%d lump_sums=%d errors=%d",
+		tenant.Normalize(s.env), slot, fromDate, toDate, len(files), len(run.Published), len(run.LumpSums), len(run.Errors))
 	return run
+}
+
+// config is the cycle's configuration as it stands.
+func (s *settlementApp) config() worldline.CycleConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
+// setIdentifier renames the files later runs cut. Those already published
+// keep their names, and the run history still knows them for a reset.
+func (s *settlementApp) setIdentifier(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg.Identifier = id
 }
 
 // dropped closes a run a reset landed in: what it did before the reset is
 // on it, the rest never happens, and it is not kept in the history the
 // reset just cleared.
 func dropped(run CycleRun) CycleRun {
-	log.Printf("worldline: settlement cycle slot=%s coverage=%s..%s dropped by a reset after publishing %d file(s) and sending %d lump sum(s)",
-		run.Slot, run.FromDate, run.ToDate, len(run.Published), len(run.LumpSums))
+	log.Printf("worldline: settlement cycle env=%s slot=%s coverage=%s..%s dropped by a reset after publishing %d file(s) and sending %d lump sum(s)",
+		tenant.Normalize(run.Env), run.Slot, run.FromDate, run.ToDate, len(run.Published), len(run.LumpSums))
 	run.Errors = append(run.Errors, "worldline was reset while this run was in flight; the rest of it was dropped")
 	return run
 }
 
 // wireLumpSum credits the platform's safeguarding account with the run's
-// settlement total. Failure is recorded on the run and never fatal: a
+// settlement total: the environment's own, which the bridge is told in a
+// Lab-Environment header (sim-control.md §8, rule 7; none for the
+// default, as before environments). Failure is recorded on the run and never fatal: a
 // simulator whose file delivery stops because a downstream account service
 // is down is less useful than one that delivers the file and tells you the
 // money did not move.
@@ -178,7 +204,16 @@ func (s *settlementApp) wireLumpSum(currency string, amountCents int64, valueDat
 		ls.Status = "error: " + err.Error()
 		return ls
 	}
-	resp, err := s.httpClient.Post(s.sgaURL+"/internal/incoming-payments", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", s.sgaURL+"/internal/incoming-payments", bytes.NewReader(body))
+	if err != nil {
+		ls.Status = "error: " + err.Error()
+		return ls
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if env := owner(s.env); env != "" {
+		req.Header.Set(tenant.Header, env)
+	}
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		ls.Status = "error: " + err.Error()
 		log.Printf("worldline: lump sum %s %s to %s failed: %v", currency, ls.Reference, ls.AccountID, err)
@@ -250,22 +285,28 @@ func (s *settlementApp) history() []CycleRun {
 // The morning slot's fire time is jittered across its delivery window so a
 // consumer cannot come to depend on an exact second -- real files do not
 // land at 08:00:00.
-func (s *settlementApp) schedule() {
+//
+// Each slot runs for every environment in turn, the default first: the
+// schedule is the lab's, the files and the money each environment's own.
+func (w *sim) schedule() {
 	for {
-		at, slot := s.cfg.NextFire(labclock.Now().In(time.Local))
+		s := w.acq.config()
+		at, slot := s.NextFire(labclock.Now().In(time.Local))
 		log.Printf("worldline: next settlement slot=%s at=%s (in %s)", slot, at.Format(time.RFC3339), at.Sub(labclock.Now()).Truncate(time.Second))
 		// Wait may re-plan to an earlier slot if the clock is moved back, so
 		// remember which slot each planned time belongs to.
 		slots := map[int64]string{at.UnixNano(): slot}
 		fired := labclock.Wait(func(now time.Time) time.Time {
-			next, name := s.cfg.NextFire(now.In(time.Local))
+			next, name := s.NextFire(now.In(time.Local))
 			slots[next.UnixNano()] = name
 			return next
 		})
 		slot = slots[fired.UnixNano()]
 		now := labclock.Now().In(time.Local)
-		fromDate, toDate := s.cfg.CoverageFor(now)
-		s.run(slot, now, fromDate, toDate)
+		fromDate, toDate := s.CoverageFor(now)
+		for _, e := range w.in(tenant.All) {
+			e.acq.run(slot, now, fromDate, toDate)
+		}
 	}
 }
 
@@ -277,7 +318,11 @@ func (s *settlementApp) schedule() {
 // the vendor's own (main.go, surfaces), so the real-shaped surface stays
 // recognizable as the part you can point at a real host.
 
-func (s *settlementApp) routes(mux *http.ServeMux) {
+//
+// Each hook acts in the environment the call names (?env=, or the
+// Lab-Environment header; the default's when neither): environments.go.
+
+func (s *sim) cycleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sim/transactions", s.addTransactions)
 	mux.HandleFunc("GET /sim/transactions", s.listTransactions)
 	mux.HandleFunc("POST /sim/settlement-cycle/run", s.runCycle)
@@ -285,8 +330,13 @@ func (s *settlementApp) routes(mux *http.ServeMux) {
 }
 
 // addTransactions accepts either one transaction or an array of them, so
-// seeding a scenario is one call rather than a loop.
-func (s *settlementApp) addTransactions(w http.ResponseWriter, r *http.Request) {
+// seeding a scenario is one call rather than a loop. They are the named
+// environment's: "*" is refused.
+func (s *sim) addTransactions(w http.ResponseWriter, r *http.Request) {
+	e, ok := s.one(w, r)
+	if !ok {
+		return
+	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxUploadBytes))
 	if err != nil {
 		httputilx.Error(w, 400, "read body: "+err.Error())
@@ -303,7 +353,8 @@ func (s *settlementApp) addTransactions(w http.ResponseWriter, r *http.Request) 
 	}
 	stored := make([]worldline.Transaction, 0, len(batch))
 	for _, t := range batch {
-		saved, err := s.store.Add(t)
+		t.Env = owner(e.env)
+		saved, err := e.acq.store.Add(t)
 		if err != nil {
 			httputilx.Error(w, 400, err.Error())
 			return
@@ -313,9 +364,18 @@ func (s *settlementApp) addTransactions(w http.ResponseWriter, r *http.Request) 
 	httputilx.WriteJSON(w, 201, map[string]any{"accepted": len(stored), "transactions": stored})
 }
 
-func (s *settlementApp) listTransactions(w http.ResponseWriter, r *http.Request) {
-	all := s.store.All()
-	if mid := r.URL.Query().Get("mid"); mid != "" {
+func (s *sim) listTransactions(w http.ResponseWriter, r *http.Request) {
+	_, envs, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	mid := r.URL.Query().Get("mid")
+	var all []worldline.Transaction
+	for _, e := range envs {
+		if mid == "" {
+			all = append(all, e.acq.store.All()...)
+			continue
+		}
 		from := r.URL.Query().Get("from")
 		to := r.URL.Query().Get("to")
 		if from == "" {
@@ -324,7 +384,10 @@ func (s *settlementApp) listTransactions(w http.ResponseWriter, r *http.Request)
 		if to == "" {
 			to = "9999-99-99"
 		}
-		all = s.store.Range(mid, from, to)
+		all = append(all, e.acq.store.Range(mid, from, to)...)
+	}
+	if all == nil && mid == "" {
+		all = []worldline.Transaction{}
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{"count": len(all), "transactions": all})
 }
@@ -332,8 +395,14 @@ func (s *settlementApp) listTransactions(w http.ResponseWriter, r *http.Request)
 // runCycle fires a slot immediately. ?slot=morning|afternoon, and
 // ?date=YYYY-MM-DD to settle a specific day rather than yesterday --
 // without which a test would have to backdate its own transactions to
-// match whatever "yesterday" happens to be when it runs.
-func (s *settlementApp) runCycle(w http.ResponseWriter, r *http.Request) {
+// match whatever "yesterday" happens to be when it runs. It runs the named
+// environment's cycle, and with "*" every environment's, answering
+// {"count", "runs"}.
+func (s *sim) runCycle(w http.ResponseWriter, r *http.Request) {
+	scope, envs, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
 	slot, err := worldline.SlotName(r.URL.Query().Get("slot"))
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -343,7 +412,7 @@ func (s *settlementApp) runCycle(w http.ResponseWriter, r *http.Request) {
 	// transactions it settles, so a test does not have to backdate its
 	// seed data to whatever "yesterday" happens to be when it runs.
 	at := labclock.Now().In(time.Local)
-	fromDate, toDate := s.cfg.CoverageFor(at)
+	fromDate, toDate := s.acq.config().CoverageFor(at)
 	if d := r.URL.Query().Get("date"); d != "" {
 		if _, err := time.Parse("2006-01-02", d); err != nil {
 			httputilx.Error(w, 400, fmt.Sprintf("date %q is not YYYY-MM-DD", d))
@@ -351,15 +420,38 @@ func (s *settlementApp) runCycle(w http.ResponseWriter, r *http.Request) {
 		}
 		fromDate, toDate = d, d
 	}
-	run := s.run(slot, at, fromDate, toDate)
 	status := 200
-	if len(run.Errors) > 0 {
-		status = 207 // some files published, some did not: say so rather than pretending
+	runs := make([]CycleRun, 0, len(envs))
+	for _, e := range envs {
+		run := e.acq.run(slot, at, fromDate, toDate)
+		if len(run.Errors) > 0 {
+			status = 207 // some files published, some did not: say so rather than pretending
+		}
+		runs = append(runs, run)
 	}
-	httputilx.WriteJSON(w, status, run)
+	if scope != tenant.All {
+		httputilx.WriteJSON(w, status, runs[0])
+		return
+	}
+	httputilx.WriteJSON(w, status, map[string]any{"count": len(runs), "runs": runs})
 }
 
-func (s *settlementApp) listRuns(w http.ResponseWriter, _ *http.Request) {
-	runs := s.history()
+// listRuns is the named environment's run history, or with "*" every
+// environment's, oldest first.
+func (s *sim) listRuns(w http.ResponseWriter, r *http.Request) {
+	_, envs, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	var runs []CycleRun
+	for _, e := range envs {
+		runs = append(runs, e.acq.history()...)
+	}
+	if len(envs) > 1 {
+		sort.SliceStable(runs, func(i, j int) bool { return runs[i].At.Before(runs[j].At) })
+	}
+	if runs == nil {
+		runs = []CycleRun{}
+	}
 	httputilx.WriteJSON(w, 200, map[string]any{"count": len(runs), "runs": runs})
 }

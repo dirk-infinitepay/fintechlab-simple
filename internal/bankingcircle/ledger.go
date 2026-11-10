@@ -18,6 +18,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Account is a Banking Circle client sub-account, identified by a virtual
@@ -29,7 +30,11 @@ type Account struct {
 	Holder   string `json:"holder"`
 	Currency string `json:"currency"`
 	Balance  string `json:"balance"` // decimal string, see internal/money
-	cents    int64
+	// Env is the environment whose account this is (internal/tenant): ""
+	// for the default's, which holds every account the lab had before
+	// there were environments. Owner says how it is set.
+	Env   string `json:"env,omitempty"`
+	cents int64
 	// The balance at the start of openDay, taken at the account's first
 	// movement that day: what Banking Circle reports as beginOfDayAmount,
 	// with the day's net movement as intraDayAmount. A platform reads its
@@ -76,6 +81,9 @@ var (
 	ErrAccountNotFound   = errors.New("bankingcircle: account not found")
 	ErrInsufficientFunds = errors.New("bankingcircle: insufficient funds")
 	ErrSameAccount       = errors.New("bankingcircle: cannot move to the same account")
+	// ErrAccountNotYours is an account another environment holds: a
+	// customer never moves money on, or reads, another's account.
+	ErrAccountNotYours = errors.New("bankingcircle: the account is another customer's")
 	// ErrInvalidAccountID is returned for an account id that is not a
 	// UUID. Real Banking Circle identifies accounts by UUID and so does
 	// every service in front of it, so accepting anything else here
@@ -100,21 +108,57 @@ func NewLedger() *Ledger {
 }
 
 func (l *Ledger) mustSeed(id, viban, holder, ccy string, cents int64) {
-	a := &Account{ID: id, VIBAN: viban, Holder: holder, Currency: ccy, cents: cents, Balance: money.Format(cents)}
+	l.seedLocked("", id, viban, holder, ccy, cents)
+}
+
+func (l *Ledger) seedLocked(owner, id, viban, holder, ccy string, cents int64) {
+	a := &Account{ID: id, VIBAN: viban, Holder: holder, Currency: ccy, Env: owner, cents: cents, Balance: money.Format(cents)}
 	l.accts[id] = a
 	l.byVIBAN[viban] = a
 	l.seeded[id] = cents
 }
 
-// Get looks an account up by ID or VIBAN.
-func (l *Ledger) Get(id string) (*Account, error) {
+// OpenSafeguarding opens env's safeguarding account in currency
+// (tenant.SafeguardingAccount), at zero, as a customer arriving gets them:
+// seeded, so a reset puts it back to zero and keeps it, as it does the
+// default's two. An account env already has is kept as it is, under holder.
+// The default's are NewLedger's.
+func (l *Ledger) OpenSafeguarding(env, currency, holder string) (*Account, error) {
+	owner := Owner(env)
+	id := tenant.SafeguardingAccount(env, currency)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if a, ok := l.accts[id]; ok {
+		if a.Env != owner {
+			return nil, fmt.Errorf("%w: %s", ErrAccountNotYours, id)
+		}
+		a.Holder = holder
+		cp := *a
+		return &cp, nil
+	}
+	prefix := "BE00SIMSGA"
+	if strings.ToUpper(currency) == "GBP" {
+		prefix = "GB00SIMSGA"
+	}
+	sum := sha256.Sum256([]byte(id))
+	l.seedLocked(owner, id, prefix+strings.ToUpper(hex.EncodeToString(sum[:]))[:8], holder, strings.ToUpper(currency), 0)
+	cp := *l.accts[id]
+	return &cp, nil
+}
+
+// Get looks an account up by ID or VIBAN, whichever environment holds it.
+func (l *Ledger) Get(id string) (*Account, error) { return l.GetIn(tenant.All, id) }
+
+// GetIn looks one of scope's accounts up by ID or VIBAN: another
+// environment's is ErrAccountNotFound, as an unknown one is.
+func (l *Ledger) GetIn(scope, id string) (*Account, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	a, ok := l.accts[id]
 	if !ok {
 		a, ok = l.byVIBAN[id]
 	}
-	if !ok {
+	if !ok || !tenant.InScope(scope, a.Env) {
 		return nil, ErrAccountNotFound
 	}
 	cp := *a
@@ -138,12 +182,24 @@ func (l *Ledger) Get(id string) (*Account, error) {
 // malformed account id outright, and ErrInvalidAccountID is how that shows
 // up here.
 func (l *Ledger) GetOrCreate(id, currency string) (*Account, error) {
+	return l.GetOrCreateIn(tenant.Default, id, currency)
+}
+
+// GetOrCreateIn is GetOrCreate for env: the account it opens is env's, and
+// an account another environment holds is ErrAccountNotYours rather than
+// handed over. Which id an environment's payout lands on is AccountIDIn's
+// business, not this one's.
+func (l *Ledger) GetOrCreateIn(env, id, currency string) (*Account, error) {
 	if !ValidAccountID(id) {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidAccountID, id)
 	}
+	owner := Owner(env)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if a, ok := l.accts[id]; ok {
+		if a.Env != owner {
+			return nil, fmt.Errorf("%w: %s", ErrAccountNotYours, id)
+		}
 		cp := *a
 		return &cp, nil
 	}
@@ -154,6 +210,7 @@ func (l *Ledger) GetOrCreate(id, currency string) (*Account, error) {
 		VIBAN:    "XX00SIMGEN" + seed[:16],
 		Holder:   "Auto-Vivified Creditor " + id,
 		Currency: currency,
+		Env:      owner,
 		cents:    0,
 		Balance:  money.Format(0),
 	}
@@ -163,12 +220,18 @@ func (l *Ledger) GetOrCreate(id, currency string) (*Account, error) {
 	return &cp, nil
 }
 
-// List returns every account.
-func (l *Ledger) List() []*Account {
+// List returns every account, every environment's.
+func (l *Ledger) List() []*Account { return l.ListIn(tenant.All) }
+
+// ListIn returns scope's accounts.
+func (l *Ledger) ListIn(scope string) []*Account {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := make([]*Account, 0, len(l.accts))
 	for _, a := range l.accts {
+		if !tenant.InScope(scope, a.Env) {
+			continue
+		}
 		cp := *a
 		out = append(out, &cp)
 	}

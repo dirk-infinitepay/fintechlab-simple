@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // post sends a credit and returns the decoded response.
@@ -21,7 +23,15 @@ func post(t *testing.T, s *store, body string) (int, map[string]any) {
 }
 
 func accountFor(s *store, iban string) *account {
-	return s.byIBAN[iban]
+	return def(s).byIBAN[iban]
+}
+
+// def is the default environment's book: the bank as it was before there
+// were environments.
+func def(s *store) *book {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.books[tenant.Default]
 }
 
 // TestCreditOpensAnAccountOnFirstArrival: a beneficiary bank does not know
@@ -118,7 +128,7 @@ func TestCreditRefusesACurrencyMismatch(t *testing.T) {
 func TestBothCurrenciesHaveAnInfiniteAccount(t *testing.T) {
 	s := newStore()
 	seen := map[string]bool{}
-	for _, a := range s.accts {
+	for _, a := range def(s).accts {
 		if a.Kind == kindInfinite {
 			seen[a.Currency] = true
 		}
@@ -143,7 +153,7 @@ func TestCreditRefusesNonsense(t *testing.T) {
 			t.Errorf("%s: status %d, want 400", body, code)
 		}
 	}
-	if len(s.entries) != 0 {
+	if len(def(s).entries) != 0 {
 		t.Error("a refused credit must not write a ledger entry")
 	}
 }

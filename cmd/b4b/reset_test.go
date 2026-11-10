@@ -13,6 +13,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // peer is a stand-in for whoever b4b calls -- the client's callback
@@ -68,6 +69,7 @@ func testApp(t *testing.T, cb, bc *peer, statePath string, delay time.Duration) 
 		payLog:        activity.New("payments", "Payouts received", ""),
 		cbLog:         activity.New("callbacks", "Callbacks sent", ""),
 	}
+	a.customers = a.newCustomers()
 	a.engine = b4b.NewEngine(delay, a.onTransition)
 	if a.traps, err = newTraps(delay, nil); err != nil {
 		t.Fatal(err)
@@ -84,9 +86,9 @@ func testApp(t *testing.T, cb, bc *peer, statePath string, delay time.Duration) 
 func idle(t *testing.T, a *app) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
-	for a.engine.Walking() != 0 || a.engine.Gate().Running() != 0 {
+	for a.engine.Walking() != 0 || a.engine.Running() != 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("still running: %d payment(s) walking, %d delivery(ies)", a.engine.Walking(), a.engine.Gate().Running())
+			t.Fatalf("still running: %d payment(s) walking, %d delivery(ies)", a.engine.Walking(), a.engine.Running())
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -144,7 +146,7 @@ func TestFlowResetKeepsBoardingAndWritesTheStateFile(t *testing.T) {
 		t.Fatalf("a payment's run: %d callbacks and %d bridge calls, want 5 and 1", cb.count(), bc.count())
 	}
 
-	res, err := a.reset("flow")
+	res, err := a.reset("flow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func TestFlowResetKeepsBoardingAndWritesTheStateFile(t *testing.T) {
 	}
 
 	// all: the state file as on first start.
-	res, err = a.reset("all")
+	res, err = a.reset("all", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +212,7 @@ func TestAPaymentInFlightWhenTheResetLandsIsNeverCalledBackAbout(t *testing.T) {
 	a.engine.Submit(payment("b4bp_walking", cb.srv.URL))
 	waitFor(t, "the B4BAccepted callback", func() bool { return cb.count() == 1 })
 
-	res, err := a.reset("flow")
+	res, err := a.reset("flow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +252,7 @@ func TestTheBridgeCallIsNotMadeForAPaymentAResetDropped(t *testing.T) {
 	p.State = b4b.StateTMApproved
 
 	before := a.engine.Gate().Begin(nil)
-	if _, err := a.reset("flow"); err != nil {
+	if _, err := a.reset("flow", ""); err != nil {
 		t.Fatal(err)
 	}
 	a.approveAndBridge(p, before)
@@ -274,12 +276,12 @@ func TestACallbackRetryingWhenTheResetLandsStops(t *testing.T) {
 	cb, bc := newPeer(t), newPeer(t)
 	cb.status = func(int) int { return 500 }
 	a := testApp(t, cb, bc, "", 0)
-	a.later(a.engine.Gate().Begin(nil), func(started uint64) {
-		a.deliverCallback(started, "beneficiary ben_1", cb.srv.URL, map[string]string{"id": "ben_1"})
+	a.later(tenant.Default, a.engine.Gate().Begin(nil), func(started uint64) {
+		a.deliverCallback(tenant.Default, started, "beneficiary ben_1", cb.srv.URL, map[string]string{"id": "ben_1"})
 	})
 	waitFor(t, "the first attempt", func() bool { return cb.count() == 1 })
 
-	res, err := a.reset("flow")
+	res, err := a.reset("flow", "")
 	if err != nil {
 		t.Fatal(err)
 	}

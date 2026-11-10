@@ -1,4 +1,15 @@
 // Bank is a tiny in-memory ledger with obviously fake IBANs (GB00SIM...).
+//
+// It stays one bank, the merchants' own, whichever platform's payout
+// arrives. Each environment's accounts are kept apart all the same
+// (internal/tenant): a credit is the environment's that Banking Circle says
+// it is, in the Lab-Environment header, and opens or credits that
+// environment's account for the IBAN, so the same merchant paid from two
+// environments is two accounts and neither sees the other's money. Every
+// route acts in the environment the call names (?env= or the header), the
+// default's when it names none; the seeded accounts are the default's.
+// The bank has no logins: its customers exist so the lab can name, reset
+// and remove an environment here.
 package main
 
 import (
@@ -9,6 +20,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +31,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 type account struct {
@@ -37,7 +50,10 @@ type account struct {
 	// opens an account the first time money arrives for an IBAN, and
 	// which credit did that is the question asked afterwards.
 	OpenedBy string `json:"opened_by,omitempty"`
-	cents    int64
+	// Env is the environment the account is (internal/tenant). Empty is
+	// the default's.
+	Env   string `json:"env,omitempty"`
+	cents int64
 }
 
 type entry struct {
@@ -48,18 +64,41 @@ type entry struct {
 	Currency  string `json:"currency"`
 	Ref       string `json:"reference,omitempty"`
 	At        string `json:"at"`
+	Env       string `json:"env,omitempty"`
 }
 
+// store is the bank: a book per environment.
 type store struct {
-	mu      sync.Mutex
+	// customers are the environments besides the default. The bank has no
+	// logins to check them by; it only needs to know which exist.
+	customers *tenant.Customers
+
+	mu    sync.Mutex
+	books map[string]*book
+}
+
+// book is one environment's accounts and ledger.
+type book struct {
 	accts   map[string]*account
 	byIBAN  map[string]*account
 	entries []entry
 	seq     int
 }
 
-// newStore seeds the two accounts the settle path ends in, and nothing
-// else that matters.
+func newBook() *book {
+	return &book{accts: map[string]*account{}, byIBAN: map[string]*account{}}
+}
+
+// envTag is env as a record carries it: empty for the default.
+func envTag(env string) string {
+	if env = tenant.Normalize(env); env == tenant.Default {
+		return ""
+	}
+	return env
+}
+
+// seedBook is the default environment's book on first start: the two
+// accounts the settle path ends in, and nothing else that matters.
 //
 // The programme has one account per currency — that is where
 // INFINITE_SETTLEMENT lands, and it is separate from every merchant's, so
@@ -67,17 +106,77 @@ type store struct {
 // Merchant accounts are not seeded: a beneficiary bank does not know an
 // IBAN until money arrives for it, and opening them on demand is both more
 // honest and less coordination between this service and the console.
-func newStore() *store {
-	s := &store{accts: map[string]*account{}, byIBAN: map[string]*account{}}
-	s.mustSeed("acc_infinite_eur", "GB00SIMINF00000001", "InfinitePay Ltd", "EUR", 0, kindInfinite)
-	s.mustSeed("acc_infinite_gbp", "GB00SIMINF00000002", "InfinitePay Ltd", "GBP", 0, kindInfinite)
+func seedBook() *book {
+	b := newBook()
+	b.mustSeed("acc_infinite_eur", "GB00SIMINF00000001", "InfinitePay Ltd", "EUR", 0, kindInfinite)
+	b.mustSeed("acc_infinite_gbp", "GB00SIMINF00000002", "InfinitePay Ltd", "GBP", 0, kindInfinite)
 
 	// Two funded demo accounts, so `make demo-payment` and the payment-api
 	// scenario have somewhere to move money from without a settlement run.
-	s.mustSeed("acc_alice", "GB00SIM0000000000001", "Alice Simulator", "EUR", 1_000_000, kindDemo)
-	s.mustSeed("acc_bob", "GB00SIM0000000000002", "Bob Simulator", "EUR", 50_000, kindDemo)
-	s.mustSeed("acc_merchant", "GB00SIM0000000000003", "Merchant Simulator", "EUR", 0, kindDemo)
-	return s
+	b.mustSeed("acc_alice", "GB00SIM0000000000001", "Alice Simulator", "EUR", 1_000_000, kindDemo)
+	b.mustSeed("acc_bob", "GB00SIM0000000000002", "Bob Simulator", "EUR", 50_000, kindDemo)
+	b.mustSeed("acc_merchant", "GB00SIM0000000000003", "Merchant Simulator", "EUR", 0, kindDemo)
+	return b
+}
+
+// newStore is the bank on first start: the default's seeded book, and no
+// other environment yet.
+func newStore() *store {
+	return &store{customers: tenant.NewCustomers(), books: map[string]*book{tenant.Default: seedBook()}}
+}
+
+// bookLocked is env's book, made on first use. s.mu is held.
+func (s *store) bookLocked(env string) *book {
+	env = tenant.Normalize(env)
+	b := s.books[env]
+	if b == nil {
+		b = newBook()
+		s.books[env] = b
+	}
+	return b
+}
+
+// booksLocked is every book in scope, the default's first, then by
+// environment. s.mu is held.
+func (s *store) booksLocked(scope string) []*book {
+	envs := make([]string, 0, len(s.books))
+	for env := range s.books {
+		if tenant.InScope(scope, env) {
+			envs = append(envs, env)
+		}
+	}
+	sort.Slice(envs, func(i, j int) bool {
+		if envs[i] == tenant.Default || envs[j] == tenant.Default {
+			return envs[i] == tenant.Default
+		}
+		return envs[i] < envs[j]
+	})
+	out := make([]*book, 0, len(envs))
+	for _, env := range envs {
+		out = append(out, s.books[env])
+	}
+	return out
+}
+
+// scope is the environment a call names, when the bank serves it: one
+// environment, or every one ("*") for a read. A call that changes
+// something names one. The environment goes into the call's context, for
+// its activity event.
+func (s *store) scope(w http.ResponseWriter, r *http.Request, changes bool) (string, bool) {
+	env := tenant.FromRequest(r)
+	switch {
+	case env == tenant.All && changes:
+		httputilx.Error(w, 400, "money moves in one environment, not in all of them: name one")
+		return "", false
+	case env == tenant.Default || env == tenant.All:
+	default:
+		if _, ok := s.customers.Get(env); !ok {
+			httputilx.Error(w, 404, "no environment "+env+" at the bank")
+			return "", false
+		}
+	}
+	tenant.Set(r.Context(), env)
+	return env, true
 }
 
 const (
@@ -86,11 +185,11 @@ const (
 	kindDemo     = "demo"
 )
 
-func (s *store) mustSeed(id, iban, holder, ccy string, cents int64, kind string) {
+func (b *book) mustSeed(id, iban, holder, ccy string, cents int64, kind string) {
 	a := &account{ID: id, IBAN: iban, Holder: holder, Currency: ccy, cents: cents,
 		Balance: money.Format(cents), Kind: kind, OpenedBy: "seed"}
-	s.accts[id] = a
-	s.byIBAN[iban] = a
+	b.accts[id] = a
+	b.byIBAN[iban] = a
 }
 
 // creditReq is a payment arriving over a rail. The sending bank names the
@@ -116,8 +215,14 @@ type creditReq struct {
 // It auto-opens on first sight of an IBAN. That is what a beneficiary bank
 // does, and it means no coordination is needed between whoever creates a
 // merchant and this service — the account exists because a payout arrived,
-// which is also the only moment it is true.
+// which is also the only moment it is true. The credit and the account are
+// the environment's the sender names (Lab-Environment): Banking Circle
+// says whose payout it was.
 func (s *store) credit(w http.ResponseWriter, r *http.Request) {
+	env, ok := s.scope(w, r, true)
+	if !ok {
+		return
+	}
 	var req creditReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -146,7 +251,8 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a, existed := s.byIBAN[req.IBAN]
+	b := s.bookLocked(env)
+	a, existed := b.byIBAN[req.IBAN]
 	if !existed {
 		kind := req.Kind
 		if kind == "" {
@@ -158,10 +264,10 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 		}
 		a = &account{
 			ID: "acc_" + strings.ToLower(strings.ReplaceAll(req.IBAN, " ", "_")), IBAN: req.IBAN, Holder: holder,
-			Currency: ccy, Kind: kind, OpenedBy: req.Reference,
+			Currency: ccy, Kind: kind, OpenedBy: req.Reference, Env: envTag(env),
 		}
-		s.accts[a.ID] = a
-		s.byIBAN[a.IBAN] = a
+		b.accts[a.ID] = a
+		b.byIBAN[a.IBAN] = a
 	}
 	if a.Currency != ccy {
 		httputilx.Error(w, 422, fmt.Sprintf("account %s is %s, credit is %s", a.IBAN, a.Currency, ccy))
@@ -169,10 +275,10 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 	}
 	a.cents += cents
 	a.Balance = money.Format(a.cents)
-	s.seq++
-	s.entries = append(s.entries, entry{
-		ID: fmt.Sprintf("ent_%d", s.seq), AccountID: a.ID, Amount: money.Format(cents),
-		Currency: ccy, Ref: req.Reference, At: labclock.Now().Format(time.RFC3339),
+	b.seq++
+	b.entries = append(b.entries, entry{
+		ID: fmt.Sprintf("ent_%d", b.seq), AccountID: a.ID, Amount: money.Format(cents),
+		Currency: ccy, Ref: req.Reference, At: labclock.Now().Format(time.RFC3339), Env: envTag(env),
 	})
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"account": a, "opened": !existed, "credited": money.Format(cents),
@@ -225,6 +331,14 @@ func simRoutes(mux *http.ServeMux, s *store, credits, ledger *activity.Log) {
 // /sim route. The old /sim paths still answer on addr, passed through to
 // the control surface, until phase 4 of docs/lab-api/plan.md retires them.
 func surfaces(s *store, credits, ledger *activity.Log, addr string) (*http.ServeMux, *simctl.Control, error) {
+	// A customer removed takes its accounts, its ledger and its activity
+	// with it.
+	s.customers.OnDelete = func(env string) error {
+		s.drop(env)
+		credits.ClearIn(env)
+		ledger.ClearIn(env)
+		return nil
+	}
 	mux := routes(s, credits, ledger)
 	ctl, err := simctl.NewControl(control(s, credits, ledger, addr), simctl.ControlAddr(addr))
 	if err != nil {
@@ -257,42 +371,58 @@ func control(s *store, credits, ledger *activity.Log, addr string) simctl.Config
 		Service: "bank", Kind: "vendor", Simulates: "the merchants' business bank",
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
-			cleared := s.reset()
-			cleared["activity"] = int(credits.Clear() + ledger.Clear())
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			cleared := s.reset(req.Env)
+			cleared["activity"] = int(credits.ClearIn(req.Env) + ledger.ClearIn(req.Env))
 			return simctl.ResetResult{Cleared: cleared, Kept: []string{"seeded_accounts"}}, nil
 		},
+		Customers: s.customers,
 	}
 }
 
-// reset puts the ledger back as it was on first start: every account that
-// was not seeded goes (opened by a payout or by hand), the seeded ones are
-// back at their seed balance, and the ledger is empty. It says how many
-// accounts it closed, how many seeded balances it moved back, and how many
-// credits and transfers the ledger held.
-func (s *store) reset() map[string]int {
-	seed := newStore()
+// reset puts scope's books (one environment's, or every one's for "*")
+// back as they were on first start: every account that was not seeded goes
+// (opened by a payout or by hand), the default's seeded ones are back at
+// their seed balance, and the ledger is empty. It says how many accounts it
+// closed, how many seeded balances it moved back, and how many credits and
+// transfers the ledgers held.
+func (s *store) reset(scope string) map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	opened, balances := 0, 0
-	for id, a := range s.accts {
-		switch sa, seeded := seed.accts[id]; {
-		case !seeded:
-			opened++
-		case a.cents != sa.cents:
-			balances++
+	opened, balances, credits, legs := 0, 0, 0, 0
+	for env, b := range s.books {
+		if !tenant.InScope(scope, env) {
+			continue
 		}
-	}
-	credits, legs := 0, 0
-	for _, e := range s.entries {
-		if strings.HasPrefix(e.ID, "ent_") {
-			credits++
-		} else {
-			legs++
+		seed := newBook()
+		if env == tenant.Default {
+			seed = seedBook()
 		}
+		for id, a := range b.accts {
+			switch sa, seeded := seed.accts[id]; {
+			case !seeded:
+				opened++
+			case a.cents != sa.cents:
+				balances++
+			}
+		}
+		for _, e := range b.entries {
+			if strings.HasPrefix(e.ID, "ent_") {
+				credits++
+			} else {
+				legs++
+			}
+		}
+		s.books[env] = seed
 	}
-	s.accts, s.byIBAN, s.entries, s.seq = seed.accts, seed.byIBAN, nil, 0
 	return map[string]int{"accounts": opened, "balances": balances, "credits": credits, "transfers": legs / 2}
+}
+
+// drop forgets env's book.
+func (s *store) drop(env string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.books, env)
 }
 
 // summarizeCredit: "credited 733.34 EUR to GB00SIM… (Acme Ltd) — account opened".
@@ -333,30 +463,40 @@ func summarizeOpen(c *activity.Call) (string, map[string]string) {
 }
 
 func (s *store) listAccounts(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r, false)
+	if !ok {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*account, 0, len(s.accts))
-	for _, a := range s.accts {
-		out = append(out, a)
+	out := []*account{}
+	for _, b := range s.booksLocked(scope) {
+		for _, a := range b.accts {
+			out = append(out, a)
+		}
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{"accounts": out})
 }
 
 func (s *store) getAccount(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r, false)
+	if !ok {
+		return
+	}
 	id := r.PathValue("id")
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	a, ok := s.accts[id]
-	if !ok {
-		if x, ok2 := s.byIBAN[id]; ok2 {
-			a, ok = x, true
+	for _, b := range s.booksLocked(scope) {
+		a, ok := b.accts[id]
+		if !ok {
+			a, ok = b.byIBAN[id]
+		}
+		if ok {
+			httputilx.WriteJSON(w, 200, a)
+			return
 		}
 	}
-	if !ok {
-		httputilx.Error(w, 404, "account not found")
-		return
-	}
-	httputilx.WriteJSON(w, 200, a)
+	httputilx.Error(w, 404, "account not found")
 }
 
 type createReq struct {
@@ -366,6 +506,10 @@ type createReq struct {
 }
 
 func (s *store) createAccount(w http.ResponseWriter, r *http.Request) {
+	env, ok := s.scope(w, r, true)
+	if !ok {
+		return
+	}
 	var req createReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -389,12 +533,13 @@ func (s *store) createAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seq++
-	iban := fakeIBAN(4 + s.seq)
+	b := s.bookLocked(env)
+	b.seq++
+	iban := fakeIBAN(4 + b.seq)
 	id := "acc_" + shortID()
-	a := &account{ID: id, IBAN: iban, Holder: req.Holder, Currency: req.Currency, cents: cents, Balance: money.Format(cents)}
-	s.accts[id] = a
-	s.byIBAN[iban] = a
+	a := &account{ID: id, IBAN: iban, Holder: req.Holder, Currency: req.Currency, cents: cents, Balance: money.Format(cents), Env: envTag(env)}
+	b.accts[id] = a
+	b.byIBAN[iban] = a
 	httputilx.WriteJSON(w, 201, a)
 }
 
@@ -408,7 +553,13 @@ type transferReq struct {
 	PaymentID     string `json:"paymentId"`
 }
 
+// transfer moves money between two accounts of the environment the call
+// names.
 func (s *store) transfer(w http.ResponseWriter, r *http.Request) {
+	env, ok := s.scope(w, r, true)
+	if !ok {
+		return
+	}
 	var req transferReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -421,16 +572,17 @@ func (s *store) transfer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	from, ok := s.accts[req.FromAccountID]
+	b := s.bookLocked(env)
+	from, ok := b.accts[req.FromAccountID]
 	if !ok {
 		httputilx.Error(w, 404, "debtor account not found")
 		return
 	}
 	var to *account
 	if req.ToAccountID != "" {
-		to = s.accts[req.ToAccountID]
+		to = b.accts[req.ToAccountID]
 	} else if req.ToIBAN != "" {
-		to = s.byIBAN[req.ToIBAN]
+		to = b.byIBAN[req.ToIBAN]
 	}
 	if to == nil {
 		httputilx.Error(w, 404, "creditor account not found")
@@ -457,9 +609,9 @@ func (s *store) transfer(w http.ResponseWriter, r *http.Request) {
 	from.Balance = money.Format(from.cents)
 	to.Balance = money.Format(to.cents)
 	now := labclock.Now().Format(time.RFC3339)
-	debit := entry{ID: "le_" + shortID(), AccountID: from.ID, PaymentID: req.PaymentID, Amount: money.Format(-cents), Currency: ccy, Ref: req.Reference, At: now}
-	credit := entry{ID: "le_" + shortID(), AccountID: to.ID, PaymentID: req.PaymentID, Amount: money.Format(cents), Currency: ccy, Ref: req.Reference, At: now}
-	s.entries = append(s.entries, debit, credit)
+	debit := entry{ID: "le_" + shortID(), AccountID: from.ID, PaymentID: req.PaymentID, Amount: money.Format(-cents), Currency: ccy, Ref: req.Reference, At: now, Env: envTag(env)}
+	credit := entry{ID: "le_" + shortID(), AccountID: to.ID, PaymentID: req.PaymentID, Amount: money.Format(cents), Currency: ccy, Ref: req.Reference, At: now, Env: envTag(env)}
+	b.entries = append(b.entries, debit, credit)
 	httputilx.WriteJSON(w, 201, map[string]any{
 		"from":    from,
 		"to":      to,
@@ -468,9 +620,17 @@ func (s *store) transfer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *store) listLedger(w http.ResponseWriter, r *http.Request) {
+	scope, ok := s.scope(w, r, false)
+	if !ok {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	httputilx.WriteJSON(w, 200, map[string]any{"entries": s.entries})
+	var out []entry // null until the first entry, as it always was
+	for _, b := range s.booksLocked(scope) {
+		out = append(out, b.entries...)
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"entries": out})
 }
 
 func fakeIBAN(n int) string {

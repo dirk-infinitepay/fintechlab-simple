@@ -74,7 +74,7 @@ func (a *app) recordNotification(sub *bankingcircle.Subscription, env bankingcir
 		"trap": trapIDs(env),
 	})
 	summary := fmt.Sprintf("batch of %d to %s — %s", len(env.Notifications), sub.Endpoint, strings.Join(kinds, ", "))
-	ev := activity.Event{Op: "notification", Peer: sub.Endpoint, Summary: summary, Detail: detail, Status: activity.StatusOK}
+	ev := activity.Event{Env: sub.Env, Op: "notification", Peer: sub.Endpoint, Summary: summary, Detail: detail, Status: activity.StatusOK}
 	if err != nil {
 		// The client's own refusal, verbatim: this is the line that says
 		// whether the platform is listening, which is the whole question.
@@ -96,6 +96,7 @@ func (a *app) recordNotification(sub *bankingcircle.Subscription, env bankingcir
 func (a *app) recordQueued(sub *bankingcircle.Subscription, env bankingcircle.Envelope) {
 	kinds := notificationKinds(env)
 	a.notifLog.Record(activity.Event{
+		Env:  sub.Env,
 		Op:   "notification.queued",
 		Peer: sub.Endpoint,
 		Summary: fmt.Sprintf("queued: %d notification(s) for %s — %s — delivery is paused",
@@ -116,6 +117,7 @@ func (a *app) recordQueued(sub *bankingcircle.Subscription, env bankingcircle.En
 // arrives late has no explanation.
 func (a *app) recordPause(sub *bankingcircle.Subscription, paused bool, n int) {
 	ev := activity.Event{
+		Env:    sub.Env,
 		Op:     "notification.pause",
 		Peer:   sub.Endpoint,
 		Status: activity.StatusWarn,
@@ -165,11 +167,11 @@ func statusText(status int) string {
 }
 
 // recordRead logs one reconciliation read — a report or a payment's status
-// — with who asked, what they asked for and what went back. The
-// Reconciliation reads panel and the diagram's reconciliation arrow are
-// both read from this log.
+// — with who asked, what they asked for and what went back, in the
+// caller's environment. The Reconciliation reads panel and the diagram's
+// reconciliation arrow are both read from this log.
 func (a *app) recordRead(r *http.Request, op, summary string, detail map[string]string, status string) {
-	a.reportLog.Record(activity.Event{Op: op, Peer: remoteHost(r), Summary: summary, Detail: nonEmpty(detail), Status: status})
+	a.reportLog.Record(activity.Event{Env: scopeOf(r), Op: op, Peer: remoteHost(r), Summary: summary, Detail: nonEmpty(detail), Status: status})
 }
 
 // problemNames is the parameters a refused report named, sorted.

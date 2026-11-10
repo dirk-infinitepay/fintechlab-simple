@@ -21,6 +21,10 @@ const (
 // Beneficiary is B4B's oversight beneficiary record.
 type Beneficiary struct {
 	ID string `json:"id"`
+	// Env is the environment that registered it (env.go): empty for the
+	// default. The store and the state file keep it; the copies the store
+	// hands out, and so the wire, never carry it.
+	Env string `json:"env,omitempty"`
 	// CompanyID is the boarded company this payee belongs to. Optional,
 	// because this lab's own settlement stand-in names beneficiaries
 	// directly without boarding anything -- but when it is set, a payment
@@ -172,14 +176,26 @@ func (p RegisterParams) Validate() error {
 // sanctions gate, while a caller that just names an id still works -- which
 // is what this lab's own settlement stand-in does, and what keeps a demo
 // from needing a registration step before it can pay anybody.
+//
+// A BeneficiaryStore is one environment's view of the store (env.go): the
+// one NewBeneficiaryStore returns is the default's, and In gives another's
+// over the same records.
 type BeneficiaryStore struct {
-	mu   sync.Mutex
+	*beneficiaries
+	own string // the environment this view acts for, as records store it
+}
+
+type beneficiaries struct {
+	mu sync.Mutex
+	// byID indexes beneficiaries by refKey(owner, id): an auto-vivified
+	// payee a /sim hook materializes keeps the id the caller named, and two
+	// environments may name the same one.
 	byID map[string]*Beneficiary
-	// byRef indexes registered beneficiaries by the caller's own
-	// external_ref. B4B mints the id, so a client that keys its payouts on
-	// its own reference -- a MID, say -- would otherwise never be able to
-	// reach the record it registered, and would silently pay against an
-	// auto-vivified one carrying account details it never supplied.
+	// byRef indexes registered beneficiaries by refKey(owner, external_ref).
+	// B4B mints the id, so a client that keys its payouts on its own
+	// reference -- a MID, say -- would otherwise never be able to reach the
+	// record it registered, and would silently pay against an auto-vivified
+	// one carrying account details it never supplied.
 	byRef map[string]*Beneficiary
 	newID func() string
 
@@ -191,22 +207,43 @@ type BeneficiaryStore struct {
 // NewBeneficiaryStore returns an empty store. newID may be nil, in which
 // case ids are derived from the external ref.
 func NewBeneficiaryStore(newID func() string) *BeneficiaryStore {
-	return &BeneficiaryStore{
+	return &BeneficiaryStore{beneficiaries: &beneficiaries{
 		byID:  map[string]*Beneficiary{},
 		byRef: map[string]*Beneficiary{},
 		newID: newID,
-	}
+	}}
 }
 
-// resolve finds a registered beneficiary by B4B's own id or by the
-// caller's external_ref, in that order. Callers hold s.mu.
+// In is the store as env sees it: only env's beneficiaries. Another
+// environment's id reads as an unknown one, and so auto-vivifies.
+func (s *BeneficiaryStore) In(env string) *BeneficiaryStore {
+	return &BeneficiaryStore{beneficiaries: s.beneficiaries, own: owner(env)}
+}
+
+// resolve finds one of this view's registered beneficiaries by B4B's own id
+// or by the caller's external_ref, in that order. Callers hold s.mu.
 func (s *BeneficiaryStore) resolve(id string) (*Beneficiary, bool) {
-	if b, ok := s.byID[id]; ok {
+	if b, ok := s.byID[refKey(s.own, id)]; ok {
 		return b, true
 	}
-	b, ok := s.byRef[id]
+	b, ok := s.byRef[refKey(s.own, id)]
 	return b, ok
 }
+
+// materialize is resolve, or the auto-vivified payee for id stored as this
+// view's, so a change to it sticks. Callers hold s.mu.
+func (s *BeneficiaryStore) materialize(id string) *Beneficiary {
+	if b, ok := s.resolve(id); ok {
+		return b
+	}
+	b := LookupBeneficiary(id)
+	b.Env = s.own
+	s.byID[refKey(s.own, id)] = b
+	return b
+}
+
+// vendor is b as the wire shows it: without its owner.
+func (b Beneficiary) vendor() *Beneficiary { b.Env = ""; return &b }
 
 // Register creates a beneficiary.
 func (s *BeneficiaryStore) Register(p RegisterParams) (*Beneficiary, error) {
@@ -226,6 +263,7 @@ func (s *BeneficiaryStore) Register(p RegisterParams) (*Beneficiary, error) {
 	}
 	b := &Beneficiary{
 		ID:                   id,
+		Env:                  s.own,
 		CompanyID:            p.CompanyID,
 		ExternalRef:          p.ExternalRef,
 		Status:               StatusActive,
@@ -237,33 +275,32 @@ func (s *BeneficiaryStore) Register(p RegisterParams) (*Beneficiary, error) {
 		CallbackURL:          p.CallbackURL,
 	}
 	s.mu.Lock()
-	s.byID[b.ID] = b
+	s.byID[refKey(s.own, b.ID)] = b
 	if b.ExternalRef != "" {
 		// Last registration wins, matching the id index above: a client
 		// re-registering the same reference is correcting the record, not
 		// creating a second payee.
-		s.byRef[b.ExternalRef] = b
+		s.byRef[refKey(s.own, b.ExternalRef)] = b
 	}
+	cp := b.vendor()
 	s.mu.Unlock()
 	s.changed()
-	return b, nil
+	return cp, nil
 }
 
-func (s *BeneficiaryStore) changed() {
+func (s *beneficiaries) changed() {
 	if s.OnChange != nil {
 		s.OnChange()
 	}
 }
 
-// Get returns a registered beneficiary, or an auto-vivified one for an
-// unknown id.
+// Get returns one of this view's registered beneficiaries, or an
+// auto-vivified one for an id it does not have.
 func (s *BeneficiaryStore) Get(id string) *Beneficiary {
 	s.mu.Lock()
-	b, ok := s.resolve(id)
-	s.mu.Unlock()
-	if ok {
-		cp := *b
-		return &cp
+	defer s.mu.Unlock()
+	if b, ok := s.resolve(id); ok {
+		return b.vendor()
 	}
 	return LookupBeneficiary(id)
 }
@@ -281,18 +318,14 @@ func (s *BeneficiaryStore) SetSanctions(id, status string) (*Beneficiary, bool, 
 		return nil, false, fmt.Errorf("sanctions_status must be one of %q, %q, %q", SanctionsPass, SanctionsReview, SanctionsFail)
 	}
 	s.mu.Lock()
-	b, ok := s.resolve(id)
-	if !ok {
-		// Materialize the auto-vivified one so the change sticks.
-		b = LookupBeneficiary(id)
-		s.byID[id] = b
-	}
+	// Materialize the auto-vivified one so the change sticks.
+	b := s.materialize(id)
 	changed := b.SanctionsStatus != status
 	b.SanctionsStatus = status
-	cp := *b
+	cp := b.vendor()
 	s.mu.Unlock()
 	s.changed()
-	return &cp, changed, nil
+	return cp, changed, nil
 }
 
 // SetStatus moves a beneficiary between active and disabled.
@@ -309,11 +342,7 @@ func (s *BeneficiaryStore) SetStatus(id, status string) (*Beneficiary, bool, err
 		return nil, false, fmt.Errorf("%w: status must be %q or %q", ErrInvalid, StatusActive, StatusDisabled)
 	}
 	s.mu.Lock()
-	b, ok := s.resolve(id)
-	if !ok {
-		b = LookupBeneficiary(id)
-		s.byID[id] = b
-	}
+	b := s.materialize(id)
 	changed := b.Status != status
 	b.Status = status
 	if status == StatusDisabled {
@@ -321,8 +350,8 @@ func (s *BeneficiaryStore) SetStatus(id, status string) (*Beneficiary, bool, err
 	} else {
 		b.DisabledAt = ""
 	}
-	cp := *b
+	cp := b.vendor()
 	s.mu.Unlock()
 	s.changed()
-	return &cp, changed, nil
+	return cp, changed, nil
 }

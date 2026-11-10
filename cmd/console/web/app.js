@@ -17,6 +17,8 @@ const state = {
   hopSeen: null,        // events already there when the drawer opened
   focus: null,          // a card to scroll to once it is drawn (#view/card)
   timer: null,
+  env: 'default',       // the environment every view shows (design-system.md, Environment selector)
+  envs: null,           // GET /v1/environments, read on every load
 };
 
 /* One view per kind, rather than one page listing every service under three
@@ -51,6 +53,10 @@ const VIEWS = {
     title: 'Merchants',
     sub: 'Distributor → partner → merchant → outlet. The outlet is what the money cares about: Worldline calls it a submerchant and identifies it by MID.',
   },
+  environments: {
+    title: 'Environments',
+    sub: 'The platforms this lab serves — each with its own token, its own logins at every vendor and its own data. The selector above picks whose every view shows.',
+  },
   docs: {
     title: 'Docs',
     sub: 'How the three parts fit — your platform with its test harness, the runner library, and this lab — how to stand them up, and every API a caller can use.',
@@ -71,10 +77,15 @@ function esc(v) {
   ));
 }
 
-async function api(method, path, body) {
+/* Every call names the environment the page shows (Lab-Environment), so the
+   lab API answers with its records only; the default's is named by naming
+   none, as every call did before environments. */
+async function api(method, path, body, opts = {}) {
+  const headers = body === undefined ? {} : { 'Content-Type': 'application/json' };
+  if (!opts.noEnv && state.env && state.env !== 'default') headers['Lab-Environment'] = state.env;
   const res = await fetch(path, {
     method,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   noticeBuild(res.headers.get('X-Console-Build'));
@@ -88,6 +99,13 @@ async function api(method, path, body) {
     throw new Error(msg);
   }
   return parsed;
+}
+
+/* A link the browser follows itself (a download) cannot carry a header, so
+   it carries the environment in ?env= instead. */
+function envHref(path) {
+  if (!state.env || state.env === 'default') return path;
+  return path + (path.includes('?') ? '&' : '?') + 'env=' + encodeURIComponent(state.env);
 }
 
 /* This page is the console it was loaded from. After a rebuild an open tab
@@ -191,6 +209,7 @@ function isServiceView(view = state.view) { return !!(VIEWS[view] && VIEWS[view]
 
 async function load() {
   try {
+    await loadEnvs();
     if (state.view === 'dashboard') {
       // First, so the widgets below can find the platform in it.
       state.data.overview = await api('GET', '/v1/lab');
@@ -252,6 +271,167 @@ async function load() {
   }
   renderBadges();
   renderView();
+}
+
+/* The environments, read with no environment named: the list is the
+   admin's, whichever one the page shows. One that has gone falls back to
+   the default, said once, rather than every call after it failing. */
+async function loadEnvs() {
+  try {
+    const r = await api('GET', '/v1/environments', undefined, { noEnv: true });
+    state.envs = r.environments || [];
+  } catch (err) {
+    state.envs = { error: err.message };
+    return;
+  }
+  if (state.env !== 'default' && !state.envs.some((e) => e.id === state.env)) {
+    toast('Environment gone', `${state.env} is no longer in this lab — showing the default environment.`, 'warn');
+    setEnv('default', false);
+  }
+}
+
+function setEnv(id, reload = true) {
+  state.env = id || 'default';
+  try { localStorage.setItem('console-env', state.env); } catch (_) { /* private window */ }
+  if (reload) {
+    state.data = {};
+    state.activity = {};
+    state.files = {};
+    load();
+  }
+}
+
+function currentEnv() {
+  return Array.isArray(state.envs) ? state.envs.find((e) => e.id === state.env) : null;
+}
+
+/* The selector (design-system.md, Environment selector): first in the
+   topbar, and only when there is more than the default to choose from. */
+function envPicker() {
+  if (!Array.isArray(state.envs) || state.envs.length < 2) return '';
+  const cur = currentEnv();
+  const dot = cur && cur.state === 'seen' ? 'up' : 'unknown';
+  return `<label class="env-pick" title="The environment every view shows">
+    <i class="dot ${dot}"></i>
+    <select data-env-pick aria-label="Environment">
+      ${state.envs.map((e) => `<option value="${esc(e.id)}"${e.id === state.env ? ' selected' : ''}>${
+        esc(e.default ? 'Default' : (e.name && e.name !== e.id ? `${e.name} · ${e.id}` : e.id))}</option>`).join('')}
+    </select>
+  </label>`;
+}
+
+/* The vendors that do not keep environments apart yet, said while another
+   environment is shown: the page leaves them out rather than pass the
+   default's records off as this one's. */
+function sharedNote() {
+  const cur = currentEnv();
+  if (!cur || cur.default || !(cur.shared || []).length) return '';
+  return `<div class="note warn">Showing <b>${esc(cur.name || cur.id)}</b>. Shared by every environment, so left out
+    here: ${cur.shared.map((id) => `<span class="mono">${esc(id)}</span>`).join(', ')} — they hold only the default
+    environment's records.</div>`;
+}
+
+/* --- environments ------------------------------------------------------ */
+
+function renderEnvironments() {
+  if (!state.envs) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
+  if (state.envs.error) return `<div class="note bad">${esc(state.envs.error)}</div>`;
+  const intro = `<div class="note">An environment is one platform using this lab — a deployed stack, a laptop, an e2e
+    run. Its token reaches only its own data on the lab API, and every vendor knows it by its own login: its kit below
+    is the <span class="mono">.env</span> its platform runs with. The default is the lab's own, with the logins the lab
+    always had.</div>`;
+  return intro + state.envs.map(envCard).join('');
+}
+
+function envCard(e) {
+  const id = `env-${e.id}`;
+  const open = isOpen(id);
+  const seen = e.state === 'seen';
+  const meta = seen ? `last seen ${esc(ago(e.last_seen))}` : 'never seen';
+  let body = '';
+  if (open) {
+    const cfg = e.config || {};
+    const cfgRows = [
+      ['Settlement identifier', cfg.settlement_identifier],
+      ['Webhook hosts', (cfg.webhook_hosts || []).join(', ')],
+      ['ACI webhook URL', cfg.aci_webhook_url],
+      ['B4B callback URL', cfg.b4b_callback_url],
+      ['Clock', cfg.clock],
+    ].filter(([, v]) => v);
+    const seenBy = Object.entries(e.seen_by || {}).filter(([, t]) => t);
+    body = `<div class="card-body">
+      <dl class="kv">
+        <dt>Id</dt><dd class="mono">${esc(e.id)}</dd>
+        ${e.created_at ? `<dt>Created</dt><dd>${esc(ago(e.created_at))}</dd>` : ''}
+        ${e.token ? `<dt>Token</dt><dd class="mono">${esc(e.token)}</dd>` : (e.default ? '<dt>Token</dt><dd>the admin\'s, LAB_API_TOKEN</dd>' : '')}
+        ${cfgRows.map(([k, v]) => `<dt>${esc(k)}</dt><dd class="mono">${esc(v)}</dd>`).join('')}
+        <dt>Seen by</dt><dd>${seenBy.length ? `<span class="pill-row">${seenBy.map(([svc, t]) =>
+          `<span class="pill ok" title="${esc(ago(t))}">${esc(svc)}</span>`).join('')}</span>` : 'no vendor yet'}</dd>
+      </dl>
+      ${(e.shared || []).length ? `<div class="note warn">Not kept apart yet: ${e.shared.map((x) => `<span class="mono">${esc(x)}</span>`).join(', ')}.
+        Its platform meets the default environment's data there.</div>` : ''}
+      <div class="form">
+        <a class="ghost small" href="${esc(e.kit)}" download>Download fintechlab-${esc(e.default ? 'env' : e.id)}.env</a>
+        ${e.id === state.env ? '' : `<button class="ghost small" data-action="use-env" data-id="${esc(e.id)}">Use</button>`}
+        ${e.default ? '' : `<button class="ghost small" data-action="rotate-env-token" data-id="${esc(e.id)}">Rotate token</button>
+        <button class="ghost small" data-action="delete-env" data-id="${esc(e.id)}" data-name="${esc(e.name || e.id)}">Delete</button>`}
+      </div>
+    </div>`;
+  }
+  return `<div class="card ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}">
+      <span class="chev">▸</span>
+      <i class="dot ${seen ? 'up' : 'unknown'}"></i>
+      <div class="card-title">
+        <span class="name">${esc(e.default ? 'Default' : (e.name || e.id))} <span class="pill ${e.default ? 'platform' : 'vendor'}">${e.default ? "lab's own" : esc(e.id)}</span>
+          ${e.id === state.env ? '<span class="pill supporting">shown</span>' : ''}</span>
+        <span class="desc">${e.default ? 'Everything the lab had before environments: its built-in logins, its two safeguarding accounts, the stand-ins.'
+          : `Its own logins at every vendor${(e.shared || []).length ? ', where the vendor keeps environments apart' : ''}.`}</span>
+      </div>
+      <div class="card-meta"><span>${meta}</span></div>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function openEnvModal() {
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>Create an environment</h2>
+      <p>A platform of its own on this lab: a token that reaches only its data, and its own login at every vendor. Its
+        kit — the <span class="mono">.env</span> its platform runs with — is on its card once it exists.</p>
+    </div>
+    <div class="modal-body">
+      <div class="form">
+        <div class="field wide"><label>Name</label><input data-field="name" placeholder="Infinite sbx" autofocus></div>
+        <div class="field"><label>Id</label><input data-field="id" placeholder="from the name"></div>
+      </div>
+      <div class="form">
+        <div class="field wide"><label>Settlement identifier</label><input data-field="settlement_identifier" placeholder="the lab's"></div>
+        <div class="field"><label>Clock</label>
+          <select data-field="clock"><option value="">follows</option><option value="wall">wall</option></select></div>
+      </div>
+      <div class="form">
+        <div class="field wide"><label>Webhook hosts</label><input data-field="webhook_hosts" placeholder="alb.example.com, other.example.com"></div>
+      </div>
+      <div class="form">
+        <div class="field wide"><label>ACI webhook URL</label><input data-field="aci_webhook_url" placeholder="none"></div>
+        <div class="field wide"><label>B4B callback URL</label><input data-field="b4b_callback_url" placeholder="per record"></div>
+      </div>
+      <p class="hint"><b>Settlement identifier</b> — what Worldline names this environment's settlement files.</p>
+      <p class="hint"><b>Webhook hosts</b> — the platform's own callback hosts: its Banking Circle subscriptions and B4B
+        callbacks may reach them.</p>
+      <p class="hint"><b>Clock</b> — wall for a deployed platform that cannot follow the lab clock: once its platform is
+        seen, the lab clock cannot be moved.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="create-env">Create environment</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
+  $('#modal').querySelector('[data-field="name"]').focus();
 }
 
 /* The settlement files a registered platform can run, one row each
@@ -872,11 +1052,11 @@ function connectPanel(s) {
           <td class="mono">${esc(f.name)}</td>
           <td>${esc(f.purpose)}</td>
           <td class="actions">${f.present
-            ? `<a class="ghost small" href="/v1/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}" download>Download</a>`
+            ? `<a class="ghost small" href="${esc(envHref(`/v1/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}`))}" download>Download</a>`
             : `<span class="hint">not generated yet — ${esc(s.name)} writes it on first start</span>`}</td>
         </tr>`).join('')}</tbody></table></div>` : ''}
       <div class="form">
-        <a class="ghost small" href="/v1/connect/env/${encodeURIComponent(s.id)}" download>Download ${esc(envName)}</a>
+        <a class="ghost small" href="${esc(envHref(`/v1/connect/env/${encodeURIComponent(s.id)}`))}" download>Download ${esc(envName)}</a>
       </div>
     </div>` : '';
 
@@ -923,12 +1103,12 @@ function connectAllPanel() {
             <td>${esc(k.title)}</td>
             <td class="num">${k.vars.length}</td>
             <td class="num">${files.length}${absent ? ` <span class="pill warn">${absent} not generated</span>` : ''}</td>
-            <td class="actions"><a class="ghost small" href="/v1/connect/env/${encodeURIComponent(k.service)}" download>fintechlab-${esc(k.service)}.env</a></td>
+            <td class="actions"><a class="ghost small" href="${esc(envHref(`/v1/connect/env/${encodeURIComponent(k.service)}`))}" download>fintechlab-${esc(k.service)}.env</a></td>
           </tr>`;
         }).join('')}</tbody></table></div>
       <p class="hint">Key and certificate files are on each vendor's own card, under Connect your platform.</p>
       <div class="form">
-        <a class="ghost small" href="/v1/connect/env" download>Download fintechlab.env</a>
+        <a class="ghost small" href="${esc(envHref('/v1/connect/env'))}" download>Download fintechlab${state.env === 'default' ? '' : '-' + esc(state.env)}.env</a>
       </div>
     </div>` : '';
 
@@ -3136,6 +3316,39 @@ const ACTIONS = {
   },
 
   'open-create-merchant': async () => { openMerchantModal(); },
+
+  'open-create-env': async () => { openEnvModal(); },
+
+  'create-env': async (_d, btn) => {
+    const f = fieldsIn(btn.closest('.modal'));
+    const config = {};
+    if (f.settlement_identifier) config.settlement_identifier = f.settlement_identifier;
+    if (f.clock) config.clock = f.clock;
+    if (f.aci_webhook_url) config.aci_webhook_url = f.aci_webhook_url;
+    if (f.b4b_callback_url) config.b4b_callback_url = f.b4b_callback_url;
+    const hosts = (f.webhook_hosts || '').split(',').map((h) => h.trim()).filter(Boolean);
+    if (hosts.length) config.webhook_hosts = hosts;
+    const r = await api('POST', '/v1/environments', { name: f.name, id: f.id || '', config }, { noEnv: true });
+    closeModal();
+    state.open.add(`environments:env-${r.environment.id}`);
+    const pushed = Object.entries(r.pushed || {}).map(([svc, how]) => `${svc}: ${how}`).join('\n');
+    toast(`Environment ${r.environment.id} created`, `Token ${r.token}\n${pushed}`, 'good');
+  },
+
+  'use-env': async (d) => { setEnv(d.id); },
+
+  'rotate-env-token': async (d) => {
+    if (!confirm(`Give ${d.id} a new token? The old one stops working at once: its platform's runner, scripts and agents need the new one. Its logins at the vendors do not change.`)) return;
+    const r = await api('POST', `/v1/environments/${encodeURIComponent(d.id)}/token`, undefined, { noEnv: true });
+    toast('Token rotated', `${d.id}: ${r.token}`, 'good');
+  },
+
+  'delete-env': async (d) => {
+    if (!confirm(`Delete ${d.name}? Every vendor forgets its records — payouts, accounts, files, merchants — and its token and logins stop working. The default environment and every other one are untouched. There is no undo.`)) return;
+    const r = await api('DELETE', `/v1/environments/${encodeURIComponent(d.id)}`, undefined, { noEnv: true });
+    if (state.env === d.id) setEnv('default', false);
+    toast('Environment deleted', Object.entries(r.vendors || {}).map(([svc, how]) => `${svc}: ${how}`).join('\n') || d.id, 'good');
+  },
   'open-create-batch': async () => { openBatchModal(); },
 
   'create-batch': async (_d, btn) => {
@@ -3388,17 +3601,23 @@ function renderView() {
   $('#view-title').textContent = meta.title;
   $('#view-sub').textContent = meta.sub;
 
-  $('#topbar-actions').innerHTML = state.view === 'merchants'
+  $('#topbar-actions').innerHTML = envPicker() + (state.view === 'merchants'
     ? `<button class="ghost small" data-action="refresh">Refresh</button>
        <button class="ghost" data-action="open-create-batch">Create a batch…</button>
        <button class="btn" data-action="open-create-merchant">+ Create merchant</button>`
-    : `<button class="ghost small" data-action="refresh">Refresh</button>`;
+    : state.view === 'environments'
+      ? `<button class="ghost small" data-action="refresh">Refresh</button>
+       <button class="btn" data-action="open-create-env">+ Create environment</button>`
+      : `<button class="ghost small" data-action="refresh">Refresh</button>`);
+  const pick = $('#topbar-actions').querySelector('[data-env-pick]');
+  if (pick) pick.addEventListener('change', () => setEnv(pick.value));
 
   const html =
     state.view === 'dashboard' ? renderDashboard() :
     isServiceView() ? renderServices() :
     state.view === 'banks' ? renderBanks() :
     state.view === 'merchants' ? renderMerchants() :
+    state.view === 'environments' ? renderEnvironments() :
     state.view === 'docs' ? renderDocs() :
     renderConfig();
 
@@ -3412,7 +3631,8 @@ function renderView() {
   // half-way down a log was thrown back to its first row every five seconds.
   const inner = new Map([...content.querySelectorAll('[data-keep-scroll]')]
     .map((el) => [el.dataset.keepScroll, el.scrollTop]));
-  content.innerHTML = (state.error ? `<div class="note bad">${esc(state.error)}</div>` : '') + html;
+  content.innerHTML = (state.error ? `<div class="note bad">${esc(state.error)}</div>` : '') +
+    (state.view === 'environments' ? '' : sharedNote()) + html;
   content.querySelectorAll('[data-keep-scroll]').forEach((el) => {
     const top = inner.get(el.dataset.keepScroll);
     if (top) el.scrollTop = top;
@@ -3506,6 +3726,7 @@ function init() {
   try {
     const saved = localStorage.getItem('console-theme');
     if (saved) document.documentElement.dataset.theme = saved;
+    state.env = localStorage.getItem('console-env') || 'default';
   } catch (_) { /* private window: the default stands */ }
 
   $('#nav').addEventListener('click', (ev) => {

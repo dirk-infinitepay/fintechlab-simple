@@ -86,6 +86,7 @@ func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app
 	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
 	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
 	a.traps = newTraps(5 * time.Millisecond)
+	a.customers = a.newCustomers()
 	return a
 }
 

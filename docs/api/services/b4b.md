@@ -22,11 +22,57 @@ banking relationship. Everything it is told is persisted to one state file.
 | | |
 | --- | --- |
 | Listens | `:8086`, plain HTTP (no TLS): the Oversight API. Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086`.<br>`:9086`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://b4b:9086` |
-| Auth | Every `/oversight/v1/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt). `GET /health`: none. The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The old `/sim/*` paths on `:8086` keep the JWT until phase 4, but for `GET /sim/activity` |
-| A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names |
-| Activity logs | `GET /sim/activity` keeps three in-memory rings of 256 events. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. `traps` (*Traps*): every trap armed, every payout one caught, each hop it took and each one disarmed, ops `trap.armed`, `trap.caught`, `trap.step`, `trap.disarmed`. A payout a trap caught, and each callback for a transition the trap made, carries `detail.trap`. Boarding, beneficiary and other `/sim` calls are not logged |
-| Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` every token must carry.<br>`B4B_CALLBACK_URL` (empty): the client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts a callback may go to.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop, a trap's hops included.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`: each is a [standing trap](#standing-traps), armed at start.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
+| Auth | Every `/oversight/v1/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt); its `kid` says which environment the call is ([Environments](#environments)). `GET /health`: none. The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The old `/sim/*` paths on `:8086` keep the JWT until phase 4, but for `GET /sim/activity` |
+| A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names. A platform with an environment of its own gets its own `B4B_JWT_KEY_ID` and key in that environment's kit, and is called back where its customer says ([Environments](#environments)) |
+| Activity logs | `GET /sim/activity` keeps three in-memory rings of 256 events per environment. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. `traps` (*Traps*): every trap armed, every payout one caught, each hop it took and each one disarmed, ops `trap.armed`, `trap.caught`, `trap.step`, `trap.disarmed`. A payout a trap caught, and each callback for a transition the trap made, carries `detail.trap`. Boarding, beneficiary and other `/sim` calls are not logged |
+| Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` the default environment's tokens carry.<br>`B4B_CALLBACK_URL` (empty): the default environment's client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts any environment's callback may go to; an environment adds its own `webhook_hosts`.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop, a trap's hops included.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`, in the default environment: each is a [standing trap](#standing-traps), armed at start.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-b4b-oversight.md](../../ARCHITECTURE-b4b-oversight.md) (boarding), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §4 and Addendum §A/D/F (payout half), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §4 (wire-shape fixes), [structure/b4b.md](../../structure/b4b.md) (file by file) |
+
+## Environments
+
+Each environment the lab creates
+([lab-api/environments.md](../../lab-api/environments.md)) is a customer
+here, pushed by the lab API with
+[`PUT /sim/customers/{env}`](#put-simcustomersenv): a key id and the public
+half of the RS512 key its platform signs with, where it is called back, and
+the hosts it may be called back on. The default environment is b4b as it
+always was: `B4B_JWT_KEY_ID` and its key, `B4B_CALLBACK_URL`,
+`WEBHOOK_ALLOWLIST`.
+
+- **The `kid` says whose a call is.** `B4B_JWT_KEY_ID` is the default's;
+  a customer's `key_id` is that environment's, and its token is verified
+  against that customer's key. A `kid` nobody has is `401`, as before. A
+  key id names one environment: the default's, or one another customer
+  holds, is refused at the push.
+- **Everything a call makes is its environment's:** companies, and with
+  them their addresses, people, extended profile and vIBANs; uploads;
+  beneficiaries; payments. A caller lists, reads and acts on its own only:
+  another environment's id is `404`, as an unknown one is. A beneficiary
+  is the exception it always was: an id the caller does not have
+  auto-vivifies, so another environment's payee reads as a synthetic one.
+- **`external_ref` is unique per environment.** Two platforms may board
+  the same company `external_ref` and register the same MID, and each
+  resolves its own.
+- **Callbacks go to the environment's own endpoint.** A record's
+  `callback_url`, else `B4B_CALLBACK_URL` for the default and the
+  customer's `b4b.callback_url` for any other (none set: nowhere, logged as
+  a warning). A destination is allowed when `WEBHOOK_ALLOWLIST` or the
+  environment's `webhook_hosts` names its host.
+- **The bridge says whose a payout is.** A payout of any environment but
+  the default carries `Lab-Environment: <env>` on the bridge call, and
+  Banking Circle debits that environment's safeguarding account
+  ([Lab plumbing](#lab-plumbing)).
+- **The lab's hooks act in the environment the call names**, with `?env=`
+  or the `Lab-Environment` header, else the default
+  ([Lab control](#lab-control)). Activity, traps and resets are per
+  environment; `B4B_FORCE_FAILURE_BENEFICIARY_IDS` is configuration, so its
+  standing traps are the default's.
+- **The state file names each record's owner** as `env`, left out for the
+  default's. A file written before environments loads as the default's.
+  The wire never shows it.
+- **Deleting a customer** drops everything its environment made, as an
+  `all` reset of it would, with its traps and activity; its key verifies
+  nothing after.
 
 ## Vendor surface
 
@@ -64,16 +110,19 @@ no JWT library:
 
 - **Format.** Compact JWS: three base64url segments **without padding**. A
   padded segment fails to decode and is refused.
-- **Header.** `alg` must be `RS512`. `kid` must be present and equal
-  `B4B_JWT_KEY_ID` (default `b4b-mock-1`). Other header fields are ignored.
+- **Header.** `alg` must be `RS512`. `kid` must be present and name a key
+  b4b holds: `B4B_JWT_KEY_ID` (default `b4b-mock-1`), the default
+  environment's, or an [environment's](#environments) own `key_id`. Other
+  header fields are ignored.
 - **Claims.** `aud` must be the JSON **string** `"b4b-payments"`. An
   array-valued `aud` (`["b4b-payments"]`, legal under RFC 7519) fails to
   parse and is refused. No other claim is read: `exp`, `iat`, `nbf`, `iss`
   and `sub` are ignored, so a token never expires here.
 - **Signature.** RSASSA-PKCS1-v1_5 with SHA-512 over
-  `<header>.<payload>`, checked against one RSA public key.
-- **Where the key comes from.** If `B4B_JWT_PUBLIC_KEY_PATH` is set, that PEM
-  (PKIX `PUBLIC KEY` or PKCS#1 `RSA PUBLIC KEY`) is the only key, which is how
+  `<header>.<payload>`, checked against the RSA public key the `kid` names.
+- **Where the key comes from.** An environment's is the `public_key_pem`
+  pushed with its customer. The default's: if `B4B_JWT_PUBLIC_KEY_PATH` is
+  set, that PEM (PKIX `PUBLIC KEY` or PKCS#1 `RSA PUBLIC KEY`), which is how
   a real vendor holds a client's credential. Otherwise b4b loads
   `B4B_JWT_KEYS_DIR/private.pem` (PKCS#1 or PKCS#8) and verifies with its
   public half; if the file does not exist it generates an RSA-2048 pair,
@@ -146,7 +195,7 @@ Answers `201` with the company:
 ```
 
 - `400`: a missing or invalid field (`b4b: invalid input: legal_name is required`).
-- `422`: the `external_ref` is already taken
+- `422`: the `external_ref` is already taken in the caller's environment
   (`b4b: already exists: a company with external_ref "merchant-0001" already exists (id cmp_…)`).
 
 Side effects: the inline address is also stored as an address of type
@@ -154,8 +203,9 @@ Side effects: the inline address is also stored as an address of type
 
 ### `GET /oversight/v1/companies`
 
-Lists every boarded company, oldest first. The design record calls this a
-lab convenience; it is not confirmed at the real vendor.
+Lists every company the caller's environment boarded, oldest first. The
+design record calls this a lab convenience; it is not confirmed at the real
+vendor.
 
 Answers `200` with `{"companies": [<company>, …]}`.
 
@@ -371,8 +421,9 @@ Body:
 `account_name`, `account_number` and `financial_institution` are required.
 `company_id` is optional and, when present, must name a boarded company (id
 or `external_ref`). Two lab affordances that are not real wire fields:
-`callback_url` (overrides `B4B_CALLBACK_URL` for this payee; must pass
-`WEBHOOK_ALLOWLIST`) and `sanctions_status` (`pass`, the default, `review`
+`callback_url` (overrides the environment's callback endpoint for this
+payee; must pass `WEBHOOK_ALLOWLIST` or the environment's `webhook_hosts`)
+and `sanctions_status` (`pass`, the default, `review`
 or `fail`, to register a payee that is already blocked).
 
 Answers `201`:
@@ -386,8 +437,8 @@ Answers `201`:
 - `404`: `company_id` names a company that was never boarded.
 
 Side effects: fires the [beneficiary callback](#beneficiary-callback) in
-the background, every time. Registering the same `external_ref` again mints
-a new id; lookups by `external_ref` then resolve to the newest record, while
+the background, every time. Registering the same `external_ref` again in
+the same environment mints a new id; lookups by `external_ref` then resolve to the newest record, while
 the old id still reads the old one. Persisted.
 
 The lab registers payees through
@@ -437,7 +488,8 @@ Body:
 ```
 
 Checks, in order, each a `400`: `beneficiary_id` required; `callback_url`
-(a lab affordance) must pass the allowlist; `amount.amount` must be a
+(a lab affordance) must pass the allowlist or the environment's
+`webhook_hosts`; `amount.amount` must be a
 decimal with at most two places (a JSON number; a quoted decimal string is
 also decoded); `currencyOfTransfer`, `debtorViban.account` and
 `creditorAccount.account` required; `chargeBearer` one of `SHA`, `BEN`,
@@ -513,11 +565,14 @@ POSTing to it. Common to all three kinds (`deliverCallback`):
   signature, no HMAC, no encryption, no auth header. The response body is
   ignored; any 2xx counts as taken. 8-second client timeout.
 - **Destination.** The record's own `callback_url` if it has one
-  (beneficiaries and payments only, a lab affordance), otherwise
-  `B4B_CALLBACK_URL`, the client-account endpoint the real API uses. A
-  payment's destination is fixed when it is created. The destination must
-  pass `WEBHOOK_ALLOWLIST`, checked again at delivery. With no destination at
-  all nothing is sent, and the `callbacks` log records a warning.
+  (beneficiaries and payments only, a lab affordance), otherwise the
+  environment's client-account endpoint, the one the real API uses:
+  `B4B_CALLBACK_URL` for the default, the customer's `b4b.callback_url` for
+  any other ([Environments](#environments)). A payment's destination is
+  fixed when it is created. The destination must pass `WEBHOOK_ALLOWLIST`
+  or the environment's `webhook_hosts`, checked again at delivery. With no
+  destination at all nothing is sent, and the `callbacks` log records a
+  warning.
 - **Retries.** Up to `MAX_ATTEMPTS` (4) attempts, waiting `RETRY_BACKOFF`
   (1s, 2s, 4s) between them, on any non-2xx (4xx included) or transport
   error. After the last attempt the callback is dropped and logged as
@@ -534,8 +589,8 @@ The lab's settlement stand-in receives payment callbacks at
 
 Sent after every `POST /oversight/v1/companies/{id}/people` (both entity
 types), and after `PUT /sim/people/{id}/sanctions` when either status
-actually changed. Always to `B4B_CALLBACK_URL`: a person has no
-`callback_url`.
+actually changed. Always to the environment's client-account endpoint
+(`B4B_CALLBACK_URL` for the default): a person has no `callback_url`.
 
 ```json
 {"id": "per_5a6b7c8d9e0f", "sanctions_status": "pass", "pep_sanctions_status": "pass"}
@@ -549,7 +604,7 @@ correlates on the id the create returned.
 Sent after every `POST /oversight/v1/beneficiaries`, and after
 `PUT /sim/beneficiaries/{id}/sanctions` or `PUT /sim/beneficiaries/{id}/status`
 when the value actually changed. To the beneficiary's `callback_url`, else
-`B4B_CALLBACK_URL`.
+the environment's endpoint.
 
 ```json
 {"id": "ben_0a1b2c3d4e5f", "external_ref": "MID0001", "sanctions_status": "fail", "status": "disabled", "disabled_at": "2026-11-07T10:00:00Z"}
@@ -567,7 +622,7 @@ Sent once per transition: `B4BAccepted` (immediately on create), then
 [trap](#traps) can stop a payment short or fail it earlier, and then there
 are fewer; each looks exactly as it does without one. After a restart only
 the transitions not yet made fire. To the payment's `callback_url`,
-else `B4B_CALLBACK_URL` as it stood when the payment was created.
+else the environment's endpoint as it stood when the payment was created.
 
 ```json
 {
@@ -598,6 +653,11 @@ exists:
 {"paymentId": "bcp_8b9c0d1e2f3a", "accountId": "<UUID derived from beneficiary_id>", "amount": "12.34", "currency": "EUR", "externalRef": "stl_20261107_MID0001", "holder": "Southwind Coffee Ltd", "iban": "GB00SIM0000000000042"}
 ```
 
+A payout of any environment but the default carries the header
+`Lab-Environment: <env>`, and Banking Circle debits that environment's
+safeguarding account; the default's carries none, as before. Nothing else
+in the call changes.
+
 `amount` is `amount.amount` as sent; `currency` is `currencyOfTransfer`
 (Banking Circle holds safeguarding accounts for EUR and GBP only).
 `accountId` is `bankingcircle.AccountIDFor(beneficiary_id)`. The creditor
@@ -617,6 +677,15 @@ paths still answer on `:8086` until phase 4 of
 [the plan](../../lab-api/plan.md) retires them, behind the bearer JWT as
 they were, but for `GET /sim/activity`, which never needed it.
 
+Every hook acts in one environment: the one named by `?env=`, else the
+`Lab-Environment` header, else the default
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)). A hook
+that registers or changes a record refuses `*` (`400`) and an environment
+b4b does not serve (`404`), and reaches only that environment's records.
+The old paths on `:8086` are the default environment's alone, whatever they
+name: another environment's JWT is `403` there, a reset naming another
+environment is `403`, and `/sim/customers` is on the control port only.
+
 ### `GET /health`
 
 Liveness, on both ports, no auth. `:8086` answers `{"status": "ok",
@@ -627,7 +696,10 @@ probes.
 ### `GET /sim/activity`
 
 The three activity logs, newest event first. No auth on either port. Query:
-`limit` (positive integer, default 100).
+`limit` (positive integer, default 100); `env` (the default when left
+out, `*` for every environment's, merged by `seq`). Each event of an
+environment but the default carries `"env"`. On `:8086` it is the
+default's.
 
 Answers `200`:
 
@@ -661,8 +733,11 @@ Registers a payee exactly as
 [`POST /oversight/v1/beneficiaries`](#post-oversightv1beneficiaries) does,
 without the JWT: the same handler, so the same body and validation, the
 same answer (`201` with the beneficiary; `400`, `404` as there), the same
-beneficiary callback and the same state file. The lab API registers
-merchants' outlets through it, with `external_ref` set to the MID.
+beneficiary callback and the same state file. It registers in the named
+environment, as that environment's platform would, and calls back at its
+endpoint; `400` for `*`, `404` for an environment b4b does not serve. The
+lab API registers merchants' outlets through it, with `external_ref` set to
+the MID.
 
 ### `PUT /sim/beneficiaries/{id}/sanctions`
 
@@ -670,8 +745,9 @@ Moves a beneficiary's consolidated sanctions status, as continuous
 screening would.
 
 Body: `{"sanctions_status": "fail"}` (`pass`, `review` or `fail`).
-`{id}` is a B4B id or `external_ref`; an unknown id materializes the
-synthetic payee and stores it.
+`{id}` is a B4B id or `external_ref`, in the named environment; an id it
+does not have (another environment's included) materializes the synthetic
+payee and stores it as the named environment's.
 
 Answers `200` with the beneficiary. `400` for a missing or invalid status.
 Fires the beneficiary callback if the status changed. Persisted.
@@ -695,7 +771,7 @@ Body: `{"sanctions_status": "review"}` (`pass`, `review` or `fail`;
 `pep_sanctions_status` is ignored). `{id}` is a B4B id or `external_ref`.
 
 Answers `200` with the company, `400` for a missing or invalid status,
-`404` for an unknown company. No callback (the real API has no company
+`404` for an unknown company or another environment's. No callback (the real API has no company
 callback), and nothing reads this status: it blocks no payment.
 
 ### `PUT /sim/people/{id}/sanctions`
@@ -707,7 +783,7 @@ least one is required; an empty one is left alone. `{id}` is the person's
 B4B id only.
 
 Answers `200` with the person; `400` when both are empty or a value is
-invalid; `404` for an unknown person. Fires the person screening callback
+invalid; `404` for an unknown person or another environment's. Fires the person screening callback
 if either status changed. Persisted.
 
 ### Traps
@@ -717,7 +793,9 @@ One hook, `payment.create`
 `times` and the lifecycle of a trap are the lab's, in
 [the API overview](../README.md#traps)). It is offered every payout
 `POST /oversight/v1/payments` accepts, after the gates: a payout refused
-`422` is never offered. Subject: the payment id.
+`422` is never offered. Subject: the payment id. A trap is armed in the
+environment the call names and takes only that environment's payouts;
+`GET`, `DELETE` and a reset see only its traps.
 
 | Match field | |
 | --- | --- |
@@ -785,7 +863,7 @@ own rule, `422` at create.
 #### Standing traps
 
 Each id in `B4B_FORCE_FAILURE_BENEFICIARY_IDS` is armed at start as a
-standing trap: `"label": "B4B_FORCE_FAILURE_BENEFICIARY_IDS <id>"`,
+standing trap of the default environment's: `"label": "B4B_FORCE_FAILURE_BENEFICIARY_IDS <id>"`,
 `"match": {"beneficiary_id": "<id>"}`, `"times": null`, path
 `[{"to": "B4BTMPending"}, {"to": "B4BFailed"}]`. That is what the variable
 always did: five callbacks, `B4BFailed` where `B4BTMApproved` would have
@@ -890,8 +968,9 @@ Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "b4b"`, `"kind": "vendor"`, `"vendor_listeners": [":8086"]`,
 `"control_listener": ":9086"`, `"reset_scopes": ["flow", "all"]`,
-`"hooks": ["payment.create"]`, and
-`"traps": {"armed": 1, "pending_steps": 0}`.
+`"hooks": ["payment.create"]`,
+`"traps": {"armed": 1, "pending_steps": 0}`, `"environments": true` and
+`"customers": 1` (how many besides the default).
 
 ### `GET /sim/logs`
 
@@ -903,7 +982,11 @@ reset dropped, and every trap armed, catch and hop.
 
 ### `POST /sim/reset`
 
-Puts b4b back to a known state.
+Puts one environment back to a known state: the one named by `env` in the
+body, `?env=` or `Lab-Environment`, else the default; `*` is every
+environment, as a reset was before environments. `404` for an environment
+b4b does not serve. Another environment's records, callbacks in flight,
+activity and traps are untouched, and its payouts walk on.
 
 - **`flow`** clears every payment (`payments`; `payments_in_flight` of them
   had not reached a final state), the callbacks and bridge calls in
@@ -915,9 +998,9 @@ Puts b4b back to a known state.
   sanctions and status.
 - **`all`** clears the boarding too, counted per kind: the state file as on
   first start.
-- **Keeps**, either way, the JWT keys and
+- **Keeps**, either way, the JWT keys, the environments themselves and
   `B4B_FORCE_FAILURE_BENEFICIARY_IDS`: they are configuration. Its standing
-  traps are armed again, afresh.
+  traps, the default's, are armed again, afresh.
 - Work in flight is dropped, not raced. A payment still sleeping out
   `B4B_PROCESSING_DELAY`, or a trap's hop still waiting, takes no further
   step, and no callback, retry or bridge call begun before the reset is
@@ -930,11 +1013,80 @@ Puts b4b back to a known state.
   be written; the reset has then happened in memory only.
 
 ```json
-{"service": "b4b", "scope": "flow",
+{"service": "b4b", "scope": "flow", "env": "default",
  "cleared": {"payments": 3, "payments_in_flight": 1, "callbacks_in_flight": 1, "activity_events": 14, "traps": 1, "trap_steps": 1},
  "kept": ["companies", "addresses", "people", "extended_profiles", "documents", "vibans", "beneficiaries", "jwt_keys", "force_failure_beneficiary_ids"],
  "at": "2026-11-07T12:00:00Z"}
 ```
+
+### `GET /sim/customers`
+
+The environments b4b serves, the default first
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)).
+
+```json
+{"customers": [
+  {"env": "default", "created_at": "0001-01-01T00:00:00Z", "last_seen": "2026-11-10T09:00:00Z"},
+  {"env": "sbx", "name": "sbx", "created_at": "2026-11-10T08:00:00Z", "last_seen": null}]}
+```
+
+`last_seen` is the last vendor call whose token verified with the
+environment's key; `null` until the first. The
+default has no `created_at` of its own: it is the zero time.
+
+### `PUT /sim/customers/{env}`
+
+Adds or replaces one customer. b4b keeps its customers in memory, and the
+lab API pushes every one again when b4b restarts; the records they made are
+in the state file and need no push.
+
+Body: a customer, of which b4b reads `b4b` and `webhook_hosts`:
+
+```json
+{"env": "sbx", "name": "sbx",
+ "b4b": {"key_id": "lab-sbx-1",
+         "public_key_pem": "-----BEGIN PUBLIC KEY-----\n…\n-----END PUBLIC KEY-----\n",
+         "callback_url": "https://sbx-api.example/api/v1/b4b/callback"},
+ "webhook_hosts": ["sbx-api.example"]}
+```
+
+- `b4b.key_id` is the `kid` the environment's tokens carry, and
+  `b4b.public_key_pem` (PKIX or PKCS#1) the key they are verified against.
+  The private half stays with the lab API and the platform.
+- `b4b.callback_url` is the environment's client-account endpoint, its
+  `B4B_CALLBACK_URL`; left out, it is called back only about records that
+  name a `callback_url`. It must pass `WEBHOOK_ALLOWLIST` or
+  `webhook_hosts`.
+- `webhook_hosts` are hosts (`host`, `host:port` or a CIDR, as in
+  `WEBHOOK_ALLOWLIST`) its callbacks may reach on top of the allowlist.
+- A customer with no `b4b` is served, but no token is its: its platform
+  cannot call b4b.
+
+`env` may be left out; given, it must be the path's.
+
+Answers `200` `{"env": "sbx", "created": true}`, `false` when it replaced
+one; replacing keeps everything the environment made, and the new key
+verifies from then on. `400` for a body that is not a customer, an `env`
+that is not the path's, an id that cannot name an environment (`default`,
+`*`, or anything but lower-case letters, digits and dashes, starting with
+a letter, at most 40), an empty `key_id`, a `key_id` that is
+`B4B_JWT_KEY_ID` or another environment's, a key that is not an RSA public
+key, a `callback_url` neither list allows, or a `webhook_hosts` entry that
+does not parse. A refused push leaves the key and callback settings b4b
+works with as they were, though `GET /sim/customers` lists the customer as
+pushed.
+
+### `DELETE /sim/customers/{env}`
+
+Removes one customer and everything its environment made: its companies
+with all that hangs off them, uploads, beneficiaries and payments, the
+callbacks and bridge calls in flight, its activity and its traps, as an
+`all` reset of the environment would. Its key verifies nothing from the
+moment the call arrives. The state file is written before it answers.
+
+Answers `200` `{"env": "sbx", "deleted": true}`; `404`
+`no environment sbx here`; `500` when the state file could not be written
+(the environment's records are gone from memory all the same).
 
 ## Called by
 
@@ -961,6 +1113,10 @@ Puts b4b back to a known state.
   `/sim/*` route through.
   `GET /v1/connect/env/b4b` and `GET /v1/connect/files/b4b/{name}` hand
   out the signing key without calling b4b; the lab API signs nothing.
+  The lab API pushes each environment's customer with
+  `PUT /sim/customers/{env}` (again whenever b4b restarts), removes it with `DELETE /sim/customers/{env}`, reads
+  `GET /sim/customers` for its status, and names the environment
+  (`?env=`, or `env` on a reset) on every `/sim/*` call it makes for one.
 - **e2e suite** (`internal/e2e`): `b4b-oversight-gates`
   (`scenario_b4b.go`) registers a beneficiary, sends mismatched and matching
   payments, polls `GET /oversight/v1/payments/{id}`, blocks the payee with

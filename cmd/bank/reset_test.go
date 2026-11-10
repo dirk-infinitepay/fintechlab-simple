@@ -69,17 +69,17 @@ func TestResetPutsTheLedgerBackToItsSeed(t *testing.T) {
 				t.Errorf("kept = %v", got.Kept)
 			}
 
-			seed := newStore()
-			if len(s.accts) != len(seed.accts) || len(s.byIBAN) != len(seed.byIBAN) {
-				t.Fatalf("accounts after reset = %d, want the %d seeded", len(s.accts), len(seed.accts))
+			seed := seedBook()
+			if len(def(s).accts) != len(seed.accts) || len(def(s).byIBAN) != len(seed.byIBAN) {
+				t.Fatalf("accounts after reset = %d, want the %d seeded", len(def(s).accts), len(seed.accts))
 			}
 			for id, a := range seed.accts {
-				if b := s.accts[id]; b == nil || b.Balance != a.Balance || b.cents != a.cents {
+				if b := def(s).accts[id]; b == nil || b.Balance != a.Balance || b.cents != a.cents {
 					t.Errorf("%s after reset = %+v, want %+v", id, b, a)
 				}
 			}
-			if len(s.entries) != 0 {
-				t.Errorf("ledger after reset = %v", s.entries)
+			if len(def(s).entries) != 0 {
+				t.Errorf("ledger after reset = %v", def(s).entries)
 			}
 			if len(credits.Recent(10)) != 0 || len(ledger.Recent(10)) != 0 {
 				t.Error("the activity logs should be empty after a reset")
@@ -91,8 +91,8 @@ func TestResetPutsTheLedgerBackToItsSeed(t *testing.T) {
 			if w.Code != 200 || !strings.Contains(w.Body.String(), `"opened":true`) {
 				t.Fatalf("credit after reset: %d %s", w.Code, w.Body)
 			}
-			if len(s.entries) != 1 || s.entries[0].ID != "ent_1" {
-				t.Errorf("ledger after reset and one credit = %+v", s.entries)
+			if len(def(s).entries) != 1 || def(s).entries[0].ID != "ent_1" {
+				t.Errorf("ledger after reset and one credit = %+v", def(s).entries)
 			}
 		})
 	}

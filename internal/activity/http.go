@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"strings"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Watching an inbound call is done as middleware rather than at each
@@ -98,6 +100,10 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 			// the real work and must not be starved by the observer.
 			r.Body = io.NopCloser(bytes.NewReader(reqBody))
 		}
+		// The environment is learnt inside: the vendor's auth sets it once
+		// it knows who called (internal/tenant), into a slot bound here.
+		ctx := tenant.Bind(r.Context())
+		r = r.WithContext(ctx)
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		next(rec, r)
 
@@ -120,7 +126,9 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 			detail = map[string]string{}
 		}
 		detail["status"] = http.StatusText(rec.status)
+		env, _ := tenant.Named(ctx)
 		l.Record(Event{
+			Env:     env,
 			Op:      op,
 			Peer:    peerOf(r),
 			Summary: summary,

@@ -31,7 +31,9 @@ type simAnswer struct {
 func (a *app) fanOut(ctx context.Context, method, path string) []simAnswer {
 	var ids []string
 	for _, s := range a.cat.Services {
-		if _, ok := a.labService(s.ID); ok {
+		// In an environment other than the default, only the services
+		// that keep environments apart answer for it.
+		if _, ok := a.labService(s.ID); ok && a.inScope(ctx, s.ID) {
 			ids = append(ids, s.ID)
 		}
 	}

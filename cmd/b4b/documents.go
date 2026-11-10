@@ -96,14 +96,14 @@ func (a *app) uploadDocument(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	doc := a.dir.AddDocument(p)
+	doc := a.dir.In(envOf(r)).AddDocument(p)
 	log.Printf("b4b: upload %s accepted type=%q file=%q bytes=%d (content discarded)",
 		doc.ID, doc.DocumentType, doc.FileName, doc.Size)
 	httputilx.WriteJSON(w, 201, doc)
 }
 
 func (a *app) getDocument(w http.ResponseWriter, r *http.Request) {
-	doc, err := a.dir.Document(r.PathValue("id"))
+	doc, err := a.dir.In(envOf(r)).Document(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return

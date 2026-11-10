@@ -23,11 +23,29 @@ memory only.
 | | |
 | --- | --- |
 | Listens | `:8088`, plain HTTP (the real service is plain HTTP in local development too): the platform's routes. Compose service `verify` (`http://verify:8088` on the compose network); host `http://127.0.0.1:8088`.<br>`:9088`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://verify:9088` |
-| Auth | `x-internal-api-key` header equal to `VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`) on both `/verify/*` routes. The health route is public. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| Auth | `x-internal-api-key` header equal to `VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`), the default environment's, or to an environment's own key ([Environments](#environments)), on both `/verify/*` routes. Any other key is refused. The health route is public. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | `VERIFICATION_SERVICE_API_URL` (`http://127.0.0.1:8088/api/v1/verification`) and `VERIFICATION_INTERNAL_API_KEY`. the lab API's connect kit (`GET :8097/v1/connect/env/verify`) ships both commented out, because they replace the platform's own service. The settlement stand-in uses `VERIFY_URL` (`http://verify:8088`, no prefix) and `VERIFY_INTERNAL_API_KEY` |
 | Activity logs | None. There is no `GET /sim/activity`. Each request line is logged on stdout |
-| Configuration | `LISTEN` (`:8088`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9088`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`): the key every `/verify/*` call must carry.<br>`VERIFY_PROCESSING_DELAY` (`100ms`): how long after a trigger the decision becomes readable. Settlement polls for about 500 ms and then carries on as if approved, so a longer delay makes its gate let everything through.<br>`VERIFY_FORCE_DECLINE_IDS` (empty): comma-separated integer `merchantApplicationId`s that decide `DECLINE`; non-integers are logged and skipped. Settlement derives the id from the merchant id (FNV-32a, read as a signed 32-bit integer and made positive: `fnvPositive` in `cmd/settlement/main.go`), so that number is the one to list.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): `completedAt` follows the [lab clock](../../plugins.md#the-clock) |
+| Configuration | `LISTEN` (`:8088`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9088`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`VERIFICATION_INTERNAL_API_KEY` (`sim-verify-key-dev-only`): the key every `/verify/*` call must carry.<br>`VERIFY_PROCESSING_DELAY` (`100ms`): how long after a trigger the decision becomes readable. Settlement polls for about 500 ms and then carries on as if approved, so a longer delay makes its gate let everything through.<br>`VERIFY_FORCE_DECLINE_IDS` (empty): comma-separated integer `merchantApplicationId`s that decide `DECLINE`, in the default environment only; non-integers are logged and skipped. Settlement derives the id from the merchant id (FNV-32a, read as a signed 32-bit integer and made positive: `fnvPositive` in `cmd/settlement/main.go`), so that number is the one to list.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): `completedAt` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §3 (the service) and §5 (settlement's gate), [catalogue.md](../../catalogue.md) |
+
+## Environments
+
+Each environment the lab creates
+([lab-api/environments.md](../../lab-api/environments.md)) is a customer
+here, pushed by the lab API with
+[`PUT /sim/customers/{env}`](#put-simcustomersenv), with an
+`x-internal-api-key` of its own (`verify.key`).
+
+- A call is its key's environment's: `VERIFICATION_INTERNAL_API_KEY` is
+  the default's, a customer's key its own. A key nobody has is `401`, as
+  before.
+- Decisions are kept per environment. Two platforms may decide the same
+  `merchantApplicationId`, and each reads only its own.
+- `VERIFY_FORCE_DECLINE_IDS` is the lab's configuration, so the
+  default's: another environment's decisions are all approvals.
+- A reset names one environment, or every one with `*`. Deleting a
+  customer takes its decisions with it, and its key opens nothing after.
 
 ## Vendor surface
 
@@ -63,16 +81,17 @@ Answers `202` with the decision it is about to record:
 ```
 
 A force-declined id answers `"overallDecision": "DECLINE"`, `riskScore` 95,
-`riskClassification` `"HIGH"`.
+`riskClassification` `"HIGH"`, in the default environment.
 
 - `400`: malformed JSON, an unknown field, a non-integer id
   (`json: cannot unmarshal string into Go struct field …`), or a missing or
   zero id (`merchantApplicationId required`).
 - `401`: the key.
 
-Side effects: after `VERIFY_PROCESSING_DELAY` the decision is recorded with
-`completedAt` from the lab clock, and only then can it be read. Triggering
-the same id again records a fresh decision. In memory only.
+Side effects: after `VERIFY_PROCESSING_DELAY` the decision is recorded,
+in the key's environment, with `completedAt` from the lab clock, and only
+then can it be read. Triggering the same id again records a fresh decision.
+In memory only.
 
 ### `GET /api/v1/verification/verify/data/verify-decision/{merchantApplicationId}`
 
@@ -104,8 +123,8 @@ always omitted.
 
 - `400`: `merchantApplicationId must be an integer`.
 - `401`: the key.
-- `404`: `decision not found`, for an id never triggered or one whose
-  processing delay has not yet elapsed.
+- `404`: `decision not found`, for an id the key's environment never
+  triggered or one whose processing delay has not yet elapsed.
 
 ## Lab control
 
@@ -125,7 +144,8 @@ own `GET /api/v1/verification/health` is the platform's.
 
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
-`"service": "verify"`, `"kind": "stand-in"`, `"reset_scopes": ["flow", "all"]`.
+`"service": "verify"`, `"kind": "stand-in"`, `"reset_scopes": ["flow", "all"]`,
+`"environments": true` and `"customers"`, how many there are.
 
 ### `GET /sim/logs`
 
@@ -135,21 +155,66 @@ request, and each skipped `VERIFY_FORCE_DECLINE_IDS` entry at start.
 
 ### `POST /sim/reset`
 
-Forgets every decision. Both scopes do the same: verify has nothing a
-platform set up once.
+Forgets every decision of the environment the reset names (`"env"` in the
+body, `?env=` or `Lab-Environment`; the default without any), or of every
+one for `*`. Both scopes do the same: verify has nothing a platform set up
+once.
 
-- **Clears**: every recorded decision, so a read is `404` again; and every
-  trigger still sleeping out `VERIFY_PROCESSING_DELAY`, which is dropped,
-  never recorded after the reset.
+- **Clears**: every decision the environment recorded, so a read is `404`
+  again; and every trigger of its still sleeping out
+  `VERIFY_PROCESSING_DELAY`, which is dropped, never recorded after the
+  reset. Another environment's decisions and triggers are left alone.
 - **Keeps**: `VERIFY_FORCE_DECLINE_IDS`. It is configuration: a
   force-declined id still declines after a reset.
 
 `cleared` counts recorded `decisions` and `pending` triggers.
 
 ```json
-{"service": "verify", "scope": "flow", "cleared": {"decisions": 3, "pending": 1},
+{"service": "verify", "scope": "flow", "env": "default", "cleared": {"decisions": 3, "pending": 1},
  "kept": ["force_decline_ids"], "at": "2026-11-07T12:00:00Z"}
 ```
+
+### `GET /sim/customers`
+
+The environments this service serves, the default first
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)).
+
+```json
+{"customers": [
+  {"env": "default", "created_at": "0001-01-01T00:00:00Z", "last_seen": "2026-11-10T09:00:00Z"},
+  {"env": "sbx", "name": "sbx", "created_at": "2026-11-10T08:00:00Z", "last_seen": null}]}
+```
+
+`last_seen` is the last `/verify/*` call made with the environment's key;
+`null` until the first. The default has no `created_at` of its own: it is
+the zero time.
+
+### `PUT /sim/customers/{env}`
+
+Adds or replaces one customer. The lab API pushes every customer again
+when the service restarts, because they live in memory.
+
+Body: a customer, of which this service reads `verify`:
+
+```json
+{"env": "sbx", "name": "sbx", "verify": {"key": "…"}}
+```
+
+`env` may be left out; given, it must be the path's.
+
+Answers `200` `{"env": "sbx", "created": true}`, `false` when it replaced
+one; replacing keeps the environment's decisions. `400` for a body that is
+not a customer, an `env` that is not the path's, or an id that cannot name
+an environment (`default`, `*`, or anything but lower-case letters, digits
+and dashes, starting with a letter, at most 40).
+
+### `DELETE /sim/customers/{env}`
+
+Removes one customer and its decisions, triggers in flight included. Its
+key is refused afterwards.
+
+Answers `200` `{"env": "sbx", "deleted": true}`; `404`
+`no environment sbx here`.
 
 ## Called by
 
@@ -165,7 +230,9 @@ platform set up once.
   probe its `GET /health`. `POST /v1/lab/reset` and
   `POST /v1/services/verify/reset` call `POST /sim/reset`; `GET /v1/logs`
   and `GET /v1/services/verify/logs` read `GET /sim/logs`; the passthrough
-  `/v1/services/verify/sim/*` forwards to `/sim/*`.
+  `/v1/services/verify/sim/*` forwards to `/sim/*`. The lab API pushes each
+  environment's customer with `PUT /sim/customers/{env}` and reads
+  `GET /sim/customers` for its status.
   `GET /v1/connect/env/verify` hands out the variables without calling this
   service.
 - **e2e suite**: no scenario calls it directly; `banking-circle-payout`

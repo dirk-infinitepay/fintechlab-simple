@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,8 +16,8 @@ import (
 
 // serviceViews is every service with its last probe: the lab's own and the
 // registered plugins, as the overview and /v1/services both report them.
-func (a *app) serviceViews() ([]serviceView, map[string]int) {
-	all := a.cat.All()
+func (a *app) serviceViews(ctx context.Context) ([]serviceView, map[string]int) {
+	all := a.cat.AllIn(scopeOf(ctx))
 	out := make([]serviceView, 0, len(all))
 	counts := map[string]int{}
 	for _, s := range all {
@@ -38,13 +39,13 @@ func (a *app) serviceViews() ([]serviceView, map[string]int) {
 }
 
 func (a *app) listServices(w http.ResponseWriter, r *http.Request) {
-	out, _ := a.serviceViews()
+	out, _ := a.serviceViews(r.Context())
 	httputilx.WriteJSON(w, 200, map[string]any{"services": out})
 }
 
 func (a *app) getService(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	all, _ := a.serviceViews()
+	all, _ := a.serviceViews(r.Context())
 	for _, s := range all {
 		if s.ID == id {
 			httputilx.WriteJSON(w, 200, s)
@@ -109,6 +110,10 @@ func (a *app) toSim(w http.ResponseWriter, r *http.Request, id, rest string) {
 	svc, ok := a.labService(id)
 	if !ok {
 		httputilx.Error(w, 404, "no lab service "+id)
+		return
+	}
+	if !a.inScope(r.Context(), id) {
+		httputilx.Error(w, 409, id+" does not keep environments apart yet: it holds only the default environment's records, so it is not reachable in "+scopeOf(r.Context()))
 		return
 	}
 	target := svc.Control + "/sim/" + rest

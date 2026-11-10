@@ -205,3 +205,45 @@ event) goes through `/sim/traps`. A setter (put a standing value in place:
 sanctions, a verification outcome, a subscription paused) stays a plain
 route too. [traps.md §1](traps.md#1-what-a-trap-is) explains the line
 between them.
+
+## 8. Environments
+
+**[DECIDED 2026-11-10, built]** — the sim side of
+[environments.md](environments.md). A sim that serves more than one
+platform keeps a customer per environment (`internal/tenant`) and gives
+`simctl.Config` its `Customers`; one that does not is the default
+environment's alone and refuses a reset of any other.
+
+| Route | |
+| --- | --- |
+| `GET /sim/customers` | every customer, the default first, with `created_at` and `last_seen` (the last vendor call it made) |
+| `PUT /sim/customers/{env}` | add or replace one: a `tenant.Customer`, the logins its platform will present. The lab API pushes every customer again when the sim restarts |
+| `DELETE /sim/customers/{env}` | remove one, and everything it made |
+
+The rules every such sim keeps:
+
+1. **The vendor's own login says whose a call is.** The vendor's auth
+   finds the customer (Banking Circle's Basic credential, B4B's `kid`,
+   the SFTP user), puts its environment in the request's context
+   (`tenant.With`), and records it as seen. A login no customer has is the
+   default environment's, as every login was before. A platform never
+   sends a lab token to a vendor.
+2. **Every record has an owner**, set from that context: an account, a
+   payment, a subscription, a company, a file. A record from before
+   environments is the default's.
+3. **The vendor surface shows a caller only its own**, and fans out only
+   to its own listeners: notifications, callbacks, webhooks. A
+   destination is allowed if the sim's `WEBHOOK_ALLOWLIST` or the
+   customer's `webhook_hosts` names it.
+4. **Lab hooks act in the environment the call names**:
+   `tenant.FromRequest` (`?env=`, else the `Lab-Environment` header, else
+   the default). Reads filter with `tenant.InScope`; `*` reads every
+   environment; a hook that creates something creates it in the named
+   environment and refuses `*`.
+5. **Activity events and trap events carry `env`.** `Log.Watch` records
+   whoever the auth found; an event recorded by hand sets `Env` itself.
+6. **A reset names an environment** (`env` in the body, or the query): it
+   clears that environment's records only, `*` clears everything.
+7. **Calls between sims say whose they are**, in a `Lab-Environment`
+   header: B4B paying out over Banking Circle's bridge, Banking Circle
+   crediting the business bank.

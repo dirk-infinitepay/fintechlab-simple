@@ -21,10 +21,33 @@ routes. Requests and answers are JSON, except the connect downloads
 marked *strict* below is decoded with unknown fields refused, and must be
 present: no body is `400 {"error": "EOF"}`, so send `{}` for all defaults.
 
-**Auth.** None by default. With `LAB_API_TOKEN` set, every call but
-`GET /health` must carry `Authorization: Bearer $LAB_API_TOKEN`, or it is
-`401`. The console adds the token for the page when it has the same
-variable.
+**Auth and environments.** The lab serves several platforms, each an
+*environment* with its own data ([../lab-api/environments.md](../lab-api/environments.md)).
+Two kinds of token reach this API:
+
+- **The admin token**, `LAB_API_TOKEN`. It creates environments, reaches
+  the lab-wide routes, and acts in any environment by naming it: the
+  `Lab-Environment` header (the console's selector sends it), or `?env=`
+  on a link or a download. Naming none is the `default` environment, which
+  owns everything the lab had before environments, so a call written
+  before them answers as it did. `*` names every environment, on the few
+  routes that read or reset across them.
+- **An environment's token**, `lenv_…`, from `POST /v1/environments`. It
+  acts in that environment only: naming another is `403`, and a lab-wide
+  route is `403` too.
+
+With no `LAB_API_TOKEN` the lab is open: a call without a token is the
+admin's, and an environment's token still scopes the call that carries
+one. `GET /health` never asks for a token. The console adds the admin
+token for the page when it has the same variable.
+
+Each route's `class` in `GET /v1` says who may call it: `open` (no
+token), `any` (any token), `admin` (the admin token only) or `env` (one
+environment). Every call the lab API makes to a sim's control port names
+the call's environment, so a sim answers with that environment's records
+only. A sim that does not keep environments apart yet holds only the
+default's: in another environment the passthrough to it is `409`, and the
+reads and resets that fan out across the lab leave it out.
 
 **Old paths.** Every route the console served before the lab API existed
 still answers at its old `/api` path — `GET /api/overview` is
@@ -35,7 +58,9 @@ phase 4 of [the plan](../lab-api/plan.md).
 
 Errors are `{"error": "<message>", "status": <code>}`, the message in the
 failing peer's own words where there is one. `400` is something the caller
-can fix, `401` a missing or wrong token, `404` an unknown id, `409` a
+can fix, `401` a missing or wrong token, `403` a token that may not do this (an
+environment's on a lab-wide route, or naming another environment), `404`
+an unknown id, `409` a
 refusal by state (a plugin stopped, the clock locked), `413` an upload over
 the limit, `503` a key file not generated yet. `501` means *does not
 exist here by design* (Banking Circle opens no accounts, a service keeps no
@@ -369,6 +394,132 @@ did not switch. `502` with the same body when nothing took.
 /sim/subscription/{id}/activate` or `/deactivate` per receiver
 subscription; `aci POST /sim/connected` (only while ACI delivers to the receiver); then the reads
 of `GET /v1/stand-ins`.
+
+## Environments
+
+The platforms the lab serves. An environment is one platform deployment
+— sbx, a laptop, an e2e run — with its own token here and its own
+customer at every vendor that keeps environments apart: its own Banking
+Circle login and safeguarding accounts, its own B4B signing key, its own
+SFTP user and folder. `default` is the lab's own, always there, and
+cannot be created, changed or deleted. The environments and their tokens
+are in the lab's database (`LAB_DB`, default `lab.db` beside the
+registry; `off` turns environments off).
+
+An environment is shown as:
+
+```json
+{"id": "sbx", "name": "sbx", "config": {"settlement_identifier": "Infinite_Payment",
+ "webhook_hosts": ["infinite-sbx-gateway-alb….elb.amazonaws.com"]},
+ "created_at": "…", "state": "seen", "last_seen": "…",
+ "seen_by": {"banking-circle": "…", "b4b": null, "worldline": "…"},
+ "token": "lenv_…", "kit": "/v1/connect/env?env=sbx", "shared": []}
+```
+
+- `state` is `never-seen` until a vendor has seen the environment's
+  platform log in, then `seen`; `last_seen` is the latest of `seen_by`,
+  each vendor's own `GET /sim/customers`. It never turns red with age.
+- `token` is shown to the admin and to the environment itself.
+- `kit` is its `.env` download: its own logins, its safeguarding account
+  ids, and `FINTECH_SIM_LAB_URL`, `FINTECH_SIM_LAB_TOKEN` and
+  `FINTECH_SIM_LAB_ENVIRONMENT` for a runner that steers the lab.
+- `shared` lists the vendors that do not keep environments apart yet: a
+  platform meets the default's data there.
+- `config` — `settlement_identifier` (Worldline's file name),
+  `webhook_hosts` (callback hosts its subscriptions and callbacks may
+  reach, on top of each vendor's allowlist), `aci_webhook_url`,
+  `b4b_callback_url`, `clock` (`follows` or `wall`: a seen `wall`
+  environment blocks moving the lab clock). All optional.
+
+The lab API pushes each environment to every vendor that keeps them
+apart when it is created or changed, and checks every few seconds
+(`LAB_SYNC_INTERVAL`, default `5s`) that each vendor has exactly the
+environments the database has, so a vendor that restarted gets its
+customers back.
+
+### `GET /v1/environment`
+
+The environment this call is in: an environment token's own, or the one
+the admin names (`default` when none).
+
+**Answers** — `200` with one environment; `400` for `*`.
+
+**Reaches** — the lab's database and each vendor's control
+`GET /sim/customers`.
+
+### `GET /v1/environments`
+
+Every environment, `default` first, for the admin; the caller's own for
+an environment's token.
+
+**Answers** — `200 {"environments": [ … ]}`.
+
+**Reaches** — the lab's database and each vendor's control
+`GET /sim/customers`.
+
+### `POST /v1/environments`
+
+Create an environment. *Admin.*
+
+**Body** — `{"name": "Infinite sbx", "id": "sbx", "config": {…}}`; `id`
+defaults to the name made lower-case with dashes, `config` to `{}`.
+
+**Answers** — `201 {"environment": {…}, "token": "lenv_…", "pushed":
+{"banking-circle": "ok", …}}`: `pushed` is how each vendor took the new
+customer (one that is down gets it from the sync once it is back). `400`
+for an id that is not lower-case letters, digits and dashes, is `default`
+or `*`, or for a bad config; `409` for an id taken; `503` when the lab has
+no database.
+
+**Reaches** — the lab's database; each vendor's control
+`PUT /sim/customers/{env}`.
+
+### `GET /v1/environments/{id}`
+
+One environment. An environment's token reads only its own (`404`
+otherwise).
+
+**Answers** — `200` with the environment; `404`.
+
+**Reaches** — the lab's database and each vendor's control
+`GET /sim/customers`.
+
+### `PATCH /v1/environments/{id}`
+
+Rename an environment or replace its config. *Admin.*
+
+**Body** — `{"name": "…", "config": {…}}`, either; `config` replaces the
+whole config.
+
+**Answers** — `200 {"environment": {…}, "pushed": {…}}`; `400` for
+`default` or a bad config; `404`.
+
+**Reaches** — the lab's database; each vendor's control
+`PUT /sim/customers/{env}`.
+
+### `DELETE /v1/environments/{id}`
+
+Delete an environment: every vendor forgets its customer and everything
+it made, then its plugins, its merchant registry and its token go.
+*Admin.*
+
+**Answers** — `200 {"deleted": "sbx", "vendors": {"banking-circle":
+"removed", …}}`; `502` with the same `vendors` when one could not be
+reached, and then nothing else was removed — call again. `400` for
+`default`; `404`.
+
+**Reaches** — each vendor's control `DELETE /sim/customers/{env}`; the
+lab's database.
+
+### `POST /v1/environments/{id}/token`
+
+Give an environment a new token; the old one stops working at once.
+*Admin.*
+
+**Answers** — `200 {"id": "sbx", "token": "lenv_…"}`; `400` for `default`
+(its token is the admin's); `404`.
+
+**Reaches** — the lab's database.
 
 ## Services
 

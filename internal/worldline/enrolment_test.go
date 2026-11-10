@@ -184,3 +184,44 @@ func TestReceiptIsTimedOnTheRunnersClock(t *testing.T) {
 		t.Errorf("filetime %s, want the runner's %s–%s", r.Summary.FileTime, before, after)
 	}
 }
+
+// Two platforms boarding the same pf_account_id get different MIDs: the
+// default's are what they always were, every other environment's are
+// eight digits from a range the default's never reach, apart per
+// environment and the same every time.
+func TestEachEnvironmentBoardsWithMIDsOfItsOwn(t *testing.T) {
+	e, err := ParseEnrolment([]byte(sampleBatch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	board := func(env string) []Approval {
+		t.Helper()
+		return BuildReceipt(e, ReceiptOptions{FileID: 1, SequenceDate: "20260918", Env: env}).Approvals
+	}
+	def := board("")
+	if again := board("default"); again[0] != def[0] || def[0].ProxyMID != ProxyMIDFor("6001", "PF-0001") {
+		t.Fatalf("the default's boarding changed: %+v, %+v", def, again)
+	}
+	seen := map[string]string{}
+	for _, a := range def {
+		seen[a.ProxyMID] = "default"
+	}
+	for _, env := range []string{"sbx", "dev", "e2e-run-1"} {
+		got := board(env)
+		for i, a := range got {
+			if len(a.ProxyMID) != 8 || !strings.HasPrefix(a.ProxyMID, "6") || strings.HasPrefix(a.ProxyMID, "60") {
+				t.Errorf("%s boarded %s as %q: want eight digits from 61 to 69", env, a.PFAccountID, a.ProxyMID)
+			}
+			if other, dup := seen[a.ProxyMID]; dup {
+				t.Errorf("%s and %s share MID %s", env, other, a.ProxyMID)
+			}
+			seen[a.ProxyMID] = env
+			if a.VirtualAccountID == def[i].VirtualAccountID {
+				t.Errorf("%s shares the default's virtual account for %s", env, a.PFAccountID)
+			}
+			if a.ProxyMID != EnvProxyMID(env, a.PFAccountID) || board(env)[i] != a {
+				t.Errorf("%s's MID for %s is not stable", env, a.PFAccountID)
+			}
+		}
+	}
+}

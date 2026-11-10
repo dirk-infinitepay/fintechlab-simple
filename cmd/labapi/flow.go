@@ -227,7 +227,7 @@ func (a *app) readFlow(ctx context.Context) flowInputs {
 
 	// The platform is whichever registered plugin settles. With none, the
 	// diagram still draws the vendors' side of whatever reached them.
-	plat, _, hasPlat := a.cat.SettlementPlugin()
+	plat, _, hasPlat := a.cat.SettlementPluginIn(scopeOf(ctx))
 	ids := []string{"worldline", "b4b", "banking-circle", "bank"}
 	if hasPlat {
 		ids = append(ids, plat.ID)

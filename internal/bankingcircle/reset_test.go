@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // within fails the test unless f returns inside d. The in-flight tests
@@ -22,25 +24,26 @@ func within(t *testing.T, d time.Duration, what string, f func()) {
 	}
 }
 
-// endRun is a reset of the run alone, as Bank.Reset does it.
+// endRun is a reset of the run alone, every environment's, as Bank.Reset
+// does it.
 func endRun(r *Run) {
-	r.stop()
-	r.gate.Lock()
-	r.next()
-	r.gate.Unlock()
+	r.stop(tenant.All)
+	release := r.hold(tenant.All)
+	r.next(tenant.All)
+	release()
 }
 
 func TestRunDropsWorkFromBeforeAReset(t *testing.T) {
 	r := NewRun()
 	started := r.Current()
-	if !r.Do(started, func(context.Context) {}) {
+	if !r.Do("", started, func(context.Context) {}) {
 		t.Fatal("Do refused work from the current run")
 	}
 
 	// An effect in flight holds the reset off, and sees its context
 	// cancelled the moment the reset begins.
 	inEffect, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
-	go r.Do(started, func(ctx context.Context) {
+	go r.Do("", started, func(ctx context.Context) {
 		close(inEffect)
 		<-ctx.Done()
 		close(cancelled)
@@ -55,30 +58,30 @@ func TestRunDropsWorkFromBeforeAReset(t *testing.T) {
 		t.Fatal("the reset finished while an effect was still running")
 	case <-time.After(20 * time.Millisecond):
 	}
-	if r.Moved(started) {
+	if r.Moved("", started) {
 		t.Fatal("the epoch moved while an effect from the old run was still running")
 	}
 	close(release)
 	<-resetDone
 
-	if !r.Moved(started) {
+	if !r.Moved("", started) {
 		t.Fatal("the reset did not move the epoch")
 	}
 	ran := false
-	if r.Do(started, func(context.Context) { ran = true }) || ran {
+	if r.Do("", started, func(context.Context) { ran = true }) || ran {
 		t.Fatal("Do ran work from before the reset")
 	}
-	if r.Sleep(started, time.Hour) {
+	if r.Sleep("", started, time.Hour) {
 		t.Fatal("Sleep says a run that has ended is still going")
 	}
-	if !r.Do(r.Current(), func(context.Context) {}) {
+	if !r.Do("", r.Current(), func(context.Context) {}) {
 		t.Fatal("Do refused work from the new run")
 	}
 
 	// A sleeper is woken by the reset rather than sleeping it out.
 	started = r.Current()
 	woke := make(chan bool)
-	go func() { woke <- r.Sleep(started, time.Hour) }()
+	go func() { woke <- r.Sleep("", started, time.Hour) }()
 	time.Sleep(5 * time.Millisecond)
 	endRun(r)
 	select {
@@ -205,7 +208,7 @@ func TestResetFlowClearsWhatARunMadeAndKeepsTheSetup(t *testing.T) {
 	// transitions per subscription, under a batch of five, with an hour's
 	// flush interval), parked behind the pause, and retained after a
 	// deactivation. And an email.
-	b.disp.retain(b.seed.ID, []Notification{{EventID: "held1"}, {EventID: "held2"}})
+	b.disp.retain(b.seed, []Notification{{EventID: "held1"}, {EventID: "held2"}})
 	b.mail.Send(Email{To: "alerts@example.com", Kind: "warning", SubscriptionID: b.seed.ID})
 	if got := b.disp.Queued(platform.ID); got != 4 {
 		t.Fatalf("%d parked behind the pause, want the platform's 4 transitions", got)

@@ -26,9 +26,13 @@
 //     :9085; plain HTTP, no vendor auth): every /sim route, the sim control
 //     contract (internal/simctl: /sim/info, /sim/logs, /sim/reset), the
 //     traps (/sim/traps, internal/trap; the payment.outgoing hook is in
-//     traps.go), and the lab's reads of what the vendor and bridge routes
-//     answer. The lab API calls only this, and holds no Banking Circle
-//     credentials.
+//     traps.go), the customers (/sim/customers, internal/tenant), and the
+//     lab's reads of what the vendor and bridge routes answer. The lab API
+//     calls only this, and holds no Banking Circle credentials.
+//
+// The bank serves several platforms at once, one customer per environment
+// (environments.go): its login says whose a call is, and everything a
+// customer makes is its own.
 package main
 
 import (
@@ -59,6 +63,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
@@ -99,6 +104,9 @@ type app struct {
 	// traps, the shortcut that arms them.
 	traps    *trap.Store
 	outcomes outcomeQueue
+	// customers are the environments this bank serves besides the default
+	// (environments.go), each known by its Banking Circle login.
+	customers *tenant.Customers
 	// listeners are the vendor-facing addresses, for GET /sim/info.
 	listeners []string
 }
@@ -196,8 +204,9 @@ func main() {
 	a.dispatch.Send = a.sendEncrypted
 	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(a.ledger, delay, a.onTransition)
+	a.customers = a.newCustomers()
 
-	// Seed one default subscription, subscribed to every event type this
+	// Seed one default subscription, the default environment's, subscribed to every event type this
 	// lab's engine can fire, so a demo works without an explicit subscribe
 	// call first. A real client creates its own and picks its own events;
 	// this is a convenience, and every field on it is one the real API
@@ -326,8 +335,9 @@ func (a *app) mux(ctl http.Handler) *http.ServeMux {
 	mux.HandleFunc("POST /api/v1/notificationselfservice/clienttest/{subscriptionId}", a.requireBearer(a.clientTest))
 	// The old /sim paths, behind the bearer they always had, until phase 4
 	// of docs/lab-api/plan.md retires them. They are the control surface's
-	// own routes, so they answer exactly what it answers.
-	mux.Handle("/sim/", a.requireBearer(ctl.ServeHTTP))
+	// own routes, so they answer exactly what it answers, in the caller's
+	// own environment.
+	mux.Handle("/sim/", a.requireBearer(a.asCaller(ctl)))
 	// Debug/introspection endpoints kept from the old surface — not part of
 	// the real Banking Circle contract, but useful for the e2e suite and kept
 	// behind the same credentials as everything else on this listener.
@@ -369,6 +379,7 @@ func (a *app) control(defaultAddr string) (*simctl.Control, error) {
 		Listeners: a.listeners,
 		Reset:     a.reset,
 		Traps:     a.traps,
+		Customers: a.customers,
 	}, defaultAddr)
 	if err != nil {
 		return nil, err
@@ -382,6 +393,12 @@ func (a *app) control(defaultAddr string) (*simctl.Control, error) {
 // simRoutes are the lab's own routes on the control surface, by pattern.
 // None is Banking Circle's. Where one answers what a vendor or bridge
 // route answers, it is that route's handler, so the two cannot drift.
+//
+// Each acts in the environment the call names (scopeOf: ?env= or the
+// Lab-Environment header, else the default): a read shows that
+// environment's records, or every one's for "*"; an id outside it is a 404,
+// as an unknown one is; and a hook that makes something makes it there,
+// refusing "*".
 func (a *app) simRoutes() map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		// Everything this vendor has done, as the console's activity view
@@ -413,7 +430,7 @@ func (a *app) simRoutes() map[string]http.HandlerFunc {
 		"GET /sim/accounts":                      a.listAccounts,
 		"GET /sim/accounts/{accountId}/balances": a.internalAccountBalances,
 		"GET /sim/payments":                      a.listPayments,
-		"POST /sim/incoming-payments":            a.incomingPayments(),
+		"POST /sim/incoming-payments":            a.incomingPayments(false),
 		"GET /sim/payments/outcomes":             a.forcedOutcomes,
 		"POST /sim/payments/outcomes":            a.forceOutcomes,
 		"POST /sim/payments/{id}/return":         a.returnInternalPayment,
@@ -429,15 +446,24 @@ func (a *app) simRoutes() map[string]http.HandlerFunc {
 // safeguarding accounts only, references from the first. The traps, the
 // outcome queue's among them, are reset by simctl before this runs.
 //
+// It resets the environment req.Env names, and nothing of anyone else's:
+// the default's all puts back the seeded subscription and the two fixed
+// safeguarding accounts; a customer's all keeps the customer and its two
+// safeguarding accounts, at zero, and drops its subscriptions. "*" resets
+// every environment, as a reset did before there were environments.
+//
 // Issued bearer tokens survive both. A lab reset must never log the
 // platform's Banking Circle client out, and nothing the lab does needs one.
-// Work in flight is dropped, not raced (bankingcircle.Bank.Reset). Never
+// Work in flight is dropped, not raced (bankingcircle.Bank.ResetIn). Never
 // refused: nothing here is unsafe to cut short.
 func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 	all := req.Scope == simctl.ScopeAll
-	cleared := a.bank.Reset(all, func(cleared map[string]int) {
-		cleared["activity"] = int(a.payLog.Clear() + a.notifLog.Clear() + a.reportLog.Clear())
-		a.outcomes.clear()
+	scope := tenant.Normalize(req.Env)
+	cleared := a.bank.ResetIn(scope, all, func(cleared map[string]int) {
+		cleared["activity"] = int(a.payLog.ClearIn(scope) + a.notifLog.ClearIn(scope) + a.reportLog.ClearIn(scope))
+		if scope == tenant.All {
+			a.outcomes.clear()
+		}
 	})
 	kept := []string{"subscriptions", "accounts", "tokens"}
 	if all {
@@ -455,7 +481,7 @@ func (a *app) internalMux() *http.ServeMux {
 	mux.HandleFunc("POST /internal/payments/{id}/return", a.returnInternalPayment)
 	mux.HandleFunc("GET /internal/payments/outcomes", a.forcedOutcomes)
 	mux.HandleFunc("POST /internal/payments/outcomes", a.forceOutcomes)
-	mux.HandleFunc("POST /internal/incoming-payments", a.incomingPayments())
+	mux.HandleFunc("POST /internal/incoming-payments", a.incomingPayments(true))
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
 }
@@ -469,48 +495,86 @@ func (a *app) trapLog() *activity.Log {
 }
 
 // incomingPayments is money landing on a safeguarding account, logged as
-// payment.incoming: the bridge's POST /internal/incoming-payments and the
-// control surface's POST /sim/incoming-payments.
-func (a *app) incomingPayments() http.HandlerFunc {
-	return a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment)
+// payment.incoming: the bridge's POST /internal/incoming-payments (bridge)
+// and the control surface's POST /sim/incoming-payments.
+func (a *app) incomingPayments(bridge bool) http.HandlerFunc {
+	return a.payLog.Watch("payment.incoming", summarizeIncoming, func(w http.ResponseWriter, r *http.Request) {
+		a.createIncomingPayment(w, r, bridge)
+	})
 }
 
 // --- auth ---------------------------------------------------------------
 
 type tokenStore struct {
 	mu     sync.Mutex
-	tokens map[string]time.Time
+	tokens map[string]issuedToken
+}
+
+// issuedToken is one bearer token: when it expires, and the environment of
+// the customer it was issued to.
+type issuedToken struct {
+	expires time.Time
+	env     string
 }
 
 func newTokenStore() *tokenStore {
-	return &tokenStore{tokens: map[string]time.Time{}}
+	return &tokenStore{tokens: map[string]issuedToken{}}
 }
 
-func (s *tokenStore) issue(ttl time.Duration) string {
+// issue is a token for the default environment.
+func (s *tokenStore) issue(ttl time.Duration) string { return s.issueTo(tenant.Default, ttl) }
+
+// issueTo is a token for env's customer.
+func (s *tokenStore) issueTo(env string, ttl time.Duration) string {
 	tok := "bcat_" + randomHex(24)
 	s.mu.Lock()
-	s.tokens[tok] = time.Now().Add(ttl)
+	s.tokens[tok] = issuedToken{expires: time.Now().Add(ttl), env: tenant.Normalize(env)}
 	s.mu.Unlock()
 	return tok
 }
 
 func (s *tokenStore) valid(tok string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exp, ok := s.tokens[tok]
-	if !ok {
-		return false
-	}
-	if time.Now().After(exp) {
-		delete(s.tokens, tok)
-		return false
-	}
-	return true
+	_, ok := s.lookup(tok)
+	return ok
 }
 
-// authorize issues a bearer token for any non-empty Basic credential — this
-// lab has no real credential store, matching its existing "obviously fake,
-// deliberately simple" auth posture elsewhere (e.g. bank's PINs).
+// lookup is the environment a live token was issued to.
+func (s *tokenStore) lookup(tok string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tokens[tok]
+	if !ok {
+		return "", false
+	}
+	if time.Now().After(t.expires) {
+		delete(s.tokens, tok)
+		return "", false
+	}
+	return t.env, true
+}
+
+// drop forgets every token issued to env, and says how many there were.
+func (s *tokenStore) drop(env string) int {
+	env = tenant.Normalize(env)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for tok, t := range s.tokens {
+		if t.env == env {
+			delete(s.tokens, tok)
+			n++
+		}
+	}
+	return n
+}
+
+// authorize exchanges a Basic credential for a bearer token, and the token
+// records whose it is (customerFor): a customer's own login is that
+// customer's; a customer's username with the wrong password is refused, as
+// a bad login is; any other non-empty credential is the default
+// environment's -- this lab has no credential store of its own, matching
+// its "obviously fake, deliberately simple" auth posture elsewhere (e.g.
+// bank's PINs).
 func (a *app) authorize(w http.ResponseWriter, r *http.Request) {
 	user, pass, ok := r.BasicAuth()
 	if !ok || user == "" || pass == "" {
@@ -518,7 +582,14 @@ func (a *app) authorize(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "basic auth required")
 		return
 	}
-	token := a.tokens.issue(a.tokenTTL)
+	env, ok := a.customerFor(user, pass)
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Basic realm="banking-circle"`)
+		httputilx.Error(w, 401, "invalid client credentials")
+		return
+	}
+	a.customers.Seen(env)
+	token := a.tokens.issueTo(env, a.tokenTTL)
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"access_token": token,
 		"expires_in":   int(a.tokenTTL.Seconds()),
@@ -527,16 +598,22 @@ func (a *app) authorize(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireBearer guards every real-shaped endpoint except authorize itself.
+// The call is the token's customer's from here on: its environment is in
+// the request's context (tenant.With), which is what every handler behind
+// it acts in (scopeOf), and the customer is recorded as seen. A token whose
+// customer has since been deleted is no longer valid.
 func (a *app) requireBearer(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authz := r.Header.Get("Authorization")
 		const prefix = "Bearer "
-		if !strings.HasPrefix(authz, prefix) || !a.tokens.valid(strings.TrimPrefix(authz, prefix)) {
+		env, ok := a.tokens.lookup(strings.TrimPrefix(authz, prefix))
+		if !strings.HasPrefix(authz, prefix) || !ok || !a.knownEnv(env) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="banking-circle"`)
 			httputilx.Error(w, 401, "bearer token required")
 			return
 		}
-		next(w, r)
+		a.customers.Seen(env)
+		next(w, r.WithContext(tenant.With(r.Context(), env)))
 	}
 }
 
@@ -597,7 +674,7 @@ func (a *app) balances(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "accountId must be a UUID")
 		return
 	}
-	acc, err := a.ledger.Get(id)
+	acc, err := a.ledger.GetIn(scopeOf(r), id)
 	if err != nil {
 		httputilx.Error(w, 404, "account not found")
 		return
@@ -624,11 +701,11 @@ func queryInt(r *http.Request, key string, def int) int {
 }
 
 func (a *app) listAccounts(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"accounts": a.ledger.List()})
+	httputilx.WriteJSON(w, 200, map[string]any{"accounts": a.ledger.ListIn(scopeOf(r))})
 }
 
 func (a *app) getAccount(w http.ResponseWriter, r *http.Request) {
-	acc, err := a.ledger.Get(r.PathValue("id"))
+	acc, err := a.ledger.GetIn(scopeOf(r), r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, 404, "account not found")
 		return
@@ -637,11 +714,11 @@ func (a *app) getAccount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listPayments(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"payments": a.engine.List()})
+	httputilx.WriteJSON(w, 200, map[string]any{"payments": a.engine.ListIn(scopeOf(r))})
 }
 
 func (a *app) getPayment(w http.ResponseWriter, r *http.Request) {
-	p, err := a.engine.Get(r.PathValue("id"))
+	p, err := a.engine.GetIn(scopeOf(r), r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, 404, "payment not found")
 		return
@@ -655,7 +732,7 @@ func (a *app) reconcile(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "date query parameter required (YYYY-MM-DD)")
 		return
 	}
-	payments := bankingcircle.Reconcile(a.engine.List(), date, r.URL.Query().Get("account_id"))
+	payments := bankingcircle.Reconcile(a.engine.ListIn(scopeOf(r)), date, r.URL.Query().Get("account_id"))
 	httputilx.WriteJSON(w, 200, map[string]any{"payments": payments})
 }
 
@@ -665,8 +742,10 @@ func (a *app) reconcile(w http.ResponseWriter, r *http.Request) {
 // A row's existence is the booking signal — the report carries no status —
 // so this answers from the same payment records the notifications are built
 // from. If the two ever disagreed, a client would be reconciling against a
-// story rather than against the money.
+// story rather than against the money. It covers the caller's own payments,
+// so only its own accounts.
 func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Request) {
+	env := scopeOf(r)
 	q := r.URL.Query()
 	query, problems := reconciliationQuery(q)
 	detail := map[string]string{
@@ -680,8 +759,8 @@ func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Reques
 		writeValidationProblem(w, problems)
 		return
 	}
-	query.IBAN = a.accountIBAN
-	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
+	query.IBAN = a.accountIBAN(env)
+	rows := bankingcircle.IntradayReconciliation(a.engine.ListIn(env), query)
 	detail["rows"] = strconv.Itoa(len(rows))
 	a.recordRead(r, "report.intraday", fmt.Sprintf("intraday report %s, page %d → %d row(s)",
 		dateRange(query.FromTransactionDate, query.ToTransactionDate), query.PageNumber, len(rows)), detail, activity.StatusOK)
@@ -734,14 +813,16 @@ func reconciliationQuery(q url.Values) (bankingcircle.ReconciliationQuery, map[s
 	return query, problems
 }
 
-// accountIBAN is how both reports name an account: its IBAN from the
-// ledger, empty (reported as null) for an account the ledger does not hold.
-func (a *app) accountIBAN(accountID string) string {
-	acc, err := a.ledger.Get(accountID)
-	if err != nil {
-		return ""
+// accountIBAN is how both reports name an account of env's: its IBAN from
+// the ledger, empty (reported as null) for an account env does not hold.
+func (a *app) accountIBAN(env string) bankingcircle.AccountIBAN {
+	return func(accountID string) string {
+		acc, err := a.ledger.GetIn(env, accountID)
+		if err != nil {
+			return ""
+		}
+		return acc.VIBAN
 	}
-	return acc.VIBAN
 }
 
 // reportDateTimeLayouts are the forms the reference shows for the report's
@@ -833,6 +914,7 @@ func traceID() string {
 // unparseable one is a 400 too. IncludeReversals is accepted and has
 // nothing to act on: it covers direct-debit reversals only.
 func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
+	env := scopeOf(r)
 	q := r.URL.Query()
 	problems := map[string][]string{}
 	date := q.Get("TransactionDate")
@@ -859,7 +941,7 @@ func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 		IncludeMissingFunds: flag("IncludeMissingFunds", true),
 		ExcludeBooked:       flag("ExcludeBooked", false),
 		ReportDate:          labclock.Now().Format("2006-01-02"),
-		IBAN:                a.accountIBAN,
+		IBAN:                a.accountIBAN(env),
 	}
 	flag("IncludeReversals", false)
 	if len(problems) > 0 {
@@ -868,7 +950,7 @@ func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 		writeValidationProblem(w, problems)
 		return
 	}
-	rows := bankingcircle.Rejections(a.engine.List(), query)
+	rows := bankingcircle.Rejections(a.engine.ListIn(env), query)
 	a.recordRead(r, "report.rejection", fmt.Sprintf("rejection report %s → %d row(s)", query.TransactionDate, len(rows)),
 		map[string]string{
 			"transaction_date": query.TransactionDate,
@@ -891,7 +973,7 @@ func datePrefix(v string) string {
 // it has never seen.
 func (a *app) paymentStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("paymentId")
-	p, err := a.engine.Get(id)
+	p, err := a.engine.GetIn(scopeOf(r), id)
 	if err != nil {
 		a.recordRead(r, "payment.status", "status of "+id+" → not found (404)", map[string]string{"payment_id": id}, activity.StatusWarn)
 		httputilx.Error(w, 404, "payment not found")
@@ -903,22 +985,6 @@ func (a *app) paymentStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- the B4B<->Banking-Circle bridge (INTERNAL_LISTEN, no auth) --------
-
-// sgaAccountID maps a currency to the safeguarding account (SGA) this mock
-// debits outgoing payouts from and credits incoming Worldline lump sums
-// into — resolved by currency, not a fixed constant, now that there is one
-// SGA per currency instead of a single pre-funded funding account
-// (docs/ARCHITECTURE-phase3-corrections.md section 1).
-func sgaAccountID(currency string) (string, error) {
-	switch currency {
-	case "EUR":
-		return bankingcircle.SGAAccountEUR, nil
-	case "GBP":
-		return bankingcircle.SGAAccountGBP, nil
-	default:
-		return "", fmt.Errorf("no safeguarding account configured for currency %q", currency)
-	}
-}
 
 type internalPaymentReq struct {
 	PaymentID string `json:"paymentId"`
@@ -949,7 +1015,17 @@ type internalPaymentReq struct {
 // matching the payment's currency; externalRef lands on the existing
 // Payment.SettlementID field verbatim (Addendum section B). The payout is
 // booked at once and offered to the payment.outgoing traps (book).
+//
+// The payout is the environment's the call names in Lab-Environment (B4B
+// says whose payout it is; none is the default's): it debits that
+// environment's safeguarding account, lands on an account of its own
+// (creditor), and is told only to its subscriptions.
 func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
+	env, ok := a.oneEnv(w, r, "a payout")
+	if !ok {
+		return
+	}
+	tenant.Set(r.Context(), env) // the payments log's event is env's
 	var req internalPaymentReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -972,7 +1048,7 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 	if ccy == "" {
 		ccy = "EUR"
 	}
-	from, err := sgaAccountID(ccy)
+	from, err := a.sgaAccountID(env, ccy)
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
@@ -982,7 +1058,7 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 	// exactly like a real one, take the money, and balance -- and the
 	// payout would be "successful" to an account no reconciliation could
 	// ever match.
-	to, err := a.ledger.GetOrCreate(req.AccountID, ccy)
+	to, err := a.creditor(env, req.AccountID, ccy)
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
@@ -990,6 +1066,7 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 	now := labclock.Now().Format(time.RFC3339)
 	p := &bankingcircle.Payment{
 		ID:            req.PaymentID,
+		Env:           bankingcircle.Owner(env),
 		SettlementID:  req.ExternalRef,
 		FromAccountID: from,
 		ToAccountID:   to.ID,
@@ -1011,6 +1088,10 @@ type incomingPaymentReq struct {
 	Currency  string `json:"currency"`
 	Amount    string `json:"amount"`
 	Reference string `json:"reference"`
+	// AccountID is the account the money lands on. Optional: without it,
+	// the safeguarding account for currency of the environment the call
+	// names.
+	AccountID string `json:"accountId"`
 }
 
 // createIncomingPayment implements POST /internal/incoming-payments — the
@@ -1019,15 +1100,21 @@ type incomingPaymentReq struct {
 // boundary as the B4B bridge above. Real Banking Circle has no equivalent
 // caller-facing endpoint; this is the e2e suite's stand-in for the acquirer
 // actually wiring funds into the SGA.
-func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request) {
+//
+// The money is the environment's whose account it lands on. Without an
+// accountId that is the environment the call names, and the account its
+// safeguarding account. With one, on the bridge, the account's owner says
+// whose it is, and a call naming another environment is refused; on the
+// control port (not bridge) the account has to be in the call's scope, as
+// every id there does.
+func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request, bridge bool) {
 	var req incomingPaymentReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	to, err := sgaAccountID(req.Currency)
-	if err != nil {
-		httputilx.Error(w, 400, err.Error())
+	to, ok := a.incomingTarget(w, r, req, bridge)
+	if !ok {
 		return
 	}
 	cents, err := money.Parse(req.Amount)
@@ -1043,13 +1130,57 @@ func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 202, p)
 }
 
+// incomingTarget is the account money in lands on, and the environment it
+// is: createIncomingPayment's rules. It answers a refusal itself.
+func (a *app) incomingTarget(w http.ResponseWriter, r *http.Request, req incomingPaymentReq, bridge bool) (string, bool) {
+	scope := scopeOf(r)
+	if req.AccountID == "" {
+		env, ok := a.oneEnv(w, r, "money in")
+		if !ok {
+			return "", false
+		}
+		to, err := a.sgaAccountID(env, req.Currency)
+		if err != nil {
+			httputilx.Error(w, 400, err.Error())
+			return "", false
+		}
+		tenant.Set(r.Context(), env)
+		return to, true
+	}
+	if scope == tenant.All {
+		httputilx.Error(w, 400, "money in is one environment's: name it with ?env= or "+tenant.Header+", not \"*\"")
+		return "", false
+	}
+	lookIn := scope
+	if bridge {
+		lookIn = tenant.All
+	}
+	acc, err := a.ledger.GetIn(lookIn, req.AccountID)
+	if err != nil {
+		httputilx.Error(w, 404, "account not found")
+		return "", false
+	}
+	owner := tenant.Normalize(acc.Env)
+	if bridge && names(r) && scope != owner {
+		httputilx.Error(w, 400, fmt.Sprintf("account %s is environment %s's, and the call names %s", acc.ID, owner, scope))
+		return "", false
+	}
+	if acc.Currency != req.Currency {
+		httputilx.Error(w, 400, fmt.Sprintf("account %s holds %s, not %q", acc.ID, acc.Currency, req.Currency))
+		return "", false
+	}
+	tenant.Set(r.Context(), owner)
+	return acc.ID, true
+}
+
 // internalAccountBalances implements GET
 // /internal/accounts/{accountId}/balances, mirroring buddy's own
 // InternalAccountBalanceController: lets other Infinite services/Lambdas
 // check SGA sufficiency without holding Banking Circle's mTLS+bearer
 // credentials themselves (docs/ARCHITECTURE-phase3-corrections.md section
 // 1). Read-only: unlike createInternalPayment, an unknown account id is a
-// real 404, not an auto-vivify trigger.
+// real 404, not an auto-vivify trigger. It reads the environment the call
+// names (Lab-Environment, else the default's; "*" any account).
 func (a *app) internalAccountBalances(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("accountId")
 	// Same rule as the credentialed route. This one mirrors buddy's
@@ -1061,7 +1192,7 @@ func (a *app) internalAccountBalances(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "accountId must be a UUID")
 		return
 	}
-	acc, err := a.ledger.Get(id)
+	acc, err := a.ledger.GetIn(scopeOf(r), id)
 	if err != nil {
 		httputilx.Error(w, 404, "account not found")
 		return
@@ -1083,6 +1214,10 @@ func (a *app) reverseInternalPayment(w http.ResponseWriter, r *http.Request) {
 	var req reverseReq
 	if err := httputilx.ReadJSON(r, &req); err != nil && err != io.EOF {
 		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	if _, err := a.engine.GetIn(scopeOf(r), r.PathValue("id")); err != nil {
+		httputilx.Error(w, 404, "payment not found")
 		return
 	}
 	p, err := a.engine.Reverse(r.PathValue("id"), req.Reason)
@@ -1115,6 +1250,10 @@ func (a *app) returnInternalPayment(w http.ResponseWriter, r *http.Request) {
 	var req returnReq
 	if err := httputilx.ReadJSON(r, &req); err != nil && err != io.EOF {
 		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	if _, err := a.engine.GetIn(scopeOf(r), r.PathValue("id")); err != nil {
+		httputilx.Error(w, 404, "payment not found")
 		return
 	}
 	p, err := a.engine.Return(r.PathValue("id"), req.ReasonCode, req.ReasonDescription)

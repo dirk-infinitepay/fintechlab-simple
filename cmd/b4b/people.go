@@ -19,8 +19,9 @@ func (a *app) createPerson(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Extra = extra
+	env := envOf(r)
 	var person *b4b.Person
-	started := a.engine.Gate().Begin(func() { person, err = a.dir.AddPerson(r.PathValue("id"), p) })
+	started := a.engine.GateFor(env).Begin(func() { person, err = a.dir.In(env).AddPerson(r.PathValue("id"), p) })
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -36,12 +37,12 @@ func (a *app) createPerson(w http.ResponseWriter, r *http.Request) {
 	// Screening is reported asynchronously, not in this response. A client
 	// has to be built to receive it: under continuous screening the answer
 	// can change again long after boarding finished.
-	a.later(started, func(started uint64) { a.deliverPersonCallback(started, person) })
+	a.later(env, started, func(started uint64) { a.deliverPersonCallback(env, started, person) })
 	httputilx.WriteJSON(w, 201, person)
 }
 
 func (a *app) listPeople(w http.ResponseWriter, r *http.Request) {
-	list, err := a.dir.People(r.PathValue("id"))
+	list, err := a.dir.In(envOf(r)).People(r.PathValue("id"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -50,7 +51,7 @@ func (a *app) listPeople(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) getPerson(w http.ResponseWriter, r *http.Request) {
-	person, err := a.dir.Person(r.PathValue("personID"))
+	person, err := a.dir.In(envOf(r)).Person(r.PathValue("personID"))
 	if err != nil {
 		writeStoreError(w, err)
 		return
@@ -68,18 +69,19 @@ func (a *app) setPersonSanctions(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	env := envOf(r)
 	var person *b4b.Person
 	var changed bool
 	var err error
-	started := a.engine.Gate().Begin(func() {
-		person, changed, err = a.dir.SetPersonSanctions(r.PathValue("id"), req.SanctionsStatus, req.PepSanctionsStatus)
+	started := a.engine.GateFor(env).Begin(func() {
+		person, changed, err = a.dir.In(env).SetPersonSanctions(r.PathValue("id"), req.SanctionsStatus, req.PepSanctionsStatus)
 	})
 	if err != nil {
 		writeStoreError(w, err)
 		return
 	}
 	if changed {
-		a.later(started, func(started uint64) { a.deliverPersonCallback(started, person) })
+		a.later(env, started, func(started uint64) { a.deliverPersonCallback(env, started, person) })
 	}
 	httputilx.WriteJSON(w, 200, person)
 }
@@ -99,8 +101,11 @@ type personCallback struct {
 	PepSanctionsStatus string `json:"pep_sanctions_status"`
 }
 
-func (a *app) deliverPersonCallback(started uint64, p *b4b.Person) {
-	a.deliverCallback(started, "person "+p.ID, a.callbackTarget(""), personCallback{
+// deliverPersonCallback calls env back about one of its people: always at
+// the environment's client-account endpoint, since a person has no
+// callback_url of its own.
+func (a *app) deliverPersonCallback(env string, started uint64, p *b4b.Person) {
+	a.deliverCallback(env, started, "person "+p.ID, a.callbackTarget(env, ""), personCallback{
 		ID:                 p.ID,
 		SanctionsStatus:    p.SanctionsStatus,
 		PepSanctionsStatus: p.PepSanctionsStatus,

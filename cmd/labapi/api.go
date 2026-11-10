@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -42,7 +43,7 @@ type serviceView struct {
 }
 
 func (a *app) overview(w http.ResponseWriter, r *http.Request) {
-	out, counts := a.serviceViews()
+	out, counts := a.serviceViews(r.Context())
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"services":           out,
 		"counts":             counts,
@@ -134,24 +135,33 @@ func (a *app) openAccount(w http.ResponseWriter, r *http.Request) {
 // --- merchants --------------------------------------------------------
 
 func (a *app) listMerchants(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
 	httputilx.WriteJSON(w, 200, map[string]any{
-		"distributors":       a.reg.Distributors(),
-		"partners":           a.reg.Partners(),
-		"merchants":          a.reg.Merchants(),
-		"batches":            a.reg.Batches(),
+		"distributors":       reg.Distributors(),
+		"partners":           reg.Partners(),
+		"merchants":          reg.Merchants(),
+		"batches":            reg.Batches(),
 		"countries":          console.Countries(),
-		"provisioning_ready": a.prov.Ready(),
+		"provisioning_ready": prov.Ready(),
 		"provisioning_error": a.provErr,
 	})
 }
 
 func (a *app) createMerchant(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
 	var p console.NewMerchantParams
 	if err := httputilx.ReadJSON(r, &p); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	m, err := a.reg.AddMerchant(p)
+	m, err := reg.AddMerchant(p)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -162,12 +172,16 @@ func (a *app) createMerchant(w http.ResponseWriter, r *http.Request) {
 // --- batches: many merchants at once (internal/console/batch.go) --------
 
 func (a *app) createBatch(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
 	var p console.BatchParams
 	if err := httputilx.ReadJSON(r, &p); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	b, ms, err := a.reg.AddBatch(p)
+	b, ms, err := reg.AddBatch(p)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -183,7 +197,11 @@ func (a *app) createBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) deleteBatch(w http.ResponseWriter, r *http.Request) {
-	n, err := a.reg.DeleteBatch(r.PathValue("id"))
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	n, err := reg.DeleteBatch(r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -207,7 +225,12 @@ type batchOutcome struct {
 
 // provisionBatch registers every outlet of a batch at B4B.
 func (a *app) provisionBatch(w http.ResponseWriter, r *http.Request) {
-	ids, err := a.reg.BatchMerchantIDs(r.PathValue("id"))
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
+	ids, err := reg.BatchMerchantIDs(r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -217,9 +240,9 @@ func (a *app) provisionBatch(w http.ResponseWriter, r *http.Request) {
 	out := batchOutcome{Merchants: len(ids)}
 	outlets, failedOutlets := 0, 0
 	for _, id := range ids {
-		res, err := a.prov.ProvisionMerchant(ctx, id)
+		res, err := prov.ProvisionMerchant(ctx, id)
 		if err != nil {
-			if errors.Is(err, console.ErrUnsupported) || !a.prov.Ready() {
+			if errors.Is(err, console.ErrUnsupported) || !prov.Ready() {
 				httputilx.Error(w, statusFor(err), err.Error())
 				return
 			}
@@ -256,12 +279,17 @@ func firstError(res []console.OutletProvision) string {
 // tradeBatch seeds card payments at Worldline for every outlet of a batch,
 // each merchant at its own typical ticket rather than one amount for all.
 func (a *app) tradeBatch(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
 	var tp console.TradeParams
 	if err := httputilx.ReadJSON(r, &tp); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	ids, err := a.reg.BatchMerchantIDs(r.PathValue("id"))
+	ids, err := reg.BatchMerchantIDs(r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -275,7 +303,7 @@ func (a *app) tradeBatch(w http.ResponseWriter, r *http.Request) {
 		if p.AmountCents <= 0 {
 			p.AmountCents = console.TradeAmountFor(id)
 		}
-		n, d, err := a.prov.SeedTrading(ctx, id, p)
+		n, d, err := prov.SeedTrading(ctx, id, p)
 		date = d
 		if err != nil {
 			out.Failed = append(out.Failed, id+": "+err.Error())
@@ -290,7 +318,11 @@ func (a *app) tradeBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) deleteMerchant(w http.ResponseWriter, r *http.Request) {
-	if err := a.reg.DeleteMerchant(r.PathValue("id")); err != nil {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	if err := reg.DeleteMerchant(r.PathValue("id")); err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
 	}
@@ -302,12 +334,16 @@ type addOutletReq struct {
 }
 
 func (a *app) addOutlet(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
 	var req addOutletReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	m, o, err := a.reg.AddOutlet(r.PathValue("id"), req.Name)
+	m, o, err := reg.AddOutlet(r.PathValue("id"), req.Name)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -320,12 +356,16 @@ type statusReq struct {
 }
 
 func (a *app) setMerchantStatus(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
 	var req statusReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	m, err := a.reg.SetStatus(r.PathValue("id"), req.Status)
+	m, err := reg.SetStatus(r.PathValue("id"), req.Status)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -334,6 +374,10 @@ func (a *app) setMerchantStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createPartner(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		DistributorID string `json:"distributor_id"`
 		Name          string `json:"name"`
@@ -343,7 +387,7 @@ func (a *app) createPartner(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	p, err := a.reg.AddPartner(req.DistributorID, req.Name, req.Country)
+	p, err := reg.AddPartner(req.DistributorID, req.Name, req.Country)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -352,9 +396,14 @@ func (a *app) createPartner(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) provisionMerchant(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
 	ctx, cancel := reqContext(r)
 	defer cancel()
-	res, err := a.prov.ProvisionMerchant(ctx, r.PathValue("id"))
+	res, err := prov.ProvisionMerchant(ctx, r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -365,6 +414,11 @@ func (a *app) provisionMerchant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) seedTrading(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
 	var tp console.TradeParams
 	if err := httputilx.ReadJSON(r, &tp); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -372,7 +426,7 @@ func (a *app) seedTrading(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := reqContext(r)
 	defer cancel()
-	n, date, err := a.prov.SeedTrading(ctx, r.PathValue("id"), tp)
+	n, date, err := prov.SeedTrading(ctx, r.PathValue("id"), tp)
 	if err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
@@ -385,6 +439,11 @@ func (a *app) seedTrading(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) setSanctions(w http.ResponseWriter, r *http.Request) {
+	reg, ok := a.regFor(w, r)
+	if !ok {
+		return
+	}
+	prov := a.provFor(reg)
 	var req struct {
 		SanctionsStatus string `json:"sanctions_status"`
 	}
@@ -394,7 +453,7 @@ func (a *app) setSanctions(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := reqContext(r)
 	defer cancel()
-	if err := a.prov.SetSanctions(ctx, r.PathValue("mid"), req.SanctionsStatus); err != nil {
+	if err := prov.SetSanctions(ctx, r.PathValue("mid"), req.SanctionsStatus); err != nil {
 		httputilx.Error(w, statusFor(err), err.Error())
 		return
 	}
@@ -499,7 +558,7 @@ func (a *app) fundSGA(w http.ResponseWriter, r *http.Request) {
 	if amount == "" {
 		amount = "1000000.00"
 	}
-	results := console.FundSafeguarding(ctx, a.client, a.bc.BaseURL, amount)
+	results := console.FundSafeguarding(ctx, a.client, a.bc.BaseURL, amount, scopeOf(r.Context()))
 	// Partial success is reported as partial (design-system.md, contract
 	// 4): one currency failing is a 200 whose rows say which. Only when
 	// nothing worked is it the peer's failure, in its own words.
@@ -609,6 +668,14 @@ func (a *app) getJSON(ctx context.Context, c *http.Client, url string, out any) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The peer's own reason when it gave one: a 409 from a vendor that
+		// keeps no environments says why, and "HTTP 409" alone does not.
+		var e struct {
+			Error string `json:"error"`
+		}
+		if b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10)); json.Unmarshal(b, &e) == nil && e.Error != "" {
+			return fmt.Errorf("GET %s: HTTP %d: %s", url, resp.StatusCode, e.Error)
+		}
 		return fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)

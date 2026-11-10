@@ -92,8 +92,9 @@ func parseForceFailIDs(spec string) []string {
 	return out
 }
 
-// paymentEvent is a payment as the payment.create hook's traps see it. A
-// field the payment does not have is left out, so it matches nothing.
+// paymentEvent is a payment as the payment.create hook's traps see it: its
+// environment's, so only a trap armed there takes it. A field the payment
+// does not have is left out, so it matches nothing.
 func paymentEvent(p *b4b.Payment, ben *b4b.Beneficiary) trap.Event {
 	fields := map[string]string{
 		"beneficiary_id":   p.BeneficiaryID,
@@ -112,7 +113,7 @@ func paymentEvent(p *b4b.Payment, ben *b4b.Beneficiary) trap.Event {
 			delete(fields, k)
 		}
 	}
-	return trap.Event{Hook: hookPaymentCreate, Subject: p.ID, Fields: fields}
+	return trap.Event{Env: p.Env, Hook: hookPaymentCreate, Subject: p.ID, Fields: fields}
 }
 
 // accept starts a payment that cleared the gates on its way, offering it
@@ -130,24 +131,24 @@ func (a *app) accept(p *b4b.Payment, ben *b4b.Beneficiary) {
 	}
 	p.Trap = caught.TrapID
 	started := a.engine.Accept(p)
-	if err := a.takeAlong(caught, p.ID, b4b.StateAccepted, started); err != nil {
+	if err := a.takeAlong(caught, p.Env, p.ID, b4b.StateAccepted, started); err != nil {
 		log.Printf("b4b: trap %s caught payment %s and cannot take it: %v; it stays %s", caught.TrapID, p.ID, err, b4b.StateAccepted)
 	}
 }
 
-// takeAlong runs a caught payment along its trap's path, from the state it
-// is in, one hop at a time (walkPath). Each hop goes through the engine's
-// Hop, under the epoch the payment's work began in: the gate a reset
-// holds, the transition, the callback, the bridge call at B4BTMApproved --
-// all exactly as a hop of the default walk.
-func (a *app) takeAlong(c *trap.Caught, id string, from b4b.PaymentState, started uint64) error {
+// takeAlong runs env's caught payment along its trap's path, from the
+// state it is in, one hop at a time (walkPath). Each hop goes through the
+// engine's Hop, under the epoch the payment's work began in: the gate a
+// reset holds, the transition, the callback, the bridge call at
+// B4BTMApproved -- all exactly as a hop of the default walk.
+func (a *app) takeAlong(c *trap.Caught, env, id string, from b4b.PaymentState, started uint64) error {
 	hops, err := walkPath(c.Path, from, a.engine.Delay())
 	if err != nil {
 		return err
 	}
 	c.Path = hops
 	c.Run(func(st trap.Step) error {
-		return a.engine.Hop(id, started, b4b.PaymentState(st.To), c.TrapID, st.Reason)
+		return a.engine.Hop(env, id, started, b4b.PaymentState(st.To), c.TrapID, st.Reason)
 	})
 	return nil
 }
@@ -201,12 +202,12 @@ func (a *app) resumeHeld(held []b4b.Payment) {
 	sort.Slice(held, func(i, j int) bool { return held[i].CreatedAt+held[i].ID < held[j].CreatedAt+held[j].ID })
 	for i := range held {
 		p := &held[i]
-		caught, ok := a.traps.Offer(paymentEvent(p, a.beneficiaries.Get(p.BeneficiaryID)))
+		caught, ok := a.traps.Offer(paymentEvent(p, a.beneficiaries.In(p.Env).Get(p.BeneficiaryID)))
 		if !ok {
 			log.Printf("b4b: payment %s was on trap %s's path when b4b stopped; traps do not outlive the process, so it stays %s", p.ID, p.Trap, p.State)
 			continue
 		}
-		if err := a.takeAlong(caught, p.ID, p.State, a.engine.Gate().Begin(nil)); err != nil {
+		if err := a.takeAlong(caught, p.Env, p.ID, p.State, a.engine.GateFor(p.Env).Begin(nil)); err != nil {
 			log.Printf("b4b: trap %s caught payment %s again after the restart and cannot take it: %v; it stays %s", caught.TrapID, p.ID, err, p.State)
 			continue
 		}

@@ -187,8 +187,14 @@ type ReceiptOptions struct {
 	// default and a refusal has to be asked for.
 	RejectCodes map[string]string
 	// MIDPrefix begins every assigned proxy MID. Obviously fake, per
-	// docs/principles.md.
+	// docs/principles.md. It is the default environment's; another
+	// environment's MIDs are EnvProxyMID's.
 	MIDPrefix string
+	// Env is the environment whose platform sent the batch
+	// (internal/tenant). Empty, or the default, boards as the acquirer
+	// always has; any other is boarded with EnvProxyMID, so two platforms
+	// boarding the same pf_account_id never share a MID.
+	Env string
 }
 
 // BuildReceipt answers an enrolment batch.
@@ -226,11 +232,11 @@ func BuildReceipt(e *Enrolment, opt ReceiptOptions) *Receipt {
 			r.Rejections = append(r.Rejections, Rejection{PFAccountID: id, ReasonCode: code})
 			continue
 		}
-		r.Approvals = append(r.Approvals, Approval{
-			PFAccountID:      id,
-			ProxyMID:         ProxyMIDFor(opt.MIDPrefix, id),
-			VirtualAccountID: virtualAccountFor(id),
-		})
+		a := Approval{PFAccountID: id, ProxyMID: ProxyMIDFor(opt.MIDPrefix, id), VirtualAccountID: virtualAccountFor(id)}
+		if env := strings.TrimSpace(opt.Env); env != "" && env != defaultEnv {
+			a.ProxyMID, a.VirtualAccountID = EnvProxyMID(env, id), envVirtualAccount(env, id)
+		}
+		r.Approvals = append(r.Approvals, a)
 	}
 	r.Summary.ApprovedCount = len(r.Approvals)
 	r.Summary.RejectedCount = len(r.Rejections)
@@ -244,6 +250,25 @@ func ProxyMIDFor(prefix, pfAccountID string) string {
 
 func virtualAccountFor(pfAccountID string) string {
 	return fmt.Sprintf("%08d", checksum("va:"+pfAccountID)%100000000)
+}
+
+// defaultEnv is internal/tenant's Default, which this package does not
+// import: the environment that boards with ProxyMIDFor.
+const defaultEnv = "default"
+
+// EnvProxyMID is the MID an environment other than the default is boarded
+// with: eight digits, as the default's, but from a range the default's
+// never reach — they start 6001, these 61 to 69 — and derived from the
+// environment as well as the reference. Two environments boarding the same
+// pf_account_id get different MIDs, and a recreated environment gets the
+// same ones back.
+func EnvProxyMID(env, pfAccountID string) string {
+	return fmt.Sprintf("6%07d", 1000000+bamboraSeed("proxy-mid", env, pfAccountID)%9000000)
+}
+
+// envVirtualAccount is virtualAccountFor, apart per environment.
+func envVirtualAccount(env, pfAccountID string) string {
+	return fmt.Sprintf("%08d", bamboraSeed("virtual-account", env, pfAccountID)%100000000)
 }
 
 // checksum is a small deterministic hash. Not cryptographic and not meant

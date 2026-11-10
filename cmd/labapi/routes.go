@@ -66,6 +66,7 @@ type routeGroup struct {
 
 var apiGroups = []routeGroup{
 	{"lab", "Lab", "What is running and what it has done: the index, the run diagram, the stand-ins."},
+	{"environments", "Environments", "The platforms the lab serves, each with its own token and its own customers at the vendors."},
 	{"services", "Services", "Each service of the lab: its record and health, its logs, and its /sim/* hooks through one address."},
 	{"traps", "Traps", "Instructions armed in a simulation for a future event: read and disarm them across the lab; arm one through the passthrough."},
 	{"clock", "Clock", "The lab's business clock, fronted from the clock service."},
@@ -96,6 +97,13 @@ func (a *app) apiRoutes() []route {
 		{"GET", "/v1/stand-ins", "/api/stand-ins", "lab", "The stand-ins: shown or hidden, and how each is wired, read live", "settlement+aci /sim/connected, banking-circle subscriptions", a.listStandIns},
 		{"POST", "/v1/stand-ins/{id}", "/api/stand-ins/{id}", "lab", "Show, hide, connect or disconnect one stand-in", "settlement+aci POST /sim/connected; BC /sim/subscription/{id}/(de)activate", a.setStandIn},
 
+		{"GET", "/v1/environment", "", "environments", "The environment this call is in: its token's own, or the one the admin names", "the lab's database and each vendor's control GET /sim/customers", a.currentEnvironment},
+		{"GET", "/v1/environments", "", "environments", "Every environment (the admin) or the caller's own, with when its platform was last seen", "the lab's database and each vendor's control GET /sim/customers", a.listEnvironments},
+		{"POST", "/v1/environments", "", "environments", "Create an environment: its token, its kit, its customer at every vendor", "the lab's database; each vendor's control PUT /sim/customers/{env}", a.createEnvironment},
+		{"GET", "/v1/environments/{id}", "", "environments", "One environment, its config and when its platform was last seen", "the lab's database and each vendor's control GET /sim/customers", a.getEnvironment},
+		{"PATCH", "/v1/environments/{id}", "", "environments", "Rename an environment or change its config, and tell the vendors", "the lab's database; each vendor's control PUT /sim/customers/{env}", a.patchEnvironment},
+		{"DELETE", "/v1/environments/{id}", "", "environments", "Delete an environment and everything it made at every vendor", "each vendor's control DELETE /sim/customers/{env}; the lab's database", a.deleteEnvironment},
+		{"POST", "/v1/environments/{id}/token", "", "environments", "Give an environment a new token; the old one stops working", "the lab's database", a.rotateEnvironmentToken},
 		{"GET", "/v1/services", "", "services", "Every service: its catalogue entry and its last health probe", "each service's control GET /health, probed in the background", a.listServices},
 		{"GET", "/v1/services/{id}", "", "services", "One service: its catalogue entry and its last health probe", "the service's control GET /health, probed in the background", a.getService},
 		{"POST", "/v1/services/{id}/probe", "/api/services/{id}/probe", "services", "Probe one service's health now instead of waiting for the monitor", "the service's control GET /health", a.probeService},
@@ -178,6 +186,16 @@ func apiIndex(table []route) http.HandlerFunc {
 	}
 	build := hex.EncodeToString(h.Sum(nil))[:12]
 	return func(w http.ResponseWriter, r *http.Request) {
+		type routeView struct {
+			route
+			// Class is who may call it: open, any token, the admin's only,
+			// or one environment (docs/lab-api/environments.md §6).
+			Class string `json:"class"`
+		}
+		views := make([]routeView, len(table))
+		for i, rt := range table {
+			views[i] = routeView{route: rt, Class: rt.class()}
+		}
 		httputilx.WriteJSON(w, 200, map[string]any{
 			"service":  "lab-api",
 			"version":  "v1",
@@ -186,7 +204,7 @@ func apiIndex(table []route) http.HandlerFunc {
 			"services": "GET /v1/services lists every service: base_url, browse_url, auth and endpoints; docs/api/services/<id>.md has each in full",
 			"openapi":  "/v1/openapi.json",
 			"groups":   apiGroups,
-			"routes":   table,
+			"routes":   views,
 		})
 	}
 }

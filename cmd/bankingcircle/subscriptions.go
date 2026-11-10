@@ -21,6 +21,10 @@ import (
 // production. The rowVersion also changes on each delivery retry, so an
 // in-flight PUT can be invalidated by a retry it knows nothing about --
 // which is exactly the case a client needs to have been forced to handle.
+//
+// A customer sees and changes only its own subscriptions: another
+// environment's id answers 404, as an unknown one does (scopeOf, and
+// foreignSubscription for the store calls that take an id).
 
 // ifMatch reads the concurrency token off the request.
 func ifMatch(r *http.Request) string { return r.Header.Get("If-Match") }
@@ -71,11 +75,13 @@ func (a *app) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil {
 		status = bankingcircle.SubscriptionStatus(*req.Status)
 	}
-	if err := a.list.Allowed(req.Endpoint); err != nil {
+	env := scopeOf(r)
+	if err := a.allowed(env, req.Endpoint); err != nil {
 		httputilx.Error(w, 400, "endpoint rejected by allowlist: "+err.Error())
 		return
 	}
 	params := bankingcircle.CreateParams{
+		Env:           env,
 		Endpoint:      req.Endpoint,
 		EncryptionKey: req.EncryptionKey,
 		Status:        status,
@@ -96,7 +102,7 @@ func (a *app) createSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listSubscriptions(w http.ResponseWriter, r *http.Request) {
-	a.writeSubscriptions(w, queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", 50))
+	a.writeSubscriptions(w, scopeOf(r), queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", 50))
 }
 
 // simSubscriptionsPageSize is the control surface's page: every
@@ -104,14 +110,15 @@ func (a *app) listSubscriptions(w http.ResponseWriter, r *http.Request) {
 const simSubscriptionsPageSize = 1000
 
 // simListSubscriptions is GET /sim/subscriptions: the vendor's list and its
-// envelope, as GET …/subscription?PageSize=1000 answers it. PageNumber and
-// PageSize are honoured as the vendor's are.
+// envelope, as GET …/subscription?PageSize=1000 answers it, of the
+// environment the call names. PageNumber and PageSize are honoured as the
+// vendor's are.
 func (a *app) simListSubscriptions(w http.ResponseWriter, r *http.Request) {
-	a.writeSubscriptions(w, queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", simSubscriptionsPageSize))
+	a.writeSubscriptions(w, scopeOf(r), queryInt(r, "PageNumber", 1), queryInt(r, "PageSize", simSubscriptionsPageSize))
 }
 
-func (a *app) writeSubscriptions(w http.ResponseWriter, page, size int) {
-	subs, total := a.subs.List(page, size)
+func (a *app) writeSubscriptions(w http.ResponseWriter, scope string, page, size int) {
+	subs, total := a.subs.ListIn(scope, page, size)
 	out := make([]bankingcircle.PublicSubscription, 0, len(subs))
 	for _, s := range subs {
 		out = append(out, s.Public())
@@ -124,7 +131,7 @@ func (a *app) writeSubscriptions(w http.ResponseWriter, page, size int) {
 }
 
 func (a *app) getSubscription(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.Get(r.PathValue("id"))
+	sub, err := a.subs.GetIn(scopeOf(r), r.PathValue("id"))
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -146,8 +153,12 @@ func (a *app) updateSubscription(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	if a.foreignSubscription(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	if req.Endpoint != nil {
-		if err := a.list.Allowed(*req.Endpoint); err != nil {
+		if err := a.allowed(scopeOf(r), *req.Endpoint); err != nil {
 			httputilx.Error(w, 400, "endpoint rejected by allowlist: "+err.Error())
 			return
 		}
@@ -167,11 +178,19 @@ func (a *app) updateSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) activateSubscription(w http.ResponseWriter, r *http.Request) {
+	if a.foreignSubscription(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	sub, err := a.subs.SetActive(r.PathValue("id"), ifMatch(r), true)
 	a.answerActivated(w, sub, err)
 }
 
 func (a *app) deactivateSubscription(w http.ResponseWriter, r *http.Request) {
+	if a.foreignSubscription(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	sub, err := a.subs.SetActive(r.PathValue("id"), ifMatch(r), false)
 	answerDeactivated(w, sub, err)
 }
@@ -183,11 +202,19 @@ func (a *app) deactivateSubscription(w http.ResponseWriter, r *http.Request) {
 // moving the rowVersion under it is no reason to refuse. The rowVersions
 // still move, so a client holding the old one gets its 412.
 func (a *app) simActivateSubscription(w http.ResponseWriter, r *http.Request) {
+	if a.foreignSubscription(r, r.PathValue("subscriptionId")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	sub, err := a.subs.OverrideActive(r.PathValue("subscriptionId"), true)
 	a.answerActivated(w, sub, err)
 }
 
 func (a *app) simDeactivateSubscription(w http.ResponseWriter, r *http.Request) {
+	if a.foreignSubscription(r, r.PathValue("subscriptionId")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	sub, err := a.subs.OverrideActive(r.PathValue("subscriptionId"), false)
 	answerDeactivated(w, sub, err)
 }
@@ -216,6 +243,10 @@ func answerDeactivated(w http.ResponseWriter, sub *bankingcircle.Subscription, e
 }
 
 func (a *app) deleteSubscription(w http.ResponseWriter, r *http.Request) {
+	if a.foreignSubscription(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	if err := a.subs.Delete(r.PathValue("id"), ifMatch(r)); err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -238,6 +269,10 @@ func (a *app) createSubscriptionEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.TargetType == nil {
 		httputilx.Error(w, 400, "targetType is required")
+		return
+	}
+	if a.foreignSubscription(r, req.SubscriptionID) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
 		return
 	}
 	ev, err := a.subs.AddEvent(req.SubscriptionID, req.EventType,
@@ -264,6 +299,10 @@ func (a *app) replaceSubscriptionEventTargets(w http.ResponseWriter, r *http.Req
 		httputilx.Error(w, 400, "targetType is required")
 		return
 	}
+	if a.foreignEvent(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	ev, err := a.subs.ReplaceTargets(r.PathValue("id"), ifMatch(r),
 		bankingcircle.TargetType(*req.TargetType), req.TargetIDs)
 	if err != nil {
@@ -284,6 +323,10 @@ func (a *app) replaceSubscriptionEventTargets(w http.ResponseWriter, r *http.Req
 }
 
 func (a *app) deleteSubscriptionEvent(w http.ResponseWriter, r *http.Request) {
+	if a.foreignEvent(r, r.PathValue("id")) {
+		writeSubscriptionError(w, bankingcircle.ErrSubscriptionNotFound)
+		return
+	}
 	if err := a.subs.DeleteEvent(r.PathValue("id"), ifMatch(r)); err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -304,10 +347,10 @@ func statusWord(s bankingcircle.SubscriptionStatus) string {
 }
 
 // listEmails exposes the warning and deactivation emails the retry
-// schedule emits. Lab-only: a warning nobody can see is not a simulation
-// of a warning.
-func (a *app) listEmails(w http.ResponseWriter, _ *http.Request) {
-	emails := a.mail.All()
+// schedule emits, the named environment's. Lab-only: a warning nobody can
+// see is not a simulation of a warning.
+func (a *app) listEmails(w http.ResponseWriter, r *http.Request) {
+	emails := a.mail.AllIn(scopeOf(r))
 	httputilx.WriteJSON(w, 200, map[string]any{"count": len(emails), "emails": emails})
 }
 
@@ -334,7 +377,7 @@ func queryIntStrict(r *http.Request, key string, def int) int {
 // vendor behaviour. This lives under /sim, where everything is obviously
 // this lab's own.
 func (a *app) enqueueSyntheticNotifications(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	sub, err := a.subs.GetIn(scopeOf(r), r.PathValue("subscriptionId"))
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -373,8 +416,14 @@ func (a *app) enqueueSyntheticNotifications(w http.ResponseWriter, r *http.Reque
 // reactivating; queued is what an operator paused, and it clears by
 // resuming. Collapsing them into one number would put "the bank gave up on
 // you" and "you pressed a button" behind the same word.
+//
+// Another environment's subscription answers zeros, as an unknown one does.
 func (a *app) pendingNotifications(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("subscriptionId")
+	if a.foreignSubscription(r, id) {
+		httputilx.WriteJSON(w, 200, map[string]any{"subscriptionId": id, "pending": 0, "paused": false, "queued": 0})
+		return
+	}
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"subscriptionId": id,
 		"pending":        a.dispatch.Pending(id),
@@ -397,7 +446,7 @@ func (a *app) pendingNotifications(w http.ResponseWriter, r *http.Request) {
 // activate/deactivate pair on the same resource -- and it means each button
 // in the console is exactly one call somebody could make with curl.
 func (a *app) pauseNotifications(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	sub, err := a.subs.GetIn(scopeOf(r), r.PathValue("subscriptionId"))
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -414,7 +463,7 @@ func (a *app) pauseNotifications(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) resumeNotifications(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	sub, err := a.subs.GetIn(scopeOf(r), r.PathValue("subscriptionId"))
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return

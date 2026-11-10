@@ -69,10 +69,22 @@ func (a *app) connect(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	ke, err := a.kitEnvFor(r, labURL(host))
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"host": host,
-		"kits": console.Kits(a.cat, host, a.keysDir),
+		"env":  scopeOf(r.Context()),
+		"kits": ke.Apply(console.Kits(a.cat, host, a.keysDir)),
 	})
+}
+
+// labURL is the lab API's address for a platform that reaches the lab at
+// host: LAB_API_PUBLIC_PORT (default 8097) on that host.
+func labURL(host string) string {
+	return "http://" + net.JoinHostPort(host, env("LAB_API_PUBLIC_PORT", "8097"))
 }
 
 func (a *app) connectEnv(w http.ResponseWriter, r *http.Request) {
@@ -81,16 +93,32 @@ func (a *app) connectEnv(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	kits := console.Kits(a.cat, host, a.keysDir)
+	// An environment's kit carries its own logins (environments.md §5);
+	// the default's is the lab's as it always was.
+	ke, err := a.kitEnvFor(r, labURL(host))
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	kits := ke.Apply(console.Kits(a.cat, host, a.keysDir))
 	name := "fintechlab.env"
+	if ke != nil {
+		name = "fintechlab-" + ke.Env + ".env"
+	}
 	if id := r.PathValue("service"); id != "" {
 		k, ok := console.KitFor(a.cat, host, a.keysDir, id)
 		if !ok {
 			httputilx.Error(w, 404, id+" has nothing a platform needs to connect")
 			return
 		}
-		kits = []console.Kit{k}
+		kits = ke.Apply([]console.Kit{k})
+		if ke != nil {
+			kits = kits[1:] // one vendor's file: without the lab's own section
+		}
 		name = "fintechlab-" + id + ".env"
+		if ke != nil {
+			name = "fintechlab-" + ke.Env + "-" + id + ".env"
+		}
 	}
 	download(w, name, "text/plain; charset=utf-8", []byte(console.EnvFile(kits, host, time.Now())))
 }
@@ -105,6 +133,16 @@ func (a *app) connectFile(w http.ResponseWriter, r *http.Request) {
 	path, err := console.KitFilePath(k, a.keysDir, name)
 	if err != nil {
 		httputilx.Error(w, 404, err.Error())
+		return
+	}
+	// An environment's own key (its B4B signing key) instead of the lab's.
+	ke, err := a.kitEnvFor(r, "")
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	if b, ok := ke.File(name); ok {
+		download(w, name, "application/octet-stream", b)
 		return
 	}
 	body, err := os.ReadFile(path)

@@ -16,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/console"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // The lab-wide halves of the control contract: one reset for the whole lab,
@@ -89,11 +91,17 @@ func (a *app) labReset(w http.ResponseWriter, r *http.Request) {
 
 	results := make([]map[string]any, 0, len(targets))
 	ok := true
+	env := scopeOf(r.Context())
 	for _, id := range targets {
 		var res map[string]any
-		if id == labAPIService {
-			res = a.resetOwnState(req.Scope)
-		} else {
+		switch {
+		case id == labAPIService:
+			res = a.resetOwnState(r.Context(), req.Scope)
+		case !a.inScope(r.Context(), id):
+			// A service that does not keep environments apart holds only
+			// the default's records: an environment's reset leaves it.
+			res = map[string]any{"service": id, "status": 200, "skipped": "does not keep environments apart: it holds only the default's"}
+		default:
 			res = a.resetService(r.Context(), id, req.Scope, req.Force)
 		}
 		if st, _ := res["status"].(int); st < 200 || st > 299 {
@@ -107,6 +115,7 @@ func (a *app) labReset(w http.ResponseWriter, r *http.Request) {
 	}
 	httputilx.WriteJSON(w, status, map[string]any{
 		"scope":    req.Scope,
+		"env":      env,
 		"at":       time.Now().UTC(),
 		"ok":       ok,
 		"services": results,
@@ -191,13 +200,39 @@ func (a *app) resetService(ctx context.Context, id, scope string, force bool) ma
 // resetOwnState is the lab API's part of a lab reset. Plugin registrations
 // and stand-in switches are never reset: they are live wiring, not run
 // state, and a platform would only register again ten seconds later.
-func (a *app) resetOwnState(scope string) map[string]any {
+func (a *app) resetOwnState(ctx context.Context, scope string) map[string]any {
 	out := map[string]any{"service": labAPIService, "status": 200, "scope": scope, "cleared": map[string]int{}}
 	if scope != "all" {
 		out["kept"] = []string{"merchants", "plugins", "stand-ins"}
 		return out
 	}
-	merchants, batches, err := a.reg.Clear()
+	// The call's environment's registry; every environment's for "*".
+	regs := []*console.Registry{}
+	if env := scopeOf(ctx); env == tenant.All {
+		regs = append(regs, a.reg)
+		if a.db != nil {
+			list, _ := a.db.List(ctx)
+			for _, e := range list {
+				if reg, err := a.registry(tenant.With(context.WithoutCancel(ctx), e.ID)); err == nil {
+					regs = append(regs, reg)
+				}
+			}
+		}
+	} else if reg, err := a.registry(ctx); err == nil {
+		regs = append(regs, reg)
+	} else {
+		out["status"], out["error"] = 500, err.Error()
+		return out
+	}
+	var merchants, batches int
+	var err error
+	for _, reg := range regs {
+		m, b, e := reg.Clear()
+		merchants, batches = merchants+m, batches+b
+		if e != nil {
+			err = e
+		}
+	}
 	if err != nil {
 		out["status"], out["error"] = 500, err.Error()
 	}

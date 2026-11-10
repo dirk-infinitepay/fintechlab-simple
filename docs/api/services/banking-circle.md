@@ -12,7 +12,10 @@ webhook cipher and payload shapes, the eleven-step retry schedule ending in
 deactivation, and the reconciliation reads (intraday report, rejection
 report, single-payment status) including their `400` body. Bookings are
 dated on the bank's business day (Europe/Paris, 19:00 cutoff, weekends to
-Monday) on the lab clock. Simplified: any Basic credential is accepted, no
+Monday) on the lab clock. It serves several platforms at once, one
+customer per [environment](#environments), each with its own login,
+safeguarding accounts, payouts and subscriptions. Simplified: a login no
+customer has is accepted, as the default environment's; no
 payment-creation endpoint (real Banking Circle has none; B4B bridges in),
 no FX, bulk payments, direct debits or bank holidays, and everything is in
 memory.
@@ -22,10 +25,10 @@ memory.
 | | |
 | --- | --- |
 | Listens | `:8085` HTTPS (`LISTEN`), the Connect-shaped API; `:8095` plain HTTP (`INTERNAL_LISTEN`), the lab bridge. Compose service `banking-circle`; from the host `https://127.0.0.1:8085` and `http://127.0.0.1:8095`.<br>`:9085`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`, default `LISTEN`'s port + 1000), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://banking-circle:9085` |
-| Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with any non-empty Basic credentials returns a bearer token, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with a customer's login, or any other non-empty Basic credentials (the default environment's), returns a bearer token for that customer, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) on the e2e suite, which reaches the rest through the lab API. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the e2e suite |
-| Activity logs | `GET /sim/activity` (on the control port) keeps four logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount; `payment.state` for each state a trap's step took a payout to, with `detail.trap` (green when processed, amber otherwise). `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume; a batch carrying a notification a trap's step made has `detail.trap` (the trap ids, comma-separated). `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `traps` (*Traps*): `trap.armed`, `trap.caught`, `trap.step`, `trap.diverted` (amber), `trap.disarmed`, each with `detail.trap`. `POST /sim/reset` empties all four |
-| Configuration | The important variables are in the table below. Seeded at start: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments, balances and traps. `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`) |
+| Activity logs | `GET /sim/activity` (on the control port) keeps four logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount; `payment.state` for each state a trap's step took a payout to, with `detail.trap` (green when processed, amber otherwise). `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume; a batch carrying a notification a trap's step made has `detail.trap` (the trap ids, comma-separated). `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `traps` (*Traps*): `trap.armed`, `trap.caught`, `trap.step`, `trap.diverted` (amber), `trap.disarmed`, each with `detail.trap`. Each event carries `env` when it is not the default environment's, and `?env=` picks whose are shown. `POST /sim/reset` empties all four for the environment it resets |
+| Configuration | The important variables are in the table below. Seeded at start, the default environment's: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments, balances, traps and the customers (the lab API pushes them again). `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`), in the environment it names |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
 
 | Variable | Default | Effect |
@@ -45,14 +48,74 @@ memory.
 | `SIM_CONTROL_LISTEN` | `LISTEN`'s port + 1000 (`:9085`) | The control port's address |
 | `SIM_CONTROL_ALLOW` | unset | Comma-separated addresses or CIDRs the control port takes calls from; anything else is `403`. Unset, anything that can reach it. A malformed list is fatal at start |
 
+## Environments
+
+One platform using the lab is one environment
+([environments.md](../../lab-api/environments.md)), and to this bank one
+customer. The lab API pushes each customer to the control port
+(`PUT /sim/customers/{env}`), with the login its platform will present;
+the default environment is no customer and owns everything the bank had
+before there were environments.
+
+- **The login says whose a call is.** `authorize` looks the Basic
+  credential up among the customers: a customer's username and password
+  get a token for that customer; a customer's username with another
+  password is `401`, as a bad login is; any other non-empty credential gets
+  a token for the default environment, as every login did before. The
+  token remembers whose it is, and every call made with it is that
+  customer's. The client certificate is checked against the CA as before,
+  and is shared: it says nothing about whose a call is.
+- **Everything has an owner**: every account, payment, subscription (and
+  its events and notifications) and email. A record from before
+  environments, and everything a default-environment login makes, is the
+  default's; an `env` field on an account, a payment or an email names any
+  other owner.
+- **Per environment**: two safeguarding accounts, EUR and GBP, opened at
+  `0.00` when the customer arrives (the default's are the two fixed ones;
+  a customer's are a UUIDv5 of its id and the currency, so a recreated
+  customer gets the same two back); the payouts, which debit the payer's
+  own safeguarding account; the creditor accounts they land on (for a
+  customer, a UUIDv5 of the customer and the `accountId` B4B names, so two
+  platforms paying one beneficiary never share an account; the default's
+  are the `accountId` itself, as before); the subscriptions, and the
+  notifications, which go only to the payment's own environment's
+  subscriptions; the emails; the reports, which cover only the caller's own
+  payments; the traps and the outcome queue; the activity logs.
+- **A caller sees only its own.** On `:8085`, another customer's account,
+  payment, subscription or subscription event answers as an unknown one
+  does (`404`), and lists hold only the caller's own. A subscription
+  endpoint may be used once per customer, and two customers may use the
+  same one.
+- **Webhook destinations.** An endpoint is allowed when it passes
+  `WEBHOOK_ALLOWLIST` or names one of the customer's `webhook_hosts`
+  (hosts, `host:port` pairs or CIDRs, as the allowlist takes them), checked
+  when a subscription is created or changed and again at each send.
+- **The lab's hooks name the environment.** Every `/sim/*` route on the
+  control port acts in the environment the call names: `?env=<id>`, else
+  the `Lab-Environment: <id>` header, else the default. A read shows that
+  environment's records, or every environment's for `*`. An id outside it
+  is a `404`, as an unknown one is. A hook that makes something makes it in
+  that environment, refusing `*` (`400`): money in and an outcome also
+  refuse an environment the bank does not serve (`404`); a trap armed for
+  one is armed, and never catches anything.
+- **Calls between sims say whose they are**, in a `Lab-Environment`
+  header: B4B's payout over the bridge names the payer, and the credit at
+  the business bank names the payout's environment (no header for the
+  default's).
+- **Deleting a customer** (`DELETE /sim/customers/{env}`) clears everything
+  it made, as a reset of scope `all` would, and its safeguarding accounts,
+  tokens and traps with it.
+
 ## Vendor surface
 
 What a real platform calls, on `:8085`: Banking Circle's Connect API, the
 same paths and shapes. Bodies are decoded strictly: an unknown field is a
-`400`.
+`400`. Every route acts as the token's customer
+([Environments](#environments)): another customer's id answers `404`, as an
+unknown one does.
 
 **Webhooks it sends.** For each change of a payment's state, to every
-active subscription with an active event of that `eventType` whose targets
+active subscription of the payment's own environment with an active event of that `eventType` whose targets
 are empty or include the payment's `toAccountId` or `fromAccountId` (a
 target's `targetType` is stored but plays no part in matching). Queued per
 subscription; a message goes out when the queue reaches the subscription's
@@ -102,14 +165,19 @@ subscription; a message goes out when the queue reaches the subscription's
 
 Exchanges Basic credentials for a bearer token.
 
-- Headers: `Authorization: Basic …`. Any non-empty username and password
-  is accepted; nothing is checked against a store.
+- Headers: `Authorization: Basic …`. A customer's username and password
+  ([Environments](#environments)) are that customer's; any other non-empty
+  username and password is accepted as the default environment's.
 - Answers `200` `{"access_token": "bcat_6c1f…(48 hex)", "expires_in": 3600, "token_type": "bearer"}`.
   `401` `{"error": "basic auth required", "status": 401}` with
   `WWW-Authenticate: Basic realm="banking-circle"` when the header is
-  missing or either part is empty.
-- Side effects: the token lives in memory for `TOKEN_TTL`; a restart
-  invalidates every token.
+  missing or either part is empty; `401`
+  `{"error": "invalid client credentials", "status": 401}`, with the same
+  header, for a customer's username with another password.
+- Side effects: the token lives in memory for `TOKEN_TTL`, and remembers
+  whose it is; a restart invalidates every token, and deleting a customer
+  its tokens. The customer is recorded as seen (`GET /sim/customers`), as
+  it is on every call with its token.
 
 ### `GET /api/v1/accounts/{accountId}/balances`
 
@@ -131,11 +199,12 @@ An account's balance, as the platform's safeguarding check reads it.
   clock's UTC calendar date, not the bank's business day, and
   `lastTransactionTimestamp` is the time of the read. `400`
   `{"error": "accountId must be a UUID", "status": 400}` (a vIBAN is
-  refused here); `404` `{"error": "account not found", "status": 404}`.
+  refused here); `404` `{"error": "account not found", "status": 404}`,
+  for another customer's account too.
 
 ### `GET /api/v1/notificationselfservice/subscription`
 
-Lists subscriptions, ordered by id.
+Lists the caller's subscriptions, ordered by id.
 
 - Query: `PageNumber` (default 1), `PageSize` (default 50).
 - Answers `200` `{"result": [{…subscription…}], "pageInfo": {"pageNumber": 1, "pageSize": 50, "totalItems": 1}, "totalItems": 1}`,
@@ -152,7 +221,8 @@ Registers a webhook endpoint.
    "status": 2, "email": "ops@example.test", "maxNotificationsPerMessage": 5, "mtlsEnabled": false}
   ```
 
-  `endpoint` is required and must pass `WEBHOOK_ALLOWLIST`. `encryptionKey`
+  `endpoint` is required and must pass `WEBHOOK_ALLOWLIST` or the
+  customer's `webhook_hosts`. `encryptionKey`
   must be exactly 32 characters; omitted, it defaults to
   `BC_NOTIFICATION_KEY`. `status` is `2` (active, the default) or `1`
   (inactive). `maxNotificationsPerMessage` is 5–1000, default 1000. The old
@@ -168,7 +238,8 @@ Registers a webhook endpoint.
 
   `400` `{"error": "…", "status": 400}` for an allowlist rejection, a key
   of the wrong length, another `status`, a batch size out of range or an
-  unknown field. `409` when another subscription already uses the endpoint.
+  unknown field. `409` when another of the customer's subscriptions already
+  uses the endpoint.
 - Side effects: none until an event is added; a subscription with no
   events receives nothing but `clienttest`.
 
@@ -403,13 +474,22 @@ does not show as processed.
 On the bridge, `:8095`: plain HTTP, no auth, same-network trust. Real
 Banking Circle has none of these. They stand in for B4B's hand-off, a wire
 arriving on the safeguarding account, and a platform-internal balance
-service. Bodies are decoded strictly.
+service. Bodies are decoded strictly. A call says whose it is in
+`Lab-Environment: <env>` (or `?env=`); without it, it is the default
+environment's ([Environments](#environments)).
 
 ### `POST /internal/payments`
 
 B4B's hand-off: books a payout from the safeguarding account to the
 beneficiary's account. Called by b4b when its payout reaches
 `B4BTMApproved`.
+
+- Headers: `Lab-Environment: <env>`, the payer's environment; without it,
+  the default's. The payout debits that environment's safeguarding
+  account for its currency, and lands on an account of its own: for a
+  customer, `accountId` when it is already one of the customer's accounts,
+  else the UUIDv5 of the customer and `accountId`
+  (`bankingcircle.AccountIDIn`); for the default, `accountId` itself.
 
 - Body:
 
@@ -437,7 +517,11 @@ beneficiary's account. Called by b4b when its payout reaches
   `400` `{"error": "…", "status": 400}` for a missing `paymentId` or
   `accountId`, a bad amount, another currency
   (`no safeguarding account configured for currency "USD"`), an
-  `accountId` that is not a UUID, or an unknown field.
+  `accountId` that is not a UUID or is another environment's, an unknown
+  field, or `Lab-Environment: *`. `404`
+  `{"error": "no environment sbx at banking-circle", "status": 404}` for an
+  environment the bank does not serve. A customer's payout carries
+  `"env": "<env>"`.
 - Side effects: `OutgoingPaymentBooked` is notified at once. The payout
   is then offered to the `payment.outgoing` traps ([Traps](#traps)): the
   first armed one that matches takes it along its path instead of what
@@ -448,7 +532,8 @@ beneficiary's account. Called by b4b when its payout reaches
   On `OutgoingPaymentProcessed`, trapped or not, the beneficiary's bank is credited:
   `POST {BANK_CREDIT_URL}` with
   `{"iban", "account_number", "financial_institution", "holder", "amount", "currency", "reference"}`
-  (reference: the `externalRef`, else the payment id), once,
+  (reference: the `externalRef`, else the payment id) and, for a
+  customer's payout, `Lab-Environment: <env>`, once,
   fire-and-forget, skipped when the
   payout names neither an IBAN nor an account number. A `payment.create`
   event in the `payments` log. A repeated `paymentId` is not refused: it
@@ -463,8 +548,10 @@ by worldline on each morning slot, by the lab API's
 lab API's `POST /sim/incoming-payments`, the same handler.
 
 - Body: `{"currency": "EUR", "amount": "1250.00", "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24"}`.
-  `currency` is `EUR` or `GBP` and picks the account; there is no account
-  field.
+  `currency` is `EUR` or `GBP` and picks the safeguarding account of the
+  environment the call names (`Lab-Environment`, else the default). An
+  optional `accountId` names the account instead: the money is then its
+  owner's, and a call naming another environment is refused.
 - Answers `202`:
 
   ```json
@@ -475,8 +562,12 @@ lab API's `POST /sim/incoming-payments`, the same handler.
    "createdAt": "2026-09-25T08:47:10Z", "updatedAt": "2026-09-25T08:47:10Z"}
   ```
 
-  `400` for another currency, a non-positive or malformed amount, or an
-  unknown field.
+  `400` for another currency (or, with `accountId`, one the account does not
+  hold), a non-positive or malformed amount, an unknown field,
+  `Lab-Environment: *`, or an `accountId` that is another environment's
+  than the one named. `404` for an `accountId` the bank does not hold, or
+  an environment it does not serve. A customer's payment carries
+  `"env": "<env>"`.
 - Side effects: the account is credited at once; `IncomingPaymentBooked`
   is notified, then `IncomingPaymentProcessed` after `PROCESSING_DELAY`. A
   `payment.incoming` event in the `payments` log.
@@ -486,6 +577,8 @@ lab API's `POST /sim/incoming-payments`, the same handler.
 The balance without mTLS or a token. Called by the settlement stand-in's
 safeguarding gate before each payout, and by the lab API's
 `POST /v1/actions/fund-sga` to skip an account that already holds money.
+It reads the environment the call names (`Lab-Environment`, else the
+default; `*` any account): another environment's account is a `404`.
 
 - Answers `200` `{"accountId": "00000000-0000-4000-8000-000000000978", "balances": [{"type": "CurrentBalance", "currency": "EUR", "beginOfDayAmount": "0.00", "financialDate": "2026-09-25", "intraDayAmount": "1250.00", "lastTransactionTimestamp": "…"}]}`,
   each entry as on `GET /api/v1/accounts/{accountId}/balances`. `400`
@@ -507,6 +600,12 @@ auth.
 Where a control route stands in for a vendor or bridge route, it is that
 route's handler: the same status codes and the same body.
 
+Every `/sim/*` route acts in the environment the call names, `?env=` or
+`Lab-Environment` ([Environments](#environments)). On `:8085` it is the
+token's own customer, whatever the call names, a reset's `env` included;
+the customers are not served there (`404`), nor, to a customer's token,
+`GET /sim/logs` (`403`), which is every environment's.
+
 ### `GET /health`
 
 Liveness, on `:8085` and on the control port (the bridge has none). `:8085`
@@ -520,7 +619,9 @@ the lab API's monitor probes.
 
 The four logs described under *At a glance*.
 
-- Query: `limit` (default 100; each ring keeps 256).
+- Query: `limit` (default 100; each ring keeps 256 per environment);
+  `env`, whose events (the default's without it, every environment's for
+  `*`).
 - Answers `200` `{"logs": [{"name": "payments", …}, {"name": "notifications", …}, {"name": "reports", …}, {"name": "traps", …}]}`,
   in that order, each `{"name", "title", "note", "total", "kept", "last", "events": [{"seq", "at", "op", "peer", "summary", "status", "detail"}]}`.
 
@@ -532,7 +633,9 @@ Who this is and what it can do, as every service answers it
 `"simulates": "Banking Circle Connect"`,
 `"vendor_listeners": [":8085", ":8095"]` (`LISTEN` and `INTERNAL_LISTEN`),
 `"control_listener": ":9085"`, `"reset_scopes": ["flow", "all"]`,
-`"hooks": ["payment.outgoing"]` and `"traps": {"armed": 1, "pending_steps": 0}`.
+`"hooks": ["payment.outgoing"]`, `"traps": {"armed": 1, "pending_steps": 0}`,
+`"environments": true` and `"customers": 1` (how many, the default not
+counted).
 
 ### `GET /sim/logs`
 
@@ -547,6 +650,16 @@ bank, and the line marking each reset.
 
 Puts the bank back to a known state. Synchronous, and never refused.
 
+- Body: `{"scope": "flow" | "all", "force": false, "env": "<env>"}`, every
+  field optional. `env` (or `?env=`, or `Lab-Environment`) is the
+  environment reset; without it, the default's; `*` resets every
+  environment, as a reset did before there were environments. Everything
+  below is that environment's alone: another's payouts, balances,
+  notifications in flight and traps are untouched. A customer's `all`
+  keeps the customer and its two safeguarding accounts, at `0.00`, and
+  drops its subscriptions (it had none at start). `404` for an
+  environment the bank does not serve.
+
 - **`flow`** (the default) **clears**: every trap, the outcome queue's
   included, and every trap step still waiting, before anything else;
   every payment (outgoing, incoming, returns); every balance, back to
@@ -560,7 +673,8 @@ Puts the bank back to a known state. Synchronous, and never refused.
   twice.
 - **`all`** also puts back what start-up seeded: the seeded subscription
   alone, as it was at start (same id and `rowVersion`); the two
-  safeguarding accounts alone; references from `010F100000000001`.
+  safeguarding accounts alone; references from `010F100000000001` once no
+  payment of any environment is left.
 - **Tokens survive both scopes.** A lab reset never logs the platform's
   Banking Circle client out, and nothing the lab does needs one.
 - Work in flight is dropped, not raced. A payment still sleeping out
@@ -573,7 +687,7 @@ Puts the bank back to a known state. Synchronous, and never refused.
   hold the reset up.
 
 ```json
-{"service": "banking-circle", "scope": "flow",
+{"service": "banking-circle", "scope": "flow", "env": "default",
  "cleared": {"traps": 1, "trap_steps": 0, "payments": 3, "balances": 2, "notifications": 4,
              "pauses": 0, "emails": 0, "activity": 11},
  "kept": ["subscriptions", "accounts", "tokens"], "at": "2026-11-07T12:00:00Z"}
@@ -586,6 +700,47 @@ delivered. The `activity` count leaves out the `traps` log. `all` adds `subscrip
 (removed, or put back to the seed) and `accounts` (opened by payouts) to
 `cleared`, and `kept` is `["tokens"]`.
 
+### `GET /sim/customers`
+
+The environments this bank serves, as the control contract defines them
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)).
+
+- Answers `200` `{"customers": [{"env": "default", "created_at": "0001-01-01T00:00:00Z", "last_seen": "2026-11-10T09:12:03Z"}, {"env": "sbx", "name": "Sandbox", "created_at": "2026-11-10T08:00:00Z", "last_seen": null}]}`,
+  the default first. `last_seen` is the customer's last call on `:8085`
+  (`authorize` or any call with its token), `null` until it makes one.
+
+### `PUT /sim/customers/{env}`
+
+Adds or replaces a customer: the lab API pushes each one here when it is
+created, and again when this sim restarts.
+
+- Body: a customer, of which the bank reads
+  `{"env": "sbx", "name": "Sandbox", "banking_circle": {"username": "sbx-client", "password": "…"}, "webhook_hosts": ["platform.sbx.test"]}`;
+  the parts for other vendors are accepted and ignored. `env` may be left
+  out; when given it must be the path's.
+- Answers `200` `{"env": "sbx", "created": true}`, `created` false for a
+  replacement. `400` for an id that is not lower-case letters, digits and
+  dashes starting with a letter (40 at most), `default` or `*`, or a body
+  that does not decode.
+- Side effects: a new customer's two safeguarding accounts,
+  `tenant.SafeguardingAccount(env, "EUR")` and `…"GBP"` (vIBANs
+  `BE00SIMSGA…` and `GB00SIMSGA…`), are opened at `0.00`, held by
+  `"<name> Safeguarding Account EUR"`. A replaced customer keeps its
+  accounts, money and all; its new login and `webhook_hosts` apply from
+  the next call.
+
+### `DELETE /sim/customers/{env}`
+
+Removes a customer, and everything it made.
+
+- Answers `200` `{"env": "sbx", "deleted": true}`; `404`
+  `{"error": "no environment sbx here", "status": 404}`.
+- Side effects: its tokens stop working; its traps are disarmed; its
+  payments, notifications in flight, emails, subscriptions, accounts
+  (safeguarding accounts included) and activity are cleared, as
+  `POST /sim/reset` of scope `all` would, and its work in flight is
+  dropped. Its login is then an unknown one, the default environment's.
+
 ### `GET /sim/emails`
 
 The warning and deactivation emails the retry schedule would have sent.
@@ -593,7 +748,8 @@ The warning and deactivation emails the retry schedule would have sent.
 - Answers `200` `{"count": 1, "emails": [{"to": "alerts@fintechlab-simple.local", "kind": "warning", "subscription_id": "sub_8f3e1a0c2b6d", "endpoint": "https://…", "subject": "Webhook delivery is failing", "attempt": 7, "at": "2026-09-25T09:00:03Z"}]}`.
   `kind` is `warning` or `deactivation` (subject "Webhook subscription
   deactivated"); `to` is `"(no email configured)"` when the subscription
-  has none. The last 500 are kept.
+  has none; `env` names a customer's subscription. The last 500 are kept,
+  across every environment.
 
 ### `GET /sim/delivery-config`
 
@@ -676,7 +832,9 @@ The same handler as `GET /payments` on `:8085`: `200`
 
 The same handler as `POST /internal/incoming-payments` on the bridge,
 body, answers and side effects included: `202` with the incoming payment,
-and a `payment.incoming` event in the `payments` log.
+and a `payment.incoming` event in the `payments` log. One difference: an
+`accountId` must be in the environment the call names (another's is a
+`404`), where the bridge takes the account's owner.
 
 ### `GET /sim/payments/outcomes`
 
@@ -686,7 +844,9 @@ The same handler as `GET /internal/payments/outcomes`: `200`
 ### `POST /sim/payments/outcomes`
 
 The same handler as `POST /internal/payments/outcomes`; the two share one
-queue, which is a shortcut for traps.
+queue, which is a shortcut for traps. The traps are armed in the
+environment the call names, so they take that environment's next payouts
+and no other's.
 
 ### Traps
 
@@ -695,7 +855,10 @@ that matches, and when ([traps.md](../../lab-api/traps.md)). It only puts
 the bank in a state the real bank can be in, and every step goes through
 the bank's own code, so a trapped payout reads everywhere as an untouched
 one with that history would. The routes are on the control port only (and
-on `:8085` behind the bearer, like every `/sim` path).
+on `:8085` behind the bearer, like every `/sim` path). A trap is armed in
+the environment the call names (`?env=`, `Lab-Environment`), and takes
+only that environment's payouts; it lists with `"env"` when that is not
+the default.
 
 **`payment.outgoing`**, the one hook. A payout arriving over the bridge
 from B4B (`POST /internal/payments`), once B4B approved it. Subject: its
@@ -1049,18 +1212,26 @@ order, after anything already queued. A shortcut for traps
 - Answers `200` with the whole queue, `{"queued": ["Rejected", "Pending"]}`.
   `400` `{"error": "bankingcircle: unknown outcome (want Rejected or Pending)", "status": 400}`,
   with nothing armed, or for a body that does not decode.
+- Query or header: the environment the outcomes are for (`?env=`,
+  `Lab-Environment`; the default's without). `400` for `*`, `404` for an
+  environment the bank does not serve. `GET` answers that environment's
+  queue (`*`: every environment's).
 - Side effects: the traps are listed by `GET /sim/traps` and logged in the
-  `traps` log. Each is taken by whichever `POST /internal/payments` comes
-  next, whoever sends it, unless a trap armed before it takes that payout
-  first. `POST /sim/reset` clears them. In memory only.
+  `traps` log. Each is taken by whichever of its environment's
+  `POST /internal/payments` comes next, unless a trap armed before it
+  takes that payout first. `POST /sim/reset` of that environment clears
+  them. In memory only.
 
 ## Called by
 
 - **b4b** (`cmd/b4b/payments.go`): `POST :8095/internal/payments` once a
-  payout reaches `B4BTMApproved`, with a fresh `bcp_…` id and the
-  beneficiary's derived account id.
+  payout reaches `B4BTMApproved`, with a fresh `bcp_…` id, the
+  beneficiary's derived account id (`bankingcircle.AccountIDFor`, the same
+  for every environment) and `Lab-Environment` naming the payer.
 - **worldline** (`cmd/worldline/cycle.go`): `POST :8095/internal/incoming-payments`,
-  the morning slot's lump sum, once per currency.
+  the morning slot's lump sum, once per currency, naming the environment
+  whose files it was (`Lab-Environment`, or the safeguarding account as
+  `accountId`).
 - **The settlement stand-in** (`cmd/settlement`):
   `GET :8095/internal/accounts/{accountId}/balances`, its safeguarding
   gate before each payout.
@@ -1071,7 +1242,11 @@ order, after anything already queued. A shortcut for traps
   `payments/singles/{paymentId}/status` as the fallback. It receives the
   encrypted webhooks.
 - **The lab API** (`cmd/labapi`), on the control port only, with no
-  Banking Circle credentials: `GET /health` (health monitor,
+  Banking Circle credentials, naming the environment it acts for with
+  `?env=`: `PUT /sim/customers/{env}`, `DELETE /sim/customers/{env}` and
+  `GET /sim/customers` as it creates, deletes and reports environments
+  ([environments.md §5](../../lab-api/environments.md#5-creating-an-environment));
+  `GET /health` (health monitor,
   `GET /v1/lab`, `POST /v1/services/{id}/probe`); `GET /sim/accounts`
   (`GET /v1/banks`); `GET /sim/subscriptions` and
   `GET /sim/subscription/{subscriptionId}/pending`
@@ -1120,6 +1295,7 @@ order, after anything already queued. A shortcut for traps
   `/v1/services/banking-circle/sim/traps…`.
 - **Banking Circle calls out** to every subscription endpoint (the
   receiver's `/raw-events`, or the platform's listener) and to the business
-  bank's `POST /internal/credit`.
+  bank's `POST /internal/credit`, with `Lab-Environment` for a customer's
+  payout.
 
 Every route above is held to the source by `internal/console/apidocs_test.go`: a route added, moved or removed without this page following fails `go test ./internal/console`.

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // call drives one endpoint the way its real client does and returns the
@@ -54,7 +55,7 @@ func keyHdr() map[string]string { return map[string]string{"x-api-key": "sim-key
 // for: point the platform at it and nothing blocks. Each assertion reads
 // the field that vendor's own client reads.
 func TestEveryCheckPassesByDefault(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 
 	// Creditsafe: POST /authenticate, then the UK bank check.
 	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate",
@@ -123,11 +124,11 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 // is a bypass rather than a stub. Each flip must move the field its own
 // client reads.
 func TestOutcomesAreFlippable(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
 	ln := token(t, a, a.lexisToken, "/lexisnexis/oauth/token", `{"client_id":"c","client_secret":"s"}`)
 
-	if err := a.out.set(checkBankAccount, "mismatch"); err != nil {
+	if err := a.outcomes(tenant.Default).set(checkBankAccount, "mismatch"); err != nil {
 		t.Fatal(err)
 	}
 	_, out := call(t, a, a.ibanVerify, http.MethodPost, "/iban/verify",
@@ -137,7 +138,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 		t.Errorf("a mismatch is a valid account with the wrong name: %v", res)
 	}
 
-	if err := a.out.set(checkBankAccount, "invalid"); err != nil {
+	if err := a.outcomes(tenant.Default).set(checkBankAccount, "invalid"); err != nil {
 		t.Fatal(err)
 	}
 	_, out = call(t, a, a.bearer(a.creditsafeBankVerification), http.MethodPost, "/x",
@@ -147,7 +148,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 		t.Errorf("an invalid account should not verify: %v", sup)
 	}
 
-	if err := a.out.set(checkScreening, "hit"); err != nil {
+	if err := a.outcomes(tenant.Default).set(checkScreening, "hit"); err != nil {
 		t.Fatal(err)
 	}
 	_, out = call(t, a, a.apiKey(a.kyc6Screen), http.MethodPost, "/kyc6/individuals",
@@ -157,7 +158,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 		t.Errorf("a screening hit should produce a match: %v", results)
 	}
 
-	if err := a.out.set(checkIdentity, "fail"); err != nil {
+	if err := a.outcomes(tenant.Default).set(checkIdentity, "fail"); err != nil {
 		t.Fatal(err)
 	}
 	_, out = call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{"reference":"r"}`, bearerHdr(ln))
@@ -169,7 +170,7 @@ func TestOutcomesAreFlippable(t *testing.T) {
 // TestUnknownOutcomeIsRefused: a typo that silently did nothing would leave
 // an operator believing they had armed a failure that never fires.
 func TestUnknownOutcomeIsRefused(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	for _, bad := range []string{
 		`{"check":"bank-account","outcome":"maybe"}`,
 		`{"check":"nonsense","outcome":"pass"}`,
@@ -178,7 +179,7 @@ func TestUnknownOutcomeIsRefused(t *testing.T) {
 			t.Errorf("%s: status %d, want 400", bad, code)
 		}
 	}
-	if a.out.get(checkBankAccount) != "pass" {
+	if a.outcomes(tenant.Default).get(checkBankAccount) != "pass" {
 		t.Error("a refused flip must not change the answer")
 	}
 }
@@ -187,7 +188,7 @@ func TestUnknownOutcomeIsRefused(t *testing.T) {
 // never authenticates, or sends a token this service did not issue, should
 // find out here rather than against the real vendor.
 func TestAuthIsReal(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 
 	if code, _ := call(t, a, a.bearer(a.creditsafeBankVerification), http.MethodPost, "/x", `{}`, nil); code != http.StatusUnauthorized {
 		t.Errorf("no bearer: status %d, want 401", code)
@@ -264,11 +265,11 @@ func resetVia(t *testing.T, a *app, scope string) (cleared map[string]int, kept 
 // trap and goes; a token the platform was issued is what it set up once,
 // and still opens the bearer routes after the reset.
 func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
 	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
 	for check, outcome := range map[string]string{checkScreening: "hit", checkIdentity: "fail"} {
-		if err := a.out.set(check, outcome); err != nil {
+		if err := a.outcomes(tenant.Default).set(check, outcome); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -281,7 +282,7 @@ func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
 		t.Errorf("kept = %v", kept)
 	}
 	for check, v := range newOutcomes().m {
-		if got := a.out.get(check); got != v {
+		if got := a.outcomes(tenant.Default).get(check); got != v {
 			t.Errorf("%s = %q after a reset, want its default %q", check, got, v)
 		}
 	}
@@ -296,11 +297,11 @@ func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
 // TestAllResetIsFirstStart: no token issued before it is valid, and
 // portfolio ids count from 1 again.
 func TestAllResetIsFirstStart(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
 	token(t, a, a.lexisToken, "/lexisnexis/oauth/token", `{"client_id":"c","client_secret":"s"}`)
 	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
-	if err := a.out.set(checkCompany, "dissolved"); err != nil {
+	if err := a.outcomes(tenant.Default).set(checkCompany, "dissolved"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -308,7 +309,7 @@ func TestAllResetIsFirstStart(t *testing.T) {
 	if cleared["outcomes"] != 1 || cleared["tokens"] != 2 || cleared["portfolios"] != 1 || len(kept) != 0 {
 		t.Errorf("cleared = %v, kept = %v", cleared, kept)
 	}
-	if a.out.get(checkCompany) != "active" {
+	if a.outcomes(tenant.Default).get(checkCompany) != "active" {
 		t.Error("company should be back to active")
 	}
 	if code, _ := call(t, a, a.bearer(a.lexisIDU), http.MethodPost, "/x", `{}`, bearerHdr(cs)); code != http.StatusUnauthorized {
@@ -325,7 +326,7 @@ func TestAllResetIsFirstStart(t *testing.T) {
 // vendor route is; the vendor port still answers the old /sim paths the
 // same way until phase 4.
 func TestTheControlPortServesEverySimRoute(t *testing.T) {
-	a := &app{out: newOutcomes()}
+	a := newApp()
 	svc, ctl := surfaces(t, a)
 	if ctl.Addr() != ":9089" {
 		t.Errorf("control address = %q, want :9089", ctl.Addr())
@@ -352,7 +353,7 @@ func TestTheControlPortServesEverySimRoute(t *testing.T) {
 
 	// A flip on the control port is the vendor port's answer.
 	serve(ctl.Handler(), "POST", "/sim/outcome", `{"check":"identity","outcome":"refer"}`)
-	if got := a.out.get(checkIdentity); got != "refer" {
+	if got := a.outcomes(tenant.Default).get(checkIdentity); got != "refer" {
 		t.Errorf("identity after a flip on the control port = %q", got)
 	}
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
@@ -156,5 +157,51 @@ func TestASimWithTrapsServesThemAndAResetDisarmsThem(t *testing.T) {
 	}
 	if armed, _ := store.Counts(); armed != 0 {
 		t.Errorf("%d trap(s) still armed after a reset", armed)
+	}
+}
+
+func TestASimWithoutEnvironmentsResetsOnlyTheDefaultOrEverything(t *testing.T) {
+	var got []string
+	h, _ := mounted(t, func(_ context.Context, req ResetRequest) (ResetResult, error) {
+		got = append(got, req.Env)
+		return ResetResult{}, nil
+	})
+	if w := do(h, "POST", "/sim/reset", `{"env": "sbx"}`); w.Code != 400 {
+		t.Fatalf("sbx at a sim without environments: %d %s", w.Code, w.Body)
+	}
+	if w := do(h, "POST", "/sim/reset?env=*", ""); w.Code != 200 {
+		t.Fatalf("everything: %d %s", w.Code, w.Body)
+	}
+	if w := do(h, "POST", "/sim/reset", ""); w.Code != 200 {
+		t.Fatalf("default: %d %s", w.Code, w.Body)
+	}
+	if strings.Join(got, ",") != "*,default" {
+		t.Fatalf("the sim was asked to reset %v", got)
+	}
+}
+
+func TestASimWithCustomersResetsOneOfThemAndSaysItSupportsEnvironments(t *testing.T) {
+	customers := tenant.NewCustomers()
+	if _, err := customers.Put(tenant.Customer{Env: "sbx"}); err != nil {
+		t.Fatal(err)
+	}
+	var got ResetRequest
+	mux := http.NewServeMux()
+	Mount(mux, Config{Service: "test-sim", Customers: customers, Reset: func(_ context.Context, req ResetRequest) (ResetResult, error) {
+		got = req
+		return ResetResult{}, nil
+	}})
+	if w := do(mux, "POST", "/sim/reset", `{"env": "sbx", "scope": "all"}`); w.Code != 200 || got.Env != "sbx" {
+		t.Fatalf("reset sbx: %d %s, env %q", w.Code, w.Body, got.Env)
+	}
+	if w := do(mux, "POST", "/sim/reset", `{"env": "nope"}`); w.Code != 404 {
+		t.Fatalf("an unknown environment: %d", w.Code)
+	}
+	w := do(mux, "GET", "/sim/info", "")
+	if !strings.Contains(w.Body.String(), `"environments":true`) {
+		t.Fatalf("info: %s", w.Body)
+	}
+	if w := do(mux, "GET", "/sim/customers", ""); w.Code != 200 || !strings.Contains(w.Body.String(), `"env":"sbx"`) {
+		t.Fatalf("customers: %d %s", w.Code, w.Body)
 	}
 }

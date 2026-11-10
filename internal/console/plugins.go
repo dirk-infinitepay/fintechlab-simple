@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Plugins: a platform under test puts its own card in this console.
@@ -134,6 +136,11 @@ type Plugin struct {
 	// not, shown or not. Applied when it first registers and whenever it
 	// changes, not on every renewal (standins.go).
 	StandIns map[string]StandInPref `json:"stand_ins,omitempty"`
+	// Env is the environment that registered the plugin
+	// (docs/lab-api/environments.md §9): set by the lab API from the
+	// registering token, never taken from the descriptor. Empty is the
+	// default's.
+	Env string `json:"env,omitempty"`
 }
 
 // Registration states, as the card says them.
@@ -151,6 +158,7 @@ type PluginInfo struct {
 	Settlement   *PluginSettlement `json:"settlement,omitempty"`
 	EmptyHints   map[string]string `json:"empty_hints,omitempty"`
 	State        string            `json:"state"`
+	Env          string            `json:"env,omitempty"`
 	RegisteredAt time.Time         `json:"registered_at"`
 	LastSeen     time.Time         `json:"last_seen"`
 	TTLSeconds   int               `json:"ttl_seconds"`
@@ -376,6 +384,9 @@ func (c *Catalogue) Register(p Plugin) (PluginInfo, error) {
 	now := c.clockNow().UTC()
 	for _, r := range c.plugins {
 		if r.p.ID == p.ID {
+			if tenant.Normalize(r.p.Env) != tenant.Normalize(p.Env) {
+				return PluginInfo{}, badPlugin("%s is registered by environment %s: a plugin id is one platform's across the lab", p.ID, tenant.Normalize(r.p.Env))
+			}
 			if r.stopped {
 				r.registeredAt = now
 			}
@@ -414,7 +425,7 @@ func (c *Catalogue) infoLocked(r *registration) PluginInfo {
 	return PluginInfo{
 		Clock: r.p.Clock, StartHint: r.p.StartHint, Actions: r.p.Actions,
 		Settlement: r.p.Settlement, EmptyHints: r.p.EmptyHints,
-		State: state, RegisteredAt: r.registeredAt, LastSeen: r.lastSeen,
+		State: state, Env: r.p.Env, RegisteredAt: r.registeredAt, LastSeen: r.lastSeen,
 		TTLSeconds: int(PluginTTL / time.Second),
 	}
 }
@@ -432,20 +443,45 @@ func (c *Catalogue) serviceLocked(r *registration) Service {
 }
 
 // Plugins is every registered plugin as a Service, in registration order.
-func (c *Catalogue) Plugins() []Service {
+func (c *Catalogue) Plugins() []Service { return c.PluginsIn(tenant.All) }
+
+// PluginsIn is the plugins scope's environments registered.
+func (c *Catalogue) PluginsIn(scope string) []Service {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	out := make([]Service, 0, len(c.plugins))
 	for _, r := range c.plugins {
-		out = append(out, c.serviceLocked(r))
+		if tenant.InScope(scope, r.p.Env) {
+			out = append(out, c.serviceLocked(r))
+		}
 	}
 	return out
 }
 
+// RemoveEnv forgets every plugin env registered: the environment is gone.
+func (c *Catalogue) RemoveEnv(env string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	kept := c.plugins[:0]
+	n := 0
+	for _, r := range c.plugins {
+		if tenant.Normalize(r.p.Env) == tenant.Normalize(env) {
+			n++
+			continue
+		}
+		kept = append(kept, r)
+	}
+	c.plugins = kept
+	return n
+}
+
 // All is the lab's own services with the registered plugins first: the
 // system under test heads its view, the stand-ins below it are reference.
-func (c *Catalogue) All() []Service {
-	out := c.Plugins()
+func (c *Catalogue) All() []Service { return c.AllIn(tenant.All) }
+
+// AllIn is All with only scope's plugins.
+func (c *Catalogue) AllIn(scope string) []Service {
+	out := c.PluginsIn(scope)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, s := range c.Services {
@@ -455,11 +491,15 @@ func (c *Catalogue) All() []Service {
 }
 
 // Plugin returns the registered descriptor for id.
-func (c *Catalogue) Plugin(id string) (Plugin, PluginInfo, bool) {
+func (c *Catalogue) Plugin(id string) (Plugin, PluginInfo, bool) { return c.PluginIn(tenant.All, id) }
+
+// PluginIn returns id's descriptor when one of scope's environments
+// registered it.
+func (c *Catalogue) PluginIn(scope, id string) (Plugin, PluginInfo, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, r := range c.plugins {
-		if r.p.ID == id {
+		if r.p.ID == id && tenant.InScope(scope, r.p.Env) {
 			return r.p, c.infoLocked(r), true
 		}
 	}
@@ -470,11 +510,16 @@ func (c *Catalogue) Plugin(id string) (Plugin, PluginInfo, bool) {
 // first live plugin that settles, or failing that the first one that ever
 // did, so a stopped runner still shows its last run.
 func (c *Catalogue) SettlementPlugin() (Plugin, PluginInfo, bool) {
+	return c.SettlementPluginIn(tenant.All)
+}
+
+// SettlementPluginIn is SettlementPlugin among scope's plugins.
+func (c *Catalogue) SettlementPluginIn(scope string) (Plugin, PluginInfo, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	var fallback *registration
 	for _, r := range c.plugins {
-		if r.p.Settlement == nil {
+		if r.p.Settlement == nil || !tenant.InScope(scope, r.p.Env) {
 			continue
 		}
 		if c.infoLocked(r).State == PluginLive {

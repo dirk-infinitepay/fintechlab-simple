@@ -40,6 +40,9 @@ var controlRoutes = []string{
 	"GET /sim/info",
 	"GET /sim/logs",
 	"POST /sim/reset",
+	"GET /sim/customers",
+	"PUT /sim/customers/{env}",
+	"DELETE /sim/customers/{env}",
 }
 
 func serve(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {

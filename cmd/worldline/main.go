@@ -31,6 +31,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -59,12 +60,8 @@ func main() {
 		log.Fatalf("worldline: seed default config: %v", err)
 	}
 
-	// One guard for everything that outlives a request, so a reset drops
-	// it all at once (reset.go).
-	guard := &runGuard{}
-	acq, desk, sftpLog, sshAddr := startWorldlineSFTP(guard)
-
-	lab := &sim{guard: guard, acq: acq, desk: desk, sftpLog: sftpLog, ch: ch, merchantID: merchantID}
+	lab := &sim{ch: ch, merchantID: merchantID}
+	sshAddr := lab.startWorldlineSFTP()
 	mux, ctl, err := lab.surfaces(addr, sshAddr)
 	if err != nil {
 		log.Fatalf("worldline: %v", err)
@@ -86,6 +83,7 @@ func (s *sim) surfaces(addr, sshAddr string) (*http.ServeMux, *simctl.Control, e
 		Service: "worldline", Kind: "vendor", Simulates: "Worldline, the card acquirer",
 		Listeners: []string{addr, sshAddr},
 		Reset:     s.reset,
+		Customers: s.tenants.customers,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, nil, err
@@ -117,16 +115,16 @@ func vendorRoutes(ch *sftpgateway.Channel, sftpLog *activity.Log) *http.ServeMux
 }
 
 // controlRoutes registers the lab's hooks on the control surface, beside
-// the contract simctl mounts there: seeding transactions, running the
-// cycle, the enrolment desk, the activity log, and the channel config.
-// GET and PUT /sim/config are GET and PUT /config, the same handlers
-// answering the same, so the lab never has to call the vendor's own API to
-// read or change a setting.
+// the contract simctl mounts there (and the customers, environments.go):
+// seeding transactions, running the cycle, the enrolment desk, the
+// activity log, and the channel config. Each acts in the environment the
+// call names. GET and PUT /sim/config are GET and PUT /config, the same
+// handlers answering the same, so the lab never has to call the vendor's
+// own API to read or change a setting; the channel is the default's, and
+// lab-wide.
 func (s *sim) controlRoutes(mux *http.ServeMux) {
-	s.acq.routes(mux)
-	if s.desk != nil {
-		s.desk.routes(mux)
-	}
+	s.cycleRoutes(mux)
+	s.enrolmentRoutes(mux)
 	// A read-only window onto a lab run, carrying no key material: only
 	// who connected and which files they touched.
 	mux.HandleFunc("GET /sim/activity", activity.Handler(s.sftpLog))
@@ -353,11 +351,23 @@ func envDuration(k string, def time.Duration) time.Duration {
 // background goroutines so the HTTP listener is unaffected; a setup
 // failure (bad host key, unparsable keys, bind failure) is fatal at
 // startup rather than silently leaving the service half-configured. The
-// cycle and the enrolment desk share guard, which a reset moves.
-func startWorldlineSFTP(guard *runGuard) (*settlementApp, *enrolmentDesk, *activity.Log, string) {
+// default's cycle and enrolment desk share one guard, which a reset moves;
+// every other environment's have one of their own (environments.go).
+//
+// It fills in s and returns the SFTP listener's address.
+func (s *sim) startWorldlineSFTP() string {
 	root := env("WORLDLINE_SFTP_ROOT", "/wlsftp")
 	if err := wlsftp.EnsureLayout(root); err != nil {
 		log.Fatalf("worldline: sftp layout: %v", err)
+	}
+	// Every other environment's jail is a folder of its own here, outside
+	// the default's root.
+	envRoot := env("WORLDLINE_SFTP_ENV_ROOT", defaultEnvRoot(root))
+	if err := checkEnvRoot(root, envRoot); err != nil {
+		log.Fatalf("worldline: %v", err)
+	}
+	if err := os.MkdirAll(envRoot, 0o755); err != nil {
+		log.Printf("worldline: cannot create WORLDLINE_SFTP_ENV_ROOT %s: %v -- no environment can be added until it can", envRoot, err)
 	}
 
 	hostKeyPath := env("WORLDLINE_SFTP_HOST_KEY_PATH", "/keys/wlsftp-keys/host_key")
@@ -407,7 +417,11 @@ func startWorldlineSFTP(guard *runGuard) (*settlementApp, *enrolmentDesk, *activ
 			worldline.FileSourceGenerate, worldline.FileSourceFixture)
 	}
 
+	// One guard for everything of the default's that outlives a request,
+	// so a reset drops it all at once (reset.go).
+	guard := &runGuard{}
 	acq := &settlementApp{
+		env:   tenant.Default,
 		store: worldline.NewStore(),
 		cfg: worldline.CycleConfig{
 			Identifier:        env("WORLDLINE_SETTLEMENT_IDENTIFIER", "Worldline_Settlement"),
@@ -440,25 +454,33 @@ func startWorldlineSFTP(guard *runGuard) (*settlementApp, *enrolmentDesk, *activ
 	// later. This is that evidence, next to the service it is about.
 	sftpLog := activity.New("sftp", "File exchange",
 		"Every SFTP session the platform opened against this acquirer, and what it did with it.")
-	go func() {
-		if err := wlsftp.ListenAndServeObserved(context.Background(), sshAddr, root, hostSigner, password, authorizedKey, log.Printf,
-			recordSFTP(sftpLog)); err != nil {
-			log.Fatalf("worldline: sftp listener: %v", err)
-		}
-	}()
 	// The boarding desk answers enrolment batches uploaded to to_WLNORDIC.
 	// It shares the acquirer's SFTP root and PGP keys: same channel, same
 	// crypto, different conversation.
 	desk := newEnrolmentDesk(root, keys,
 		envDuration("WORLDLINE_ENROLMENT_DELAY", 30*time.Second),
 		envDuration("WORLDLINE_ENROLMENT_SWEEP", 5*time.Second))
-	desk.guard = guard
-	go desk.watch()
+	desk.env, desk.guard = tenant.Default, guard
 
-	go acq.schedule()
-	log.Printf("worldline: sftp+pgp listening on %s root=%s source=%s morning=%s afternoon=%s",
-		sshAddr, root, source, acq.cfg.MorningAt, acq.cfg.AfternoonAt)
-	return acq, desk, sftpLog, sshAddr
+	s.guard, s.acq, s.desk, s.sftpLog = guard, acq, desk, sftpLog
+	s.serveEnvironments(envRoot)
+
+	// A customer's username and password open its own jail; any other
+	// login is the default's, exactly as before environments.
+	srv := wlsftp.Server{
+		Root: root, HostSigner: hostSigner, Password: password, AuthorizedKey: authorizedKey,
+		Accounts: s.sftpAccounts, Logf: log.Printf, Observe: recordSFTP(sftpLog, s.tenants.customers),
+	}
+	go func() {
+		if err := srv.ListenAndServe(context.Background(), sshAddr); err != nil {
+			log.Fatalf("worldline: sftp listener: %v", err)
+		}
+	}()
+	go s.watchEnrolment()
+	go s.schedule()
+	log.Printf("worldline: sftp+pgp listening on %s root=%s environments=%s source=%s morning=%s afternoon=%s",
+		sshAddr, root, envRoot, source, acq.cfg.MorningAt, acq.cfg.AfternoonAt)
+	return sshAddr
 }
 
 func logReq(next http.Handler) http.Handler {

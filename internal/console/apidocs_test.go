@@ -209,6 +209,13 @@ func registeredRoutes(t *testing.T, dirs []string) map[string]bool {
 					out[r] = true
 				}
 			}
+			if bytes.Contains(b, []byte("tenant.NewCustomers(")) {
+				// A sim with environments serves its customers on the
+				// control port (internal/tenant).
+				for _, r := range []string{"GET /sim/customers", "PUT /sim/customers/{env}", "DELETE /sim/customers/{env}"} {
+					out[r] = true
+				}
+			}
 			if bytes.Contains(b, []byte("trap.NewStore(")) {
 				// A trap store's routes, served on the control port.
 				for _, r := range []string{"GET /sim/traps/hooks", "GET /sim/traps", "POST /sim/traps",

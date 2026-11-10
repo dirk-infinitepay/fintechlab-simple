@@ -64,10 +64,12 @@ All 2026-10-20.
   as a 1:1 drop-in for the real vendor when an application is pointed at
   it. The lab API adds power to change state inside a sim. It does not
   front, proxy or replace the vendor surface.
-- **One long-running lab, one tenant**, aimed at local development.
-  Parallel, isolated environments (each with its own copy of the platform
-  and its settle DB) are in the plan and deferred
-  ([plan.md, phase 5](plan.md#phase-5--parallel-environments-deferred)).
+- **One lab, several environments** (the owner, 2026-11-10; this replaces
+  2026-10-20's "one tenant, environments deferred"). Each platform using the
+  lab is an environment: sbx, a laptop, an e2e run. Each has its own lab
+  token and its own customers at the vendors, and there is no heartbeat
+  ([environments.md](environments.md), built in
+  [plan.md, phase 5](plan.md#phase-5--environments); built 2026-11-10).
 - **The back link has no vendor auth, and no token** (2026-11-07). Each sim's
   `/sim/*` is on a control port of its own, trusted by network placement
   (`SIM_CONTROL_ALLOW` to narrow it). Authentication is only between a
@@ -90,7 +92,8 @@ All 2026-10-20.
 | [traps.md](traps.md) | the trap model, and each vendor's hooks |
 | [lab-api.md](lab-api.md) | the `/v1` resources, and how today's console `/api` maps onto them |
 | [runner.md](runner.md) | what changes in `fintechlab-runner` and in the plugin contract |
-| [plan.md](plan.md) | phases, including the deferred parallel environments |
+| [environments.md](environments.md) | one lab, several platforms: environments, their tokens and their customers at each vendor |
+| [plan.md](plan.md) | phases, environments among them |
 | [open.md](open.md) | every [OPEN] question in one list |
 
 Sections are numbered so a review can say "traps §4.1" and mean one place.

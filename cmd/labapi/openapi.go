@@ -112,6 +112,15 @@ var (
 	}, "to")
 )
 
+// envConfigSchema is an environment's config (internal/labdb.Config).
+var envConfigSchema = obj(map[string]any{
+	"settlement_identifier": str("Worldline's settlement file name for this environment"),
+	"webhook_hosts":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the platform's callback hosts its subscriptions and callbacks may reach"},
+	"aci_webhook_url":       str("where ACI delivers this environment's webhooks"),
+	"b4b_callback_url":      str("where B4B calls back a record that names no callback_url"),
+	"clock":                 str("follows or wall: a seen wall environment blocks moving the lab clock"),
+})
+
 // opSpecs annotates every route that takes something beyond its path.
 var opSpecs = map[string]opSpec{
 	"POST /v1/lab/reset": {Body: obj(map[string]any{
@@ -126,8 +135,19 @@ var opSpecs = map[string]opSpec{
 	})},
 	"GET /v1/services/{id}/activity": {Query: []param{{Name: "limit", Type: "integer", About: "how many events per log; default 100"}}},
 	"POST /v1/services/{id}/probe":   {Bodyless: true},
-	"GET /v1/services/{id}/logs":     {Query: logQuery, Verbatim: true},
-	"POST /v1/services/{id}/reset":   {Body: scopeBody, Verbatim: true},
+	"POST /v1/environments": {BodyRequired: true, Status: 201, Body: obj(map[string]any{
+		"name":   str("what the environment is called; its id is made from it unless given"),
+		"id":     str("lower-case letters, digits and dashes; default the name's"),
+		"config": envConfigSchema,
+	})},
+	"PATCH /v1/environments/{id}": {BodyRequired: true, Body: obj(map[string]any{
+		"name":   str("a new name; the id does not change"),
+		"config": envConfigSchema,
+	})},
+	"DELETE /v1/environments/{id}":     {Bodyless: true},
+	"POST /v1/environments/{id}/token": {Bodyless: true},
+	"GET /v1/services/{id}/logs":       {Query: logQuery, Verbatim: true},
+	"POST /v1/services/{id}/reset":     {Body: scopeBody, Verbatim: true},
 	"ANY /v1/services/{id}/sim/{path...}": {Verbatim: true,
 		Body: anyObject("whatever the service's /sim route takes, sent on as it is; each service's reference lists its routes")},
 	"GET /v1/traps":    {Query: []param{{Name: "state", About: "only traps in this state", Enum: []string{"armed", "spent", "expired", "disarmed"}}}},

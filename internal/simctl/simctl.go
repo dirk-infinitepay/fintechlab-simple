@@ -28,6 +28,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
@@ -61,6 +62,12 @@ type Config struct {
 	// /sim/traps routes, GET /sim/info lists its hooks, and a reset
 	// disarms every trap before the sim's own (internal/trap).
 	Traps *trap.Store
+	// Customers, when set, are the environments the sim serves besides
+	// the default (internal/tenant): Mount serves /sim/customers, GET
+	// /sim/info says "environments": true, and a reset may name one
+	// environment. A sim without them is the default environment's alone,
+	// and refuses a reset of any other.
+	Customers *tenant.Customers
 }
 
 // ResetFunc does a reset. It returns what it cleared (a count per kind of
@@ -72,6 +79,10 @@ type ResetFunc func(ctx context.Context, req ResetRequest) (ResetResult, error)
 type ResetRequest struct {
 	Scope string `json:"scope"`
 	Force bool   `json:"force"`
+	// Env is the environment to reset (internal/tenant): one environment's
+	// records only, or every environment's for "*". Empty is the
+	// default's; ?env= or the Lab-Environment header say the same.
+	Env string `json:"env,omitempty"`
 }
 
 // ResetResult is what a reset reports.
@@ -125,6 +136,9 @@ func Mount(mux *http.ServeMux, c Config) {
 	if c.Traps != nil {
 		c.Traps.Routes(mux)
 	}
+	if c.Customers != nil {
+		c.Customers.Routes(mux)
+	}
 	var mu sync.Mutex // one reset at a time
 	mux.HandleFunc("POST /sim/reset", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -150,6 +164,10 @@ func (c Config) info(w http.ResponseWriter, r *http.Request) {
 		"control_listener": c.ControlListener,
 		"reset_scopes":     c.Scopes,
 		"hooks":            []string{},
+		"environments":     c.Customers != nil,
+	}
+	if c.Customers != nil {
+		out["customers"] = len(c.Customers.List())
 	}
 	if c.Traps != nil {
 		armed, pending := c.Traps.Counts()
@@ -190,12 +208,27 @@ func (c Config) reset(w http.ResponseWriter, r *http.Request) {
 		dec := json.NewDecoder(bytes.NewReader(body))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&req); err != nil {
-			httputilx.Error(w, 400, `want {"scope": "flow"|"all", "force": false}: `+err.Error())
+			httputilx.Error(w, 400, `want {"scope": "flow"|"all", "force": false, "env": "<environment>"}: `+err.Error())
 			return
 		}
 	}
 	if req.Scope == "" {
 		req.Scope = ScopeFlow
+	}
+	if req.Env == "" {
+		req.Env = tenant.FromRequest(r)
+	}
+	req.Env = tenant.Normalize(req.Env)
+	switch {
+	case req.Env == tenant.Default || req.Env == tenant.All:
+	case c.Customers == nil:
+		httputilx.Error(w, 400, c.Service+" does not support environments: it resets the default environment, or everything (\"*\")")
+		return
+	default:
+		if _, ok := c.Customers.Get(req.Env); !ok {
+			httputilx.Error(w, 404, "no environment "+req.Env+" at "+c.Service)
+			return
+		}
 	}
 	if !slices.Contains(c.Scopes, req.Scope) {
 		httputilx.Error(w, 400, fmt.Sprintf("%s resets with scope %s, not %q", c.Service, strings.Join(c.Scopes, " or "), req.Scope))
@@ -207,12 +240,16 @@ func (c Config) reset(w http.ResponseWriter, r *http.Request) {
 	// refuses, and it has no hooks.
 	var traps, steps int
 	if c.Traps != nil {
-		traps, steps = c.Traps.Reset()
+		scope := req.Env
+		if c.Customers == nil {
+			scope = tenant.All // a sim with no environments is the default's alone
+		}
+		traps, steps = c.Traps.ResetIn(scope)
 	}
 	res, err := c.Reset(r.Context(), req)
 	var refusal Refusal
 	if errors.As(err, &refusal) {
-		log.Printf("%s: reset (%s) refused: %s", c.Service, req.Scope, refusal.Reason)
+		log.Printf("%s: reset (%s) of environment %s refused: %s", c.Service, req.Scope, req.Env, refusal.Reason)
 		httputilx.Error(w, 409, refusal.Reason+`; {"force": true} resets anyway`)
 		return
 	}
@@ -231,11 +268,12 @@ func (c Config) reset(w http.ResponseWriter, r *http.Request) {
 	res.Kept = nonNil(res.Kept)
 	// The log is kept across a reset, with this line marking it: the log is
 	// where you look for what happened just before (sim-control.md §6).
-	log.Printf("%s: reset (%s%s) — cleared %s; kept %s", c.Service, req.Scope,
-		map[bool]string{true: ", forced", false: ""}[req.Force], counts(res.Cleared), orNone(res.Kept))
+	log.Printf("%s: reset (%s%s) of environment %s — cleared %s; kept %s", c.Service, req.Scope,
+		map[bool]string{true: ", forced", false: ""}[req.Force], req.Env, counts(res.Cleared), orNone(res.Kept))
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"service": c.Service,
 		"scope":   req.Scope,
+		"env":     req.Env,
 		"cleared": res.Cleared,
 		"kept":    res.Kept,
 		"at":      time.Now().UTC(),

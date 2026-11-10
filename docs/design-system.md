@@ -573,6 +573,67 @@ A platform can ask for both in its descriptor (`stand_ins`,
 registers or changes its wishes, never on a renewal — so a button pressed
 here is not undone ten seconds later. Every card says who set it last.
 
+### Environment selector — whose lab you are looking at
+
+A lab that serves several platforms shows one **environment** at a time
+([lab-api/environments.md](lab-api/environments.md)): its merchants, its
+payouts, its activity. The selector says which, on every view, so no
+screen can be read as another platform's.
+
+```html
+<label class="env-pick" title="The environment every view shows">
+  <span class="dot up"></span>
+  <select data-env-pick>
+    <option value="default">Default</option>
+    <option value="sbx" selected>Infinite sbx · sbx</option>
+  </select>
+</label>
+```
+
+- **In the topbar, first, before the view's own actions** — it scopes the
+  whole page, not one card. It is there on every view, and only when the
+  lab has environments to choose between; a lab with only the default
+  draws none.
+- **A native `<select>`**, styled as every input is. Options read
+  `name · id`, the id in mono where the option allows it, `Default` first.
+- **The dot is the selected environment's state**, from the vendors'
+  traffic, never from a heartbeat: green once a vendor has seen its
+  platform, flat grey until then. It never turns red with age — a deployed
+  platform may be quiet for a day and be fine.
+- **Changing it re-renders the view at once** and is remembered per browser
+  (`localStorage`, in `try/catch` like the theme). Every call the page
+  makes names it (the `Lab-Environment` header), and every download link
+  carries it (`?env=`), so a downloaded `.env` is the selected
+  environment's.
+- **An environment that has gone falls back to Default**, with a toast
+  saying so; the page never keeps asking for something that does not exist.
+- **Vendors that do not keep environments apart yet** are named in a `.note`
+  under the topbar while another environment is selected: they hold only
+  the default's records, so the page leaves them out rather than showing
+  the default's data as if it were this environment's.
+- There is no *All environments* entry: every view is one environment's.
+  Lab-wide reads are the API's (`Lab-Environment: *`).
+
+### Environments — the view that makes them
+
+One **Card** per environment, the default first and marked `lab's own`:
+
+- Collapsed: the state dot, the name, the id in mono, and *last seen 3 h
+  ago* or *never seen* on the right.
+- Open: a `.kv` of the id, when it was created, its config, its token in
+  mono (shown — it is a test lab with fake data; *Rotate* replaces it),
+  *seen by* as a `.pill-row` of the vendors that have seen it, and the
+  vendors still shared, as a `.note.warn`.
+- The kit is a **Download** of its `.env`, named `fintechlab-<id>.env`.
+- *Use* switches the selector to it; *Rotate token* and *Delete* are
+  `.ghost` and confirmed in the vendor's own words (contract 7): delete says
+  that every vendor forgets the environment's records and its token stops
+  working, and that the default is untouched.
+- *+ Create environment* in the topbar opens a **Modal**: name, id (blank:
+  made from the name), and the config fields, each with a `.hint`. The
+  answer's token is shown in the toast, because the environment's card
+  shows it again anyway.
+
 ### Guide — the Docs view
 
 A page to read inside a tool to operate: how the parts of the system fit,

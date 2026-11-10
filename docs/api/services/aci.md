@@ -17,7 +17,7 @@ surfaces, out of scope).
 
 | | |
 | --- | --- |
-| Listens | HTTP `:8087` (`LISTEN`). Compose service `aci`; from the host `http://127.0.0.1:8087`.<br>`:9087`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://aci:9087`.<br>Outbound: one POST per notification to `ACI_WEBHOOK_TARGET_URL` |
+| Listens | HTTP `:8087` (`LISTEN`). Compose service `aci`; from the host `http://127.0.0.1:8087`.<br>`:9087`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://aci:9087`.<br>Outbound: one POST per notification to `ACI_WEBHOOK_TARGET_URL`, or to the environment's own target ([Environments](#environments)) |
 | Auth | None on either port. The control port takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The outbound webhook's only authentication is its encryption: a listener that decrypts it with the shared key knows ACI sent it, and a tag mismatch is the auth failure |
 | A platform points here with | Nothing: the platform is the target. Point `ACI_WEBHOOK_TARGET_URL` at the platform's listener (and allow its host in `WEBHOOK_ALLOWLIST`); the platform decrypts with `ACI_WEBHOOK_SECRET`, which the lab API's connect kit hands out (`GET :8097/v1/connect/env/aci`). The lab API finds ACI with `CONSOLE_URL_ACI` |
 | Activity logs | None. ACI serves no `GET /sim/activity`, and its catalogue entry names no activity path, so the console draws no activity panel for it. `GET /sim/sent` is its record of what it built and how each delivery went |
@@ -27,22 +27,45 @@ surfaces, out of scope).
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `ACI_WEBHOOK_SECRET` | `aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888` | AES-256 key as 64 hex characters. Not hex, or not 32 bytes decoded, is fatal at start |
-| `ACI_WEBHOOK_TARGET_URL` | `http://localhost:3013/api/v1/webhook` (compose `https://receiver:8443/raw-events`) | Where every notification is delivered |
+| `ACI_WEBHOOK_TARGET_URL` | `http://localhost:3013/api/v1/webhook` (compose `https://receiver:8443/raw-events`) | Where the default environment's notifications are delivered |
 | `ACI_WEBHOOK_BODY_MODE` | `raw` | `raw`: the hex ciphertext as `text/plain`. `json`: `{"encryptedBody": "<hex>"}` as `application/json`. Anything else is fatal at start |
-| `WEBHOOK_ALLOWLIST` | `localhost,127.0.0.1` (compose adds `receiver`, `receiver:8443`) | Hosts the target may name. A target outside it fails every attempt |
+| `WEBHOOK_ALLOWLIST` | `localhost,127.0.0.1` (compose adds `receiver`, `receiver:8443`) | Hosts the target may name. A target outside it, and outside its environment's `webhook_hosts`, fails every attempt |
 | `RETRY_BACKOFF`, `MAX_ATTEMPTS` | `1s,2s,4s`, `4` | Wait before attempts 2, 3, 4 (the last value repeats beyond that), and how many attempts in all |
 | `CA_FILE` | `keys/certs/ca.pem` (compose `/keys/certs/ca.pem`) | Extra trust root for an HTTPS target. Unreadable is logged, not fatal |
-| `ACI_WEBHOOK_CONNECTED` | `true` | Starting state of the delivery switch: `false`, `0`, `off` or `no` start it disconnected |
+| `ACI_WEBHOOK_CONNECTED` | `true` | Starting state of the delivery switch, the default environment's: `false`, `0`, `off` or `no` start it disconnected |
 | `SIM_CONTROL_LISTEN`, `SIM_CONTROL_ALLOW` | `LISTEN`'s port plus 1000 (`:9087`), empty (any caller) | The control port, and who may call it |
 | `LAB_CLOCK_URL` | unset (compose `http://clock:8096/clock`) | The payload's `timestamp` and the record's `created_at` follow the lab clock |
+
+## Environments
+
+Each environment the lab creates
+([lab-api/environments.md](../../lab-api/environments.md)) is a customer
+here, pushed by the lab API with
+[`PUT /sim/customers/{env}`](#put-simcustomersenv), with a webhook target
+of its own (`aci.webhook_url`).
+
+- ACI only sends, so no platform call says whose a payment is: the
+  trigger does. `POST /sim/payments` makes a payment in the environment it
+  names (`?env=` or `Lab-Environment`; the default without either), and
+  the notification goes to that environment's target.
+- The default's target is `ACI_WEBHOOK_TARGET_URL`, behind the delivery
+  switch. Another environment's is its own platform listening: the switch,
+  which is about the lab's receiver stand-in, does not hold it.
+- A target is allowed when `WEBHOOK_ALLOWLIST` or the environment's
+  `webhook_hosts` names its host.
+- Each environment has its own sent log. `GET /sim/sent` and
+  `GET /sim/sent/{id}` read the environment the call names, `*` every
+  one's; an environment ACI was never given is `404`.
+- A reset names one environment, or every one with `*`, and drops only its
+  deliveries in flight. Deleting a customer takes its sent log with it.
 
 ## Vendor surface
 
 What a real platform calls: nothing. ACI calls the platform, and the
 webhook below is the vendor-shaped surface, the same as ACI's.
 
-**The webhook it sends.** `POST {ACI_WEBHOOK_TARGET_URL}`, an 8 s timeout
-per attempt.
+**The webhook it sends.** `POST {ACI_WEBHOOK_TARGET_URL}`, or the
+environment's own target, an 8 s timeout per attempt.
 
 - Headers: `X-Initialization-Vector` (12 bytes, hex), `X-Authentication-Tag`
   (16 bytes, hex), `Content-Type` (`text/plain` or `application/json` by
@@ -89,7 +112,9 @@ Liveness, on both ports. `:8087` answers `{"status": "ok", "service":
 ### `POST /sim/payments`
 
 "A card payment just happened": builds, encrypts and sends one
-notification.
+notification, in the environment the call names (`?env=` or
+`Lab-Environment`; the default without either), to that environment's
+target.
 
 - Body (this lab's own snake_case trigger, not ACI's wire shape):
 
@@ -105,10 +130,15 @@ notification.
   notification is encrypted, before any delivery. `400`
   `{"error": "merchant_transaction_id required", "status": 400}` or for a
   body that does not decode; `500` if marshalling or encryption fails.
-- Side effects: a record in `GET /sim/sent`, `delivery_status`
-  `pending`, and delivery in the background. With the delivery switch off
-  (`POST /sim/connected`) nothing is sent: the record is stored `held`,
-  with `delivery_error` saying why, and it is never sent later.
+- For the environment: `400`
+  `a card payment happens in one environment, not in all of them` for
+  `env=*`; `404` `no environment <env> at aci`; `409`
+  `environment <env> has no ACI webhook target: its customer needs aci.webhook_url`.
+- Side effects: a record in the environment's `GET /sim/sent`,
+  `delivery_status` `pending`, and delivery in the background. With the
+  delivery switch off (`POST /sim/connected`) nothing of the default's is
+  sent: the record is stored `held`, with `delivery_error` saying why, and
+  it is never sent later. Another environment's is sent all the same.
 
 ### `POST /internal/simulate-payment`
 
@@ -117,7 +147,9 @@ same body, answers and side effects.
 
 ### `GET /sim/sent`
 
-Every notification built since start, oldest first.
+Every notification built since start in the environment the call names
+(`?env=` or `Lab-Environment`; the default without either, every one's
+for `*`), oldest first. `404` for an environment ACI was never given.
 
 - Answers `200` `{"result": [{…record…}]}`, each as
   `GET /sim/sent/{id}` returns it.
@@ -144,8 +176,11 @@ One notification: the plaintext, the wire material and how delivery went.
   `delivery_status` is `pending`, `delivered`, `failed` or `held`.
   `http_status` (the last HTTP answer; absent when none came),
   `delivery_error` and `delivered_at` appear when they apply.
-  `delivered_at` is the wall clock, `created_at` the lab clock. `404`
-  `{"error": "notification not found", "status": 404}`.
+  `delivered_at` is the wall clock, `created_at` the lab clock. `env` is
+  there for an environment other than the default. `404`
+  `{"error": "notification not found", "status": 404}`, also for another
+  environment's notification: the read is in the environment the call
+  names, as for `GET /sim/sent`.
 
 ### `GET /internal/sent/{id}`
 
@@ -154,7 +189,8 @@ One notification: the plaintext, the wire material and how delivery went.
 ### `GET /sim/connected`
 
 The delivery switch: whether simulated payments are delivered to
-`ACI_WEBHOOK_TARGET_URL`.
+`ACI_WEBHOOK_TARGET_URL`. It is lab-wide, and holds only the default
+environment's payments.
 
 - Answers `200` `{"connected": true, "what": "delivers webhooks to ACI_WEBHOOK_TARGET_URL", "target": "https://receiver:8443/raw-events"}`,
   plus `reason` and `changed_at` once it has been set.
@@ -177,7 +213,8 @@ to `POST /sim/payments` still answers `202` and is recorded `held`.
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "aci"`, `"kind": "vendor"`, `"vendor_listeners": [":8087"]`,
-`"control_listener": ":9087"`, `"reset_scopes": ["flow", "all"]`.
+`"control_listener": ":9087"`, `"reset_scopes": ["flow", "all"]`,
+`"environments": true` and `"customers"`, how many there are.
 
 ### `GET /sim/logs`
 
@@ -188,21 +225,69 @@ attempt, and every delivery a reset dropped.
 
 ### `POST /sim/reset`
 
-Empties the sent log. Both scopes do the same: ACI holds nothing a platform
-set up once.
+Empties the sent log of the environment the reset names (`"env"` in the
+body, `?env=` or `Lab-Environment`; the default without any), or every
+one's for `*`. Both scopes do the same: ACI holds nothing a platform set
+up once.
 
-- **Clears**: every record in `GET /sim/sent` (`sent`), and every
-  delivery in flight, first attempts and retries alike
-  (`deliveries_in_flight`). A delivery waiting out its backoff makes no
-  further attempt; the reset waits for one already on the wire, so when it
-  answers nothing it dropped is still being sent.
+- **Clears**: every record of the environment's in `GET /sim/sent`
+  (`sent`), and every delivery of its in flight, first attempts and
+  retries alike (`deliveries_in_flight`). A delivery waiting out its
+  backoff makes no further attempt; the reset waits for one already on the
+  wire, so when it answers nothing it dropped is still being sent. Another
+  environment's records and deliveries go on.
 - **Keeps**: the delivery switch (`GET /sim/connected`), on or off as it
   was. It is live wiring, not something a run made.
 
 ```json
-{"service": "aci", "scope": "flow", "cleared": {"sent": 4, "deliveries_in_flight": 1},
+{"service": "aci", "scope": "flow", "env": "default", "cleared": {"sent": 4, "deliveries_in_flight": 1},
  "kept": ["connected_switch"], "at": "2026-11-07T12:00:00Z"}
 ```
+
+### `GET /sim/customers`
+
+The environments this service serves, the default first
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)).
+
+```json
+{"customers": [
+  {"env": "default", "created_at": "0001-01-01T00:00:00Z", "last_seen": null},
+  {"env": "sbx", "name": "sbx", "created_at": "2026-11-10T08:00:00Z", "last_seen": null}]}
+```
+
+`last_seen` stays `null`: a platform never calls ACI, so no call of its
+is ever seen here. The default has no `created_at` of its own: it is the
+zero time.
+
+### `PUT /sim/customers/{env}`
+
+Adds or replaces one customer. The lab API pushes every customer again
+when the service restarts, because they live in memory.
+
+Body: a customer, of which this service reads `aci` and `webhook_hosts`:
+
+```json
+{"env": "sbx", "name": "sbx", "aci": {"webhook_url": "https://sbx.example/api/v1/webhook"},
+ "webhook_hosts": ["sbx.example"]}
+```
+
+`env` may be left out; given, it must be the path's. A customer without
+`aci.webhook_url` is accepted, and its payments are refused (`409`) until
+it has one.
+
+Answers `200` `{"env": "sbx", "created": true}`, `false` when it replaced
+one; replacing keeps the environment's sent log, and a delivery in flight
+keeps the target it started with. `400` for a body that is not a customer,
+an `env` that is not the path's, or an id that cannot name an environment
+(`default`, `*`, or anything but lower-case letters, digits and dashes,
+starting with a letter, at most 40).
+
+### `DELETE /sim/customers/{env}`
+
+Removes one customer, its sent log and its deliveries in flight.
+
+Answers `200` `{"env": "sbx", "deleted": true}`; `404`
+`no environment sbx here`.
 
 ## Called by
 
@@ -220,8 +305,9 @@ set up once.
   (`POST /v1/stand-ins/{id}` for the `receiver` stand-in), which count
   only while the target is the receiver: ACI pointed at a real platform is
   that platform's wiring, not the stand-in's.
-- **Nobody in the repo** calls `POST /sim/payments` or `GET /sim/sent`;
-  they are for operators and agents.
+- **Nobody in the repo** calls `POST /sim/payments` or `GET /sim/sent`
+  outside the e2e suite; they are for operators and agents. The lab API
+  pushes each environment's customer with `PUT /sim/customers/{env}`.
 - **The platform under test** never calls ACI. It is the target: ACI
   posts each notification to its listener at `ACI_WEBHOOK_TARGET_URL`
   (compose: the receiver's `POST /raw-events`, a raw capture that stores

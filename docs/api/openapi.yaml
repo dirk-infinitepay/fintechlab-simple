@@ -15,6 +15,8 @@ servers:
 tags:
   - name: lab
     description: 'What is running and what it has done: the index, the run diagram, the stand-ins.'
+  - name: environments
+    description: The platforms the lab serves, each with its own token and its own customers at the vendors.
   - name: services
     description: 'Each service of the lab: its record and health, its logs, and its /sim/* hooks through one address.'
   - name: traps
@@ -748,6 +750,248 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#get-v1connectfilesservicename
+  /v1/environment:
+    get:
+      operationId: getEnvironment
+      summary: 'The environment this call is in: its token''s own, or the one the admin names'
+      description: 'Reaches: the lab''s database and each vendor''s control GET /sim/customers.'
+      tags:
+        - environments
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1environment
+  /v1/environments:
+    get:
+      operationId: getEnvironments
+      summary: Every environment (the admin) or the caller's own, with when its platform was last seen
+      description: 'Reaches: the lab''s database and each vendor''s control GET /sim/customers.'
+      tags:
+        - environments
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1environments
+    post:
+      operationId: postEnvironments
+      summary: 'Create an environment: its token, its kit, its customer at every vendor'
+      description: 'Reaches: the lab''s database; each vendor''s control PUT /sim/customers/{env}.'
+      tags:
+        - environments
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                config:
+                  additionalProperties: false
+                  properties:
+                    aci_webhook_url:
+                      description: where ACI delivers this environment's webhooks
+                      type: string
+                    b4b_callback_url:
+                      description: where B4B calls back a record that names no callback_url
+                      type: string
+                    clock:
+                      description: 'follows or wall: a seen wall environment blocks moving the lab clock'
+                      type: string
+                    settlement_identifier:
+                      description: Worldline's settlement file name for this environment
+                      type: string
+                    webhook_hosts:
+                      description: the platform's callback hosts its subscriptions and callbacks may reach
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                id:
+                  description: lower-case letters, digits and dashes; default the name's
+                  type: string
+                name:
+                  description: what the environment is called; its id is made from it unless given
+                  type: string
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1environments
+  /v1/environments/{id}:
+    delete:
+      operationId: deleteEnvironmentsById
+      summary: Delete an environment and everything it made at every vendor
+      description: 'Reaches: each vendor''s control DELETE /sim/customers/{env}; the lab''s database.'
+      tags:
+        - environments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1environmentsid
+    get:
+      operationId: getEnvironmentsById
+      summary: One environment, its config and when its platform was last seen
+      description: 'Reaches: the lab''s database and each vendor''s control GET /sim/customers.'
+      tags:
+        - environments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1environmentsid
+    patch:
+      operationId: patchEnvironmentsById
+      summary: Rename an environment or change its config, and tell the vendors
+      description: 'Reaches: the lab''s database; each vendor''s control PUT /sim/customers/{env}.'
+      tags:
+        - environments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                config:
+                  additionalProperties: false
+                  properties:
+                    aci_webhook_url:
+                      description: where ACI delivers this environment's webhooks
+                      type: string
+                    b4b_callback_url:
+                      description: where B4B calls back a record that names no callback_url
+                      type: string
+                    clock:
+                      description: 'follows or wall: a seen wall environment blocks moving the lab clock'
+                      type: string
+                    settlement_identifier:
+                      description: Worldline's settlement file name for this environment
+                      type: string
+                    webhook_hosts:
+                      description: the platform's callback hosts its subscriptions and callbacks may reach
+                      items:
+                        type: string
+                      type: array
+                  type: object
+                name:
+                  description: a new name; the id does not change
+                  type: string
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#patch-v1environmentsid
+  /v1/environments/{id}/token:
+    post:
+      operationId: postEnvironmentsByIdToken
+      summary: Give an environment a new token; the old one stops working
+      description: 'Reaches: the lab''s database.'
+      tags:
+        - environments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1environmentsidtoken
   /v1/flow:
     get:
       operationId: getFlow

@@ -94,7 +94,7 @@ func TestTheOldSimPathsStillAnswerOnTheBankPort(t *testing.T) {
 	if w := serve(t, mux, "POST", "/sim/reset", ""); w.Code != 200 {
 		t.Errorf("POST /sim/reset on the bank port: %d %s", w.Code, w.Body)
 	}
-	if len(s.entries) != 0 {
+	if len(def(s).entries) != 0 {
 		t.Error("the reset on the bank port did not reach the ledger")
 	}
 }

@@ -3,10 +3,12 @@ package wlsftp
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/webduvet/fintechlab-simple/internal/sshftp"
 	"golang.org/x/crypto/ssh"
@@ -40,7 +42,59 @@ func EnsureLayout(root string) error {
 // per-binary logger without this package importing "log" directly.
 type Logf func(format string, args ...any)
 
-// newServerConfig builds the SSH server authentication configuration.
+// Account is an SFTP login of its own, apart from the server's: a username
+// and password that open a session jailed at Root instead of the server's
+// root. It is how one server serves several customers — worldline gives
+// each environment one (internal/tenant) — each seeing only its own
+// folder, and none of them the server's.
+type Account struct {
+	User string
+	// Password is the only way in: an account takes no key, and an empty
+	// password opens nothing.
+	Password string
+	Root     string
+	// Tag is the caller's name for whose session it is (worldline's: the
+	// environment). It comes back on every Session the account opens.
+	Tag string
+}
+
+// Accounts returns the accounts named user. None means the server's own
+// login applies, exactly as on a server without accounts. One or more, and
+// only a password one of them holds opens a session: a wrong one is
+// refused, and so is a key, rather than falling back to the server's own
+// login under someone else's name.
+type Accounts func(user string) []Account
+
+// Session is who an observed request came from.
+type Session struct {
+	User   string
+	Remote string
+	// Tag is the Account's Tag, or "" for the server's own login.
+	Tag string
+}
+
+// Server is an SFTP server's whole configuration. The zero Accounts is a
+// server with one login, its own (Password, AuthorizedKey), as it always
+// was.
+type Server struct {
+	Root       string
+	HostSigner ssh.Signer
+	// Password and AuthorizedKey are the server's own login; see
+	// newAuth for how they combine, and what neither means.
+	Password      string
+	AuthorizedKey string
+	// Accounts, when set, are the logins of their own (Account).
+	Accounts Accounts
+	Logf     Logf
+	// Observe, when set, is told about each session and each request.
+	Observe SessionObserver
+}
+
+// SessionObserver is Observer with the whole session: which account, if
+// any, it logged in as.
+type SessionObserver func(s Session, op, path string, err error)
+
+// auth is the server's logins, built once and handed to every connection.
 //
 // Password and public-key auth are enabled independently, and both may be
 // on at once: real Worldline SFT accounts are key-authenticated, while a
@@ -52,44 +106,115 @@ type Logf func(format string, args ...any)
 //
 // If neither is set, this lab accepts any authentication attempt at all --
 // a deliberate, loudly-logged lab-only default, matching this repo's
-// graceful-degradation philosophy rather than refusing to start.
-func newServerConfig(password, authorizedKey string, logf Logf) (*ssh.ServerConfig, error) {
-	cfg := &ssh.ServerConfig{}
-	if password != "" {
-		cfg.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
-			if string(pass) != password {
-				return nil, fmt.Errorf("wlsftp: invalid password for user %q", c.User())
-			}
-			return nil, nil
+// graceful-degradation philosophy rather than refusing to start. An
+// Account's username is the exception: it needs its own password, always.
+type auth struct {
+	password string
+	allowed  []ssh.PublicKey
+	open     bool
+	accounts Accounts
+}
+
+func newAuth(password, authorizedKey string, accounts Accounts, logf Logf) (*auth, error) {
+	a := &auth{password: password, accounts: accounts}
+	rest := []byte(authorizedKey)
+	for len(bytes.TrimSpace(rest)) > 0 {
+		key, _, _, remainder, err := ssh.ParseAuthorizedKey(rest)
+		if err != nil {
+			return nil, fmt.Errorf("wlsftp: parse WORLDLINE_SFTP_AUTHORIZED_KEY: %w", err)
+		}
+		a.allowed = append(a.allowed, key)
+		rest = remainder
+	}
+	if password == "" && authorizedKey == "" {
+		a.open = true
+		if logf != nil {
+			logf("wlsftp: WORLDLINE_SFTP_PASSWORD and WORLDLINE_SFTP_AUTHORIZED_KEY are both unset " +
+				"-- accepting ANY SFTP authentication attempt. Lab-only default, do not use beyond local development.")
 		}
 	}
-	if authorizedKey != "" {
-		var allowed []ssh.PublicKey
-		rest := []byte(authorizedKey)
-		for len(bytes.TrimSpace(rest)) > 0 {
-			key, _, _, remainder, err := ssh.ParseAuthorizedKey(rest)
-			if err != nil {
-				return nil, fmt.Errorf("wlsftp: parse WORLDLINE_SFTP_AUTHORIZED_KEY: %w", err)
+	return a, nil
+}
+
+// The permission extensions an accepted login carries to its session.
+const (
+	extRoot = "wlsftp-root"
+	extTag  = "wlsftp-tag"
+)
+
+// attempt is what one connection's authentication learnt: the account its
+// username named, for a refusal to say whose it was.
+type attempt struct {
+	mu  sync.Mutex
+	tag string
+}
+
+func (t *attempt) named(tag string) {
+	t.mu.Lock()
+	t.tag = tag
+	t.mu.Unlock()
+}
+
+func (t *attempt) whose() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.tag
+}
+
+func (a *auth) lookup(user string) []Account {
+	if a.accounts == nil {
+		return nil
+	}
+	return a.accounts(user)
+}
+
+// config is the SSH server configuration for one connection.
+func (a *auth) config(t *attempt) *ssh.ServerConfig {
+	cfg := &ssh.ServerConfig{}
+	if a.password != "" || a.open || a.accounts != nil {
+		cfg.PasswordCallback = func(c ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			if accts := a.lookup(c.User()); len(accts) > 0 {
+				t.named(accts[0].Tag)
+				for _, acct := range accts {
+					if acct.Password != "" && subtle.ConstantTimeCompare(pass, []byte(acct.Password)) == 1 {
+						t.named(acct.Tag)
+						return &ssh.Permissions{Extensions: map[string]string{extRoot: acct.Root, extTag: acct.Tag}}, nil
+					}
+				}
+				return nil, fmt.Errorf("wlsftp: invalid password for user %q", c.User())
 			}
-			allowed = append(allowed, key)
-			rest = remainder
+			switch {
+			case a.password != "":
+				if string(pass) != a.password {
+					return nil, fmt.Errorf("wlsftp: invalid password for user %q", c.User())
+				}
+				return nil, nil
+			case a.open:
+				return nil, nil
+			}
+			// Only accounts take a password on this server; its own login
+			// is a key.
+			return nil, fmt.Errorf("wlsftp: password authentication is not enabled for user %q", c.User())
 		}
+	}
+	if len(a.allowed) > 0 || a.open {
 		cfg.PublicKeyCallback = func(c ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			for _, a := range allowed {
-				if bytes.Equal(key.Marshal(), a.Marshal()) {
+			if accts := a.lookup(c.User()); len(accts) > 0 {
+				t.named(accts[0].Tag)
+				return nil, fmt.Errorf("wlsftp: user %q logs in with a password", c.User())
+			}
+			if a.open {
+				return nil, nil
+			}
+			for _, allowed := range a.allowed {
+				if bytes.Equal(key.Marshal(), allowed.Marshal()) {
 					return nil, nil
 				}
 			}
 			return nil, fmt.Errorf("wlsftp: unrecognized public key for user %q", c.User())
 		}
 	}
-	if password == "" && authorizedKey == "" {
-		logf("wlsftp: WORLDLINE_SFTP_PASSWORD and WORLDLINE_SFTP_AUTHORIZED_KEY are both unset " +
-			"-- accepting ANY SFTP authentication attempt. Lab-only default, do not use beyond local development.")
-		cfg.PasswordCallback = func(ssh.ConnMetadata, []byte) (*ssh.Permissions, error) { return nil, nil }
-		cfg.PublicKeyCallback = func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) { return nil, nil }
-	}
-	return cfg, nil
+	return cfg
 }
 
 // ListenAndServe listens on addr and serves SSH/SFTP connections until ctx
@@ -109,13 +234,28 @@ func ListenAndServe(ctx context.Context, addr, root string, hostSigner ssh.Signe
 // own verb ("list", "download", "upload", "rename", …).
 type Observer func(user, remote, op, path string, err error)
 
+// session is obs as a SessionObserver.
+func (obs Observer) session() SessionObserver {
+	if obs == nil {
+		return nil
+	}
+	return func(s Session, op, path string, err error) { obs(s.User, s.Remote, op, path, err) }
+}
+
 // ListenAndServeObserved is ListenAndServe with that hook.
 func ListenAndServeObserved(ctx context.Context, addr, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf, obs Observer) error {
+	return Server{Root: root, HostSigner: hostSigner, Password: password, AuthorizedKey: authorizedKey,
+		Logf: logf, Observe: obs.session()}.ListenAndServe(ctx, addr)
+}
+
+// ListenAndServe listens on addr and serves until ctx is cancelled; see
+// Serve.
+func (s Server) ListenAndServe(ctx context.Context, addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("wlsftp: listen %s: %w", addr, err)
 	}
-	return ServeObserved(ctx, ln, root, hostSigner, password, authorizedKey, logf, obs)
+	return s.Serve(ctx, ln)
 }
 
 // Serve accepts SSH connections on ln, serving an SFTP subsystem jailed at
@@ -131,12 +271,19 @@ func Serve(ctx context.Context, ln net.Listener, root string, hostSigner ssh.Sig
 
 // ServeObserved is Serve with an Observer attached to every session.
 func ServeObserved(ctx context.Context, ln net.Listener, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf, obs Observer) error {
-	sshConfig, err := newServerConfig(password, authorizedKey, logf)
+	return Server{Root: root, HostSigner: hostSigner, Password: password, AuthorizedKey: authorizedKey,
+		Logf: logf, Observe: obs.session()}.Serve(ctx, ln)
+}
+
+// Serve is the package's Serve for this configuration: a session that
+// logged in as an Account is jailed at the account's root, every other at
+// s.Root.
+func (s Server) Serve(ctx context.Context, ln net.Listener) error {
+	a, err := newAuth(s.Password, s.AuthorizedKey, s.Accounts, s.Logf)
 	if err != nil {
 		_ = ln.Close()
 		return err
 	}
-	sshConfig.AddHostKey(hostSigner)
 
 	defer ln.Close()
 	go func() {
@@ -152,25 +299,39 @@ func ServeObserved(ctx context.Context, ln net.Listener, root string, hostSigner
 			}
 			return fmt.Errorf("wlsftp: accept: %w", err)
 		}
-		go handleConn(nConn, sshConfig, root, logf, obs)
+		go s.handleConn(nConn, a)
 	}
 }
 
-func handleConn(nConn net.Conn, sshConfig *ssh.ServerConfig, root string, logf Logf, obs Observer) {
+func (s Server) handleConn(nConn net.Conn, a *auth) {
+	logf, obs := s.Logf, s.Observe
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
 	remote := hostOf(nConn.RemoteAddr())
+	var t attempt
+	sshConfig := a.config(&t)
+	sshConfig.AddHostKey(s.HostSigner)
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, sshConfig)
 	if err != nil {
 		logf("wlsftp: ssh handshake from %s: %v", nConn.RemoteAddr(), err)
 		// A refused handshake is worth seeing: a client with the wrong key
 		// and a client that never connected look the same from the outside.
+		// A refusal of an account's username is that account's to see.
 		if obs != nil {
-			obs("", remote, "session", "", err)
+			obs(Session{Remote: remote, Tag: t.whose()}, "session", "", err)
 		}
 		return
 	}
-	user := sshConn.User()
+	sess := Session{User: sshConn.User(), Remote: remote}
+	root := s.Root
+	if p := sshConn.Permissions; p != nil && p.Extensions != nil {
+		if r, ok := p.Extensions[extRoot]; ok {
+			root, sess.Tag = r, p.Extensions[extTag]
+		}
+	}
 	if obs != nil {
-		obs(user, remote, "session", "", nil)
+		obs(sess, "session", "", nil)
 	}
 	defer sshConn.Close()
 	go ssh.DiscardRequests(reqs)
@@ -186,13 +347,9 @@ func handleConn(nConn net.Conn, sshConfig *ssh.ServerConfig, root string, logf L
 			continue
 		}
 		go serveSessionRequests(requests)
-		go sshftp.ServeSFTPObserved(channel, root, func(f string, a ...any) {
-			if logf != nil {
-				logf(f, a...)
-			}
-		}, func(op, path string, err error) {
+		go sshftp.ServeSFTPObserved(channel, root, func(f string, args ...any) { logf(f, args...) }, func(op, path string, err error) {
 			if obs != nil {
-				obs(user, remote, op, path, err)
+				obs(sess, op, path, err)
 			}
 		})
 	}

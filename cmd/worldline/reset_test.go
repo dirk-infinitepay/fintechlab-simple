@@ -22,17 +22,20 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
 
 const testMerchant = "GB00SIM0000000000003"
 
-// newTestSim builds worldline on two temp folders: the SFTP root and the
-// SFT channel's base. The PGP key is small, so the test stays fast.
+// newTestSim builds worldline on three temp folders: the SFTP root, the
+// one other environments' jails go in, and the SFT channel's base. The PGP
+// key is small, so the test stays fast.
 func newTestSim(t *testing.T, bankingCircle string) *sim {
 	t.Helper()
 	root, base := t.TempDir(), t.TempDir()
+	envRoot := filepath.Join(t.TempDir(), "environments")
 	if err := wlsftp.EnsureLayout(root); err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +53,7 @@ func newTestSim(t *testing.T, bankingCircle string) *sim {
 	keys := &wlsftp.PGPKeys{Own: own}
 	guard := &runGuard{}
 	acq := &settlementApp{
+		env:        tenant.Default,
 		store:      worldline.NewStore(),
 		cfg:        worldline.CycleConfig{Identifier: "Worldline_Settlement", Source: worldline.FileSourceGenerate},
 		root:       root,
@@ -60,8 +64,10 @@ func newTestSim(t *testing.T, bankingCircle string) *sim {
 		guard:      guard,
 	}
 	desk := newEnrolmentDesk(root, keys, 0, time.Second)
-	desk.guard = guard
-	return &sim{guard: guard, acq: acq, desk: desk, sftpLog: activity.New("sftp", "File exchange", ""), ch: ch, merchantID: testMerchant}
+	desk.env, desk.guard = tenant.Default, guard
+	w := &sim{guard: guard, acq: acq, desk: desk, sftpLog: activity.New("sftp", "File exchange", ""), ch: ch, merchantID: testMerchant}
+	w.serveEnvironments(envRoot)
+	return w
 }
 
 func writeFile(t *testing.T, p string, body string) string {

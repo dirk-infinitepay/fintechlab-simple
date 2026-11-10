@@ -15,11 +15,14 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // The payout half: create a payment, walk it through the regulatory
 // lifecycle, call back on every phase change, and bridge into Banking
-// Circle once approved.
+// Circle once approved. A payment is its caller's environment's (envs.go):
+// only that environment reads it, its callbacks go where that
+// environment's go, and the bridge call says it is theirs.
 
 // The B4B Oversight wire shapes, byte-exact: amounts are JSON numbers,
 // not strings, and account references carry an optional country.
@@ -98,7 +101,7 @@ func payloadOf(p *b4b.Payment) paymentPayload {
 // simulator without it forces every client to be written as if callbacks
 // were reliable -- which they are not.
 func (a *app) getPayment(w http.ResponseWriter, r *http.Request) {
-	p, err := a.engine.Get(r.PathValue("id"))
+	p, err := a.engine.GetIn(envOf(r), r.PathValue("id"))
 	if err != nil {
 		httputilx.Error(w, 404, "payment not found")
 		return
@@ -123,16 +126,18 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	// callback_url is a lab affordance, not a wire field: the real API
 	// posts to one endpoint configured for the client account. Supplied,
-	// it must pass the allowlist; omitted, this payment falls back to
-	// B4B_CALLBACK_URL like every other callback here.
+	// it must pass the allowlist (or the environment's webhook_hosts);
+	// omitted, this payment falls back to the environment's endpoint --
+	// B4B_CALLBACK_URL for the default -- like every other callback here.
+	env := envOf(r)
 	if req.CallbackURL != "" {
-		if err := b4b.ValidateCallbackURL(a.list, req.CallbackURL); err != nil {
+		if err := a.allowed(env, req.CallbackURL); err != nil {
 			httputilx.Error(w, 400, "callback_url rejected: "+err.Error())
 			return
 		}
-	} else if a.callbackURL == "" {
-		log.Printf("b4b: payment for beneficiary %s has no callback_url and no B4B_CALLBACK_URL is configured; its lifecycle callbacks will go nowhere",
-			req.BeneficiaryID)
+	} else if a.callbackFor(env) == "" {
+		log.Printf("b4b: payment for beneficiary %s has %s; its lifecycle callbacks will go nowhere",
+			req.BeneficiaryID, noCallback(env))
 	}
 	if _, err := money.Parse(string(req.Amount.Amount)); err != nil {
 		httputilx.Error(w, 400, "amount.amount must be a decimal number")
@@ -164,7 +169,7 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 	// The gates. All answer 422 and forward nothing: creditor fields check
 	// the beneficiary, they do not override it, and accepting a mismatch
 	// silently is how money reaches the wrong account.
-	ben := a.gateBeneficiary(w, req)
+	ben := a.gateBeneficiary(w, env, req)
 	if ben == nil {
 		return
 	}
@@ -175,10 +180,11 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	p := &b4b.Payment{
 		ID:                     paymentID(),
+		Env:                    env,
 		ExternalRef:            req.ExternalRef,
 		BeneficiaryID:          req.BeneficiaryID,
 		CompanyID:              req.CompanyID,
-		CallbackURL:            a.callbackTarget(req.CallbackURL),
+		CallbackURL:            a.callbackTarget(env, req.CallbackURL),
 		SCAApplied:             req.SCAApplied,
 		Amount:                 b4b.Amount{Amount: string(req.Amount.Amount), Currency: req.Amount.Currency},
 		CurrencyOfTransfer:     req.CurrencyOfTransfer,
@@ -220,10 +226,10 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 func (a *app) onTransition(p *b4b.Payment, started uint64) {
 	a.persist()
 	if p.State == b4b.StateTMApproved {
-		a.later(started, func(started uint64) { a.approveAndBridge(p, started) })
+		a.later(p.Env, started, func(started uint64) { a.approveAndBridge(p, started) })
 		return
 	}
-	a.later(started, func(started uint64) { a.deliverPaymentCallback(started, p, nil) })
+	a.later(p.Env, started, func(started uint64) { a.deliverPaymentCallback(started, p, nil) })
 }
 
 // approveAndBridge generates this payment's Banking Circle paymentId and
@@ -240,7 +246,7 @@ func (a *app) onTransition(p *b4b.Payment, started uint64) {
 func (a *app) approveAndBridge(p *b4b.Payment, started uint64) {
 	bcPaymentID := "bcp_" + shortID()
 	bcResp := map[string]any{"paymentId": bcPaymentID}
-	if !a.engine.Gate().Do(started, func() { a.bridge(p, bcPaymentID, bcResp) }) {
+	if !a.engine.GateFor(p.Env).Do(started, func() { a.bridge(p, bcPaymentID, bcResp) }) {
 		log.Printf("b4b: banking circle bridge call for payment %s dropped: b4b was reset", p.ID)
 		return
 	}
@@ -248,7 +254,10 @@ func (a *app) approveAndBridge(p *b4b.Payment, started uint64) {
 }
 
 // bridge makes the bridge call and notes in bcResp what went wrong, if
-// anything did.
+// anything did. A call between sims says whose it is (sim-control.md §8):
+// a payout of any environment but the default carries it in the
+// Lab-Environment header, and Banking Circle debits that environment's
+// safeguarding account.
 func (a *app) bridge(p *b4b.Payment, bcPaymentID string, bcResp map[string]any) {
 	reqBody, err := json.Marshal(a.bridgeBody(p, bcPaymentID))
 	if err != nil {
@@ -263,6 +272,9 @@ func (a *app) bridge(p *b4b.Payment, bcPaymentID string, bcResp map[string]any) 
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if env := tenant.Normalize(p.Env); env != tenant.Default {
+		req.Header.Set(tenant.Header, env)
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		log.Printf("b4b: banking circle bridge call failed for payment %s: %v; continuing, own webhook still fires", p.ID, err)
@@ -289,7 +301,7 @@ func (a *app) deliverPaymentCallback(started uint64, p *b4b.Payment, bcResp map[
 	if bcResp != nil {
 		body["banking_circle_api_response"] = bcResp
 	}
-	a.deliverMarked(started, fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body, trapMark(p))
+	a.deliverMarked(p.Env, started, fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body, trapMark(p))
 }
 
 // summarizePayment writes the one line an operator reads in the console's
@@ -348,7 +360,7 @@ func (a *app) summarizeCreate(c *activity.Call) (string, map[string]string) {
 func (a *app) bridgeBody(p *b4b.Payment, bcPaymentID string) map[string]any {
 	acct, inst, holder := p.CreditorAccount.Account, p.CreditorAccount.FinancialInstitution, p.CreditorName
 	if acct == "" {
-		ben := a.beneficiaries.Get(p.BeneficiaryID)
+		ben := a.beneficiaries.In(p.Env).Get(p.BeneficiaryID)
 		acct, inst = ben.AccountNumber, ben.FinancialInstitution
 		if holder == "" {
 			holder = ben.AccountName

@@ -219,13 +219,13 @@ func TestAResetRefusesATrapsHop(t *testing.T) {
 	engine := NewEngine(time.Hour, func(p *Payment, _ uint64) { events <- *p })
 	started := engine.Accept(&Payment{ID: "b4bp_trapped", BeneficiaryID: "MID001", Trap: "trp_0001"})
 	<-events
-	if err := engine.Hop("b4bp_trapped", started, StateSanctionsPending, "trp_0001", ""); err != nil {
+	if err := engine.Hop("", "b4bp_trapped", started, StateSanctionsPending, "trp_0001", ""); err != nil {
 		t.Fatal(err)
 	}
 	<-events
 
 	reset(simctl.ScopeFlow, engine, NewDirectory(nil), NewBeneficiaryStore(nil))
-	if err := engine.Hop("b4bp_trapped", started, StateSanctionsApproved, "trp_0001", ""); err != ErrDropped {
+	if err := engine.Hop("", "b4bp_trapped", started, StateSanctionsApproved, "trp_0001", ""); err != ErrDropped {
 		t.Fatalf("a hop begun before the reset: %v, want ErrDropped", err)
 	}
 	select {

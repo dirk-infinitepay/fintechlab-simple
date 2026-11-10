@@ -12,6 +12,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
@@ -84,14 +85,14 @@ func payoutFields(p *bankingcircle.Payment) map[string]string {
 }
 
 // book books an arriving payout, as the bank does the moment one arrives,
-// and offers it to the traps. The first armed trap that matches takes it
-// along its path; otherwise the bank processes it its own way. It returns
-// the payout as booked.
+// and offers it to the traps of the payer's environment. The first armed
+// trap that matches takes it along its path; otherwise the bank processes
+// it its own way. It returns the payout as booked.
 func (a *app) book(p *bankingcircle.Payment) bankingcircle.Payment {
 	fields := payoutFields(p)
 	b := a.engine.Book(p)
 	if a.traps != nil {
-		if caught, ok := a.traps.Offer(trap.Event{Hook: hookPayout, Subject: p.ID, Fields: fields}); ok {
+		if caught, ok := a.traps.Offer(trap.Event{Env: p.Env, Hook: hookPayout, Subject: p.ID, Fields: fields}); ok {
 			caught.Run(a.stepper(b, caught.TrapID))
 			return b.Booked()
 		}
@@ -153,7 +154,7 @@ func (a *app) recordStep(asked string, p bankingcircle.Payment, trapID string) {
 	if state == string(bankingcircle.NotificationOutgoingPaymentProcessed) && state == asked {
 		status = activity.StatusOK
 	}
-	a.payLog.Record(activity.Event{Op: "payment.state", Summary: summary + " — trap " + trapID,
+	a.payLog.Record(activity.Event{Env: p.Env, Op: "payment.state", Summary: summary + " — trap " + trapID,
 		Status: status, Detail: nonEmpty(detail)})
 }
 
@@ -204,17 +205,17 @@ func outcomeOf(path []trap.Step) string {
 	return outcomeRejected
 }
 
-// outcomeQueue is the traps the shortcut armed, in order. Which of them
-// are still queued is the trap store's answer: armed, and not yet spent,
-// disarmed or forgotten by a reset.
+// outcomeQueue is the traps the shortcut armed, in order, every
+// environment's. Which of them are still queued is the trap store's
+// answer: armed, and not yet spent, disarmed or forgotten by a reset.
 type outcomeQueue struct {
 	mu  sync.Mutex
 	ids []string
 }
 
-// queuedLocked is the outcomes still waiting, in order, forgetting the
+// queuedLocked is scope's outcomes still waiting, in order, forgetting the
 // traps that no longer are. Caller holds q.mu.
-func (q *outcomeQueue) queuedLocked(store *trap.Store) []string {
+func (q *outcomeQueue) queuedLocked(store *trap.Store, scope string) []string {
 	out := []string{}
 	var keep []string
 	for _, id := range q.ids {
@@ -223,7 +224,9 @@ func (q *outcomeQueue) queuedLocked(store *trap.Store) []string {
 			continue
 		}
 		keep = append(keep, id)
-		out = append(out, outcomeOf(t.Effect.Path))
+		if tenant.InScope(scope, t.Env) {
+			out = append(out, outcomeOf(t.Effect.Path))
+		}
 	}
 	q.ids = keep
 	return out
@@ -242,7 +245,14 @@ type forceOutcomesReq struct {
 // forceOutcomes decides how the next outgoing payments end: each outcome
 // ("Rejected" or "Pending") arms one trap that takes the next payout, in
 // order, after anything already queued. It answers the whole queue.
+//
+// The traps are armed in the environment the call names, so they take that
+// environment's next payouts, never another's (a trap's match is empty).
 func (a *app) forceOutcomes(w http.ResponseWriter, r *http.Request) {
+	env, ok := a.oneEnv(w, r, "an outcome")
+	if !ok {
+		return
+	}
 	var req forceOutcomesReq
 	if err := httputilx.ReadJSON(r, &req); err != nil {
 		httputilx.Error(w, 400, err.Error())
@@ -260,23 +270,24 @@ func (a *app) forceOutcomes(w http.ResponseWriter, r *http.Request) {
 	a.outcomes.mu.Lock()
 	defer a.outcomes.mu.Unlock()
 	for i, o := range req.Outcomes {
-		t, err := a.traps.Arm(trap.Spec{Label: outcomeLabel + o, Hook: hookPayout, Match: map[string]any{}, Path: paths[i]})
+		t, err := a.traps.Arm(trap.Spec{Env: env, Label: outcomeLabel + o, Hook: hookPayout, Match: map[string]any{}, Path: paths[i]})
 		if err != nil {
 			httputilx.Error(w, 500, err.Error())
 			return
 		}
 		a.outcomes.ids = append(a.outcomes.ids, t.ID)
 	}
-	queued := a.outcomes.queuedLocked(a.traps)
+	queued := a.outcomes.queuedLocked(a.traps, env)
 	if len(req.Outcomes) > 0 {
-		log.Printf("banking-circle: next %d outgoing payment(s) will end %v", len(queued), queued)
+		log.Printf("banking-circle: next %d outgoing payment(s) of environment %s will end %v", len(queued), env, queued)
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{"queued": queued})
 }
 
-// forcedOutcomes answers the outcomes still waiting for a payout.
+// forcedOutcomes answers the outcomes still waiting for a payout of the
+// environment the call names ("*": every one's, in the order armed).
 func (a *app) forcedOutcomes(w http.ResponseWriter, r *http.Request) {
 	a.outcomes.mu.Lock()
 	defer a.outcomes.mu.Unlock()
-	httputilx.WriteJSON(w, 200, map[string]any{"queued": a.outcomes.queuedLocked(a.traps)})
+	httputilx.WriteJSON(w, 200, map[string]any{"queued": a.outcomes.queuedLocked(a.traps, scopeOf(r))})
 }

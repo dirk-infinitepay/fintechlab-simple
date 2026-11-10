@@ -235,5 +235,6 @@ the platform's `base_url`, and the stand-ins wishes. Additions are in
   ([OPEN 10](open.md)).
 - **Container control** [DECIDED 2026-10-20]: no restart, no
   `podman logs`, no socket. Logs and reset are in-process (§4, §7).
-- **Environments**: several isolated labs side by side. Deferred
-  ([plan.md, phase 5](plan.md#phase-5--parallel-environments-deferred)).
+- **Environments**: several platforms on one lab, each seeing only its own
+  data. Designed in [environments.md](environments.md) and built in
+  [plan.md, phase 5](plan.md#phase-5--environments).

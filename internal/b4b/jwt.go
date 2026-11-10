@@ -37,6 +37,19 @@ type jwtClaims struct {
 // pub. Any parse or verification failure returns a non-nil error describing
 // exactly what failed, for the caller to log and answer 401.
 func VerifyBearerToken(token string, pub *rsa.PublicKey, wantKid string) error {
+	return VerifyBearerTokenFor(token, func(kid string) (*rsa.PublicKey, error) {
+		if kid != wantKid {
+			return nil, fmt.Errorf("b4b: kid %q does not match configured %q", kid, wantKid)
+		}
+		return pub, nil
+	})
+}
+
+// VerifyBearerTokenFor is VerifyBearerToken against the key the token's
+// own kid names: keyFor answers that key, or why the kid names none. It is
+// how one B4B holds a key per customer (internal/tenant), each customer
+// signing with its own and naming it in kid, as a real vendor's clients do.
+func VerifyBearerTokenFor(token string, keyFor func(kid string) (*rsa.PublicKey, error)) error {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("b4b: token has %d parts, want 3", len(parts))
@@ -61,8 +74,12 @@ func VerifyBearerToken(token string, pub *rsa.PublicKey, wantKid string) error {
 	if header.Alg != "RS512" {
 		return fmt.Errorf("b4b: alg %q rejected, want RS512", header.Alg)
 	}
-	if header.Kid == "" || header.Kid != wantKid {
-		return fmt.Errorf("b4b: kid %q does not match configured %q", header.Kid, wantKid)
+	if header.Kid == "" {
+		return errors.New("b4b: the header names no kid")
+	}
+	pub, err := keyFor(header.Kid)
+	if err != nil {
+		return err
 	}
 
 	var claims jwtClaims
@@ -211,20 +228,31 @@ func LoadPublicKey(path string) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("b4b: read %s: %w", path, err)
 	}
+	key, err := ParsePublicKeyPEM(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w (%s)", err, path)
+	}
+	return key, nil
+}
+
+// ParsePublicKeyPEM reads one PEM-encoded RSA public key, PKIX or PKCS#1:
+// LoadPublicKey's parse, for a key that arrives as text -- a customer's,
+// pushed to PUT /sim/customers/{env}.
+func ParsePublicKeyPEM(data []byte) (*rsa.PublicKey, error) {
 	block, _ := pem.Decode(data)
 	if block == nil {
-		return nil, fmt.Errorf("b4b: %s contains no PEM block", path)
+		return nil, errors.New("b4b: no PEM block in the public key")
 	}
 	if parsed, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
 		key, ok := parsed.(*rsa.PublicKey)
 		if !ok {
-			return nil, fmt.Errorf("b4b: %s does not hold an RSA public key", path)
+			return nil, errors.New("b4b: the public key is not an RSA key")
 		}
 		return key, nil
 	}
 	key, err := x509.ParsePKCS1PublicKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("b4b: parse public key %s: %w", path, err)
+		return nil, fmt.Errorf("b4b: parse public key: %w", err)
 	}
 	return key, nil
 }

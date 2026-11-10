@@ -106,7 +106,11 @@ type Merchant struct {
 type Registry struct {
 	mu   sync.RWMutex
 	path string
-	seq  int
+	// persist, when set, is where the registry is written instead of a
+	// file: an environment's registry lives in the lab API's database
+	// (NewRegistryIn).
+	persist func([]byte) error
+	seq     int
 
 	distributors map[string]*Distributor
 	partners     map[string]*Partner
@@ -155,6 +159,30 @@ func NewRegistry(path string) (*Registry, error) {
 	return r, r.save()
 }
 
+// NewRegistryIn is a registry kept somewhere else than a file: doc is what
+// was saved last (nil for a new one), and persist is called with the whole
+// document after every change. An environment's registry is kept this way,
+// in the lab API's database.
+func NewRegistryIn(doc []byte, persist func([]byte) error) (*Registry, error) {
+	r := &Registry{
+		persist:      persist,
+		distributors: map[string]*Distributor{},
+		partners:     map[string]*Partner{},
+		merchants:    map[string]*Merchant{},
+		batches:      map[string]*Batch{},
+	}
+	if len(doc) > 0 {
+		if err := r.decode(doc); err != nil {
+			return nil, err
+		}
+	}
+	if len(r.distributors) == 0 {
+		d := r.addDistributorLocked("Simulator Distribution Ltd", "GB")
+		r.addPartnerLocked(d.ID, "Northwind Partner Services", "NL")
+	}
+	return r, r.save()
+}
+
 func (r *Registry) load() error {
 	b, err := os.ReadFile(r.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -163,6 +191,10 @@ func (r *Registry) load() error {
 	if err != nil {
 		return fmt.Errorf("console: read registry: %w", err)
 	}
+	return r.decode(b)
+}
+
+func (r *Registry) decode(b []byte) error {
 	var f registryFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		return fmt.Errorf("console: parse registry %s: %w", r.path, err)
@@ -186,7 +218,7 @@ func (r *Registry) load() error {
 // save writes the whole registry out. Called with r.mu already held by the
 // mutating methods, or on a quiet registry at construction.
 func (r *Registry) save() error {
-	if r.path == "" {
+	if r.path == "" && r.persist == nil {
 		return nil
 	}
 	f := registryFile{Seq: r.seq}
@@ -209,6 +241,9 @@ func (r *Registry) save() error {
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
+	}
+	if r.persist != nil {
+		return r.persist(b)
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
 		return err

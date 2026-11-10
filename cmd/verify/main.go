@@ -5,6 +5,11 @@
 // override, per docs/ARCHITECTURE-phase3-corrections.md section 3. Real
 // verification-service is plain HTTP even in local dev (no TLS), so this
 // mock is too.
+//
+// Each environment the lab created is a customer here (internal/tenant),
+// known by an x-internal-api-key of its own; VERIFICATION_INTERNAL_API_KEY
+// is the default environment's. A call is its key's environment's, and so
+// is the decision it triggers.
 package main
 
 import (
@@ -21,12 +26,17 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/verify"
 )
 
 type app struct {
 	engine *verify.Engine
+	// apiKey is the default environment's x-internal-api-key.
 	apiKey string
+	// customers are the environments besides the default, each with a
+	// key of its own. routes makes them when they are not given.
+	customers *tenant.Customers
 }
 
 func main() {
@@ -38,8 +48,9 @@ func main() {
 	forceDeclineSpec := env("VERIFY_FORCE_DECLINE_IDS", "")
 
 	a := &app{
-		engine: verify.NewEngine(delay, parseForceDeclineSet(forceDeclineSpec)),
-		apiKey: apiKey,
+		engine:    verify.NewEngine(delay, parseForceDeclineSet(forceDeclineSpec)),
+		apiKey:    apiKey,
+		customers: tenant.NewCustomers(),
 	}
 
 	mux, ctl, err := a.routes(addr)
@@ -57,20 +68,30 @@ func main() {
 // x-internal-api-key. The service port still answers the /sim paths until
 // phase 4 of docs/lab-api/plan.md retires them.
 func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
+	if a.customers == nil {
+		a.customers = tenant.NewCustomers()
+	}
+	// A customer removed takes its decisions with it.
+	a.customers.OnDelete = func(env string) error {
+		a.engine.Forget(env)
+		return nil
+	}
 	// Both scopes do the same: verify has nothing a platform sets up once.
-	// What a run makes is decisions, recorded or still in their delay; the
-	// force-decline list is configuration and stays.
+	// What a run makes is decisions, recorded or still in their delay, in
+	// the environment the reset names; the force-decline list is
+	// configuration and stays.
 	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "verify", Kind: "stand-in", Simulates: "the platform's verification-service (AML decision)",
 		Listeners: []string{addr},
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
-			decisions, pending := a.engine.Reset()
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			decisions, pending := a.engine.ResetIn(req.Env)
 			return simctl.ResetResult{
 				Cleared: map[string]int{"decisions": decisions, "pending": pending},
 				Kept:    []string{"force_decline_ids"},
 			}, nil
 		},
+		Customers: a.customers,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, nil, err
@@ -89,16 +110,33 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 
 // requireInternalKey guards every /verify/* route (not /health) with a
 // constant-time comparison against VERIFICATION_INTERNAL_API_KEY, matching
-// buddy's own internal-api-key.guard.ts.
+// buddy's own internal-api-key.guard.ts, or against a customer's own key,
+// which makes the call that customer's environment's.
 func (a *app) requireInternalKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		key := r.Header.Get("x-internal-api-key")
-		if subtle.ConstantTimeCompare([]byte(key), []byte(a.apiKey)) != 1 {
+		env, ok := a.keyEnv(r.Header.Get("x-internal-api-key"))
+		if !ok {
 			httputilx.Error(w, 401, "missing or invalid x-internal-api-key")
 			return
 		}
-		next(w, r)
+		a.customers.Seen(env)
+		next(w, r.WithContext(tenant.With(r.Context(), env)))
 	}
+}
+
+// keyEnv is the environment whose key key is: the default's for
+// VERIFICATION_INTERNAL_API_KEY, a customer's for its own.
+func (a *app) keyEnv(key string) (string, bool) {
+	if subtle.ConstantTimeCompare([]byte(key), []byte(a.apiKey)) == 1 {
+		return tenant.Default, true
+	}
+	if key == "" {
+		return "", false
+	}
+	c, ok := a.customers.Find(func(c tenant.Customer) bool {
+		return c.Verify != nil && subtle.ConstantTimeCompare([]byte(key), []byte(c.Verify.Key)) == 1
+	})
+	return c.Env, ok
 }
 
 type amlDecisionReq struct {
@@ -127,7 +165,7 @@ func (a *app) triggerAMLDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d := a.engine.Trigger(req.MerchantApplicationID)
+	d := a.engine.TriggerIn(tenant.Of(r.Context()), req.MerchantApplicationID)
 
 	httputilx.WriteJSON(w, 202, map[string]any{
 		"merchantApplicationId": req.MerchantApplicationID,
@@ -165,7 +203,7 @@ func (a *app) getDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	d, ok := a.engine.Get(id)
+	d, ok := a.engine.GetIn(tenant.Of(r.Context()), id)
 	if !ok {
 		httputilx.Error(w, 404, "decision not found")
 		return

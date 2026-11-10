@@ -11,19 +11,47 @@ platform calls directly. What is real: the paths after each prefix, the auth
 handshakes (tokens are issued and checked), and the response fields the
 platform's own clients read. What is simplified: the judgement (every check
 passes until flipped with `POST /sim/outcome`), credentials (any non-empty
-value is accepted), token lifetime (never enforced), and everything a client
-does not read, which is minimal, fixed or echoed. Nothing is persisted.
+value is accepted, and an environment's own login names that environment),
+token lifetime (never enforced), and everything a client does not read,
+which is minimal, fixed or echoed. Nothing is persisted.
 
 ## At a glance
 
 | | |
 | --- | --- |
 | Listens | `:8089`, plain HTTP: the vendor routes. Compose service `verification` (`http://verification:8089` on the compose network); host `http://127.0.0.1:8089`.<br>`:9089`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://verification:9089` |
-| Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes. `/health` and `/sim/*`: none. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
+| Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted: an environment's own login makes the call that environment's, and any other is the default environment's ([Environments](#environments)). A customer's username with another password is `401`. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes, in the environment it was issued to. `/health` and `/sim/*`: none. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The lab API hands these out at `GET :8097/v1/connect/env/verification` |
 | Activity logs | None. There is no `GET /sim/activity`, so the console card shows no panels. Each request line is logged on stdout |
-| Configuration | `LISTEN` (`:8089`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9089`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Nothing else: no lab clock, no state file. The outcomes and every issued token live in memory and reset on restart. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
+| Configuration | `LISTEN` (`:8089`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9089`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Nothing else: no lab clock, no state file. The outcomes, per environment, every issued token and the customers live in memory and reset on restart; the lab API pushes the customers again. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
 | Design record | [integration/verification-vendor-edge.md](../../integration/verification-vendor-edge.md), the package comment in `cmd/verification/main.go`, [catalogue.md](../../catalogue.md) |
+
+## Environments
+
+Each environment the lab creates
+([lab-api/environments.md](../../lab-api/environments.md)) is a customer
+here, pushed by the lab API with
+[`PUT /sim/customers/{env}`](#put-simcustomersenv) and known by its
+`verification` login:
+
+| The customer's | is |
+| --- | --- |
+| `username` | Creditsafe's `username`, LexisNexis's `client_id` |
+| `password` | Creditsafe's `password`, LexisNexis's `client_secret`, the KYC6 and iban.com `x-api-key`, LexisNexis IVI's `api_key` |
+
+- A call made with a customer's login is that environment's, and so is
+  every token issued to it. Any other login is the default environment's,
+  as every login was before there were environments. A customer's
+  username with another password is refused, `401`, as the vendor would
+  refuse it.
+- Each environment has its own outcomes and its own Creditsafe portfolio
+  ids. A flip in one never moves another's answers.
+- The `/sim/*` hooks act in the environment the call names: `?env=`, else
+  the `Lab-Environment` header, else the default. `*` reads every
+  environment; a flip names one. An environment this service was never
+  given is `404`.
+- A reset names one environment, or every one with `*`. Deleting a
+  customer takes its outcomes and tokens with it.
 
 ## Vendor surface
 
@@ -60,13 +88,16 @@ a token this process did not issue (or issued before a restart) is `401`
 Exchanges a username and password for a token.
 
 Body: `{"username": "sim", "password": "sim-verification-dev-only"}`. Any
-non-empty pair.
+non-empty pair: a customer's login is its environment's, any other the
+default's.
 
 Answers `200` with `{"token": "cs_1794039000123456789"}`. `401`
 `{"error":"username and password required","status":401}` when either is
-missing or empty.
+missing or empty; `401` `invalid username or password` for a customer's
+username with another password.
 
 Side effects: the token is remembered until restart and never expires.
+Every call it opens is the environment the login was.
 
 ### `POST /creditsafe/localSolutions/GB/bankVerification/search`
 
@@ -136,8 +167,8 @@ Creates a monitoring portfolio.
 Body: `{"name": "Infinite merchants", "isDefault": false}`.
 
 Answers `200` with `{"portfolioId": 1, "name": "Infinite merchants", "isDefault": false}`.
-`portfolioId` is an integer counter from 1 per process (the list above uses
-a string id). Nothing is stored.
+`portfolioId` is an integer counter from 1 per environment (the list above
+uses a string id). Nothing is stored.
 
 ### `POST /creditsafe/monitoring/portfolios/{portfolioId}/companies`
 
@@ -263,8 +294,10 @@ Answers `200`:
 ```
 
 `401` `{"error":"client_id and client_secret required","status":401}` when
-either is missing or empty. `expires_in` is advisory: the token never
-expires here.
+either is missing or empty; `401` `invalid client_id or client_secret` for a
+customer's client id with another secret. A customer's pair is its
+environment's, any other the default's, and so is the token. `expires_in`
+is advisory: the token never expires here.
 
 ### `POST /lexisnexis/idu/v1/reports`
 
@@ -286,7 +319,8 @@ Answers `200`:
 Identity verification attribute query. No header auth.
 
 Body: `org_id`, `api_key` and `policy` are required (any non-empty);
-`reference` is echoed.
+`reference` is echoed. A customer's `api_key` (its login's password) makes
+the query that environment's.
 
 ```json
 {"org_id": "sim", "api_key": "sim-verification-dev-only", "policy": "default", "reference": "ref-1"}
@@ -318,19 +352,31 @@ probes.
 
 ### `GET /sim/outcome`
 
-What each check currently answers.
+What each check currently answers, in the environment the call names
+(`?env=` or `Lab-Environment`; the default without either).
 
 Answers `200`:
 
 ```json
-{"outcomes": {"bank-account": "pass", "company": "active", "identity": "pass", "screening": "clear"}}
+{"env": "default", "outcomes": {"bank-account": "pass", "company": "active", "identity": "pass", "screening": "clear"}}
 ```
+
+With `?env=*`, every environment's, the default's included:
+
+```json
+{"env": "*", "environments": {"default": {"bank-account": "pass", "…": "…"}, "sbx": {"screening": "hit", "…": "…"}}}
+```
+
+`404` `no environment <env> at verification` for one this service was
+never given.
 
 ### `POST /sim/outcome`
 
-Flips one check. Global: it applies to every later call from anyone until it
-is set back, the service is reset ([`POST /sim/reset`](#post-simreset)), or
-the process restarts.
+Flips one check in the environment the call names (`?env=` or
+`Lab-Environment`; the default without either). It applies to every later
+call made with that environment's login until it is set back, the
+environment is reset ([`POST /sim/reset`](#post-simreset)), or the process
+restarts. Another environment's answers do not move.
 
 Body, decoded strictly (an unknown field is a 400):
 `{"check": "screening", "outcome": "hit"}`.
@@ -342,16 +388,19 @@ Body, decoded strictly (an unknown field is a 400):
 | `identity` | `pass`, `refer`, `fail` |
 | `company` | `active`, `dissolved` |
 
-Answers `200` with every outcome, as `GET /sim/outcome` does. `400` for an
-unknown check or outcome, which changes nothing:
-`{"error":"check \"bank-account\" cannot be \"maybe\" (want: pass, mismatch, invalid)","status":400}`.
+Answers `200` with the environment's every outcome, as `GET /sim/outcome`
+does. `400` for an unknown check or outcome, which changes nothing:
+`{"error":"check \"bank-account\" cannot be \"maybe\" (want: pass, mismatch, invalid)","status":400}`;
+`400` `an outcome is set in one environment, not in all of them` for
+`env=*`; `404` for an environment this service was never given.
 
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
 ([the control contract](../README.md#the-control-contract)):
 `"service": "verification"`, `"kind": "vendor"`,
-`"reset_scopes": ["flow", "all"]`.
+`"reset_scopes": ["flow", "all"]`, `"environments": true` and
+`"customers"`, how many there are.
 
 ### `GET /sim/logs`
 
@@ -361,25 +410,71 @@ request, and every flip of an outcome.
 
 ### `POST /sim/reset`
 
-Puts every outcome back to its default. A flipped check is a run's trap;
-a token is something the platform obtained once and caches, so `flow`
-keeps it.
+Puts every outcome back to its default, in the environment the reset
+names (`"env"` in the body, `?env=` or `Lab-Environment`; the default
+without any), or in every one for `*`. A flipped check is a run's trap; a
+token is something the platform obtained once and caches, so `flow` keeps
+it.
 
 - **`flow` clears**: the outcomes, back to the defaults in the table under
   [Vendor surface](#vendor-surface).
 - **`flow` keeps**: every bearer token issued, so a platform holding one
   is not refused mid-session; and the Creditsafe portfolio id counter.
-- **`all`** is first start: the outcomes, every token (a held one is `401`
-  `unknown or expired token` until the client authenticates again), and
-  portfolio ids count from 1 again.
+- **`all`** is first start: the outcomes, every token issued in the
+  environment (a held one is `401` `unknown or expired token` until the
+  client authenticates again), and its portfolio ids count from 1 again.
 
 `cleared` counts `outcomes` that were flipped, and with `all`, `tokens`
-and `portfolios` created.
+and `portfolios` created. Another environment's outcomes and tokens are
+left alone.
 
 ```json
-{"service": "verification", "scope": "flow", "cleared": {"outcomes": 2},
+{"service": "verification", "scope": "flow", "env": "default", "cleared": {"outcomes": 2},
  "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
 ```
+
+### `GET /sim/customers`
+
+The environments this service serves, the default first
+([sim-control.md §8](../../lab-api/sim-control.md#8-environments)).
+
+```json
+{"customers": [
+  {"env": "default", "created_at": "0001-01-01T00:00:00Z", "last_seen": "2026-11-10T09:00:00Z"},
+  {"env": "sbx", "name": "sbx", "created_at": "2026-11-10T08:00:00Z", "last_seen": null}]}
+```
+
+`last_seen` is the last vendor call made with the environment's login, a
+token request included; `null` until the first. The default has no
+`created_at` of its own: it is the zero time.
+
+### `PUT /sim/customers/{env}`
+
+Adds or replaces one customer. The lab API pushes every customer again
+when the service restarts, because they live in memory.
+
+Body: a customer, of which this service reads `verification`:
+
+```json
+{"env": "sbx", "name": "sbx", "verification": {"username": "sbx-verification", "password": "…"}}
+```
+
+`env` may be left out; given, it must be the path's.
+
+Answers `200` `{"env": "sbx", "created": true}`, `false` when it replaced
+one; replacing keeps the environment's outcomes and tokens. `400` for a
+body that is not a customer, an `env` that is not the path's, or an id
+that cannot name an environment (`default`, `*`, or anything but
+lower-case letters, digits and dashes, starting with a letter, at most
+40).
+
+### `DELETE /sim/customers/{env}`
+
+Removes one customer and what it had here: its outcomes and every token
+issued to it. Its login is then a stranger's, the default's.
+
+Answers `200` `{"env": "sbx", "deleted": true}`; `404`
+`no environment sbx here`.
 
 ## Called by
 
@@ -393,7 +488,10 @@ and `portfolios` created.
   `POST /sim/reset`; `GET /v1/logs` and
   `GET /v1/services/verification/logs` read `GET /sim/logs`. No dedicated
   route calls `/sim/outcome`; flip outcomes through the passthrough,
-  `/v1/services/verification/sim/outcome`.
+  `/v1/services/verification/sim/outcome`, which names the caller's
+  environment. The lab API pushes each environment's customer with
+  `PUT /sim/customers/{env}` and reads `GET /sim/customers` for its
+  status.
   `GET /v1/connect/env/verification` hands out the variables without
   calling this service.
 - **e2e suite**: no scenario calls this service.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/console"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Plugins: the platform under test registers its own card (docs/plugins.md).
@@ -34,12 +35,22 @@ func (a *app) registerPlugin(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "descriptor: "+err.Error())
 		return
 	}
+	// The plugin is the registering environment's (environments.md §9):
+	// its token says which, never the descriptor.
+	p.Env = ""
+	if env := scopeOf(r.Context()); env != tenant.Default {
+		p.Env = env
+	}
 	info, err := a.cat.Register(p)
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	a.applyPluginStandIns(p)
+	// The stand-ins are the default environment's: only its platform can
+	// ask for them to step aside.
+	if p.Env == "" {
+		a.applyPluginStandIns(p)
+	}
 	// Probe at once rather than on the next tick, so the card a developer
 	// is watching turns green when the platform says it is there.
 	go func() {
@@ -57,7 +68,7 @@ func (a *app) registerPlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) unregisterPlugin(w http.ResponseWriter, r *http.Request) {
-	if !a.cat.Unregister(r.PathValue("id")) {
+	if _, _, ok := a.cat.PluginIn(scopeOf(r.Context()), r.PathValue("id")); !ok || !a.cat.Unregister(r.PathValue("id")) {
 		httputilx.Error(w, 404, "no plugin "+r.PathValue("id"))
 		return
 	}
@@ -65,13 +76,13 @@ func (a *app) unregisterPlugin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) listPlugins(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"plugins": a.cat.Plugins()})
+	httputilx.WriteJSON(w, 200, map[string]any{"plugins": a.cat.PluginsIn(scopeOf(r.Context()))})
 }
 
 // livePlugin finds a plugin a button may be forwarded to. A stopped one
 // has said it is not there, so the answer is that, not a connection error.
-func (a *app) livePlugin(w http.ResponseWriter, id string) (console.Plugin, bool) {
-	p, info, ok := a.cat.Plugin(id)
+func (a *app) livePlugin(w http.ResponseWriter, r *http.Request, id string) (console.Plugin, bool) {
+	p, info, ok := a.cat.PluginIn(scopeOf(r.Context()), id)
 	if !ok {
 		httputilx.Error(w, 404, "no plugin "+id)
 		return p, false
@@ -86,7 +97,7 @@ func (a *app) livePlugin(w http.ResponseWriter, id string) (console.Plugin, bool
 // pluginAction runs one declared button: the method and path the plugin
 // registered, with the request's body as it came.
 func (a *app) pluginAction(w http.ResponseWriter, r *http.Request) {
-	p, ok := a.livePlugin(w, r.PathValue("id"))
+	p, ok := a.livePlugin(w, r, r.PathValue("id"))
 	if !ok {
 		return
 	}
@@ -100,7 +111,7 @@ func (a *app) pluginAction(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) pluginFiles(w http.ResponseWriter, r *http.Request) {
-	p, ok := a.livePlugin(w, r.PathValue("id"))
+	p, ok := a.livePlugin(w, r, r.PathValue("id"))
 	if !ok {
 		return
 	}
@@ -122,7 +133,7 @@ func (a *app) pluginFiles(w http.ResponseWriter, r *http.Request) {
 // Several files are still one call: the platform starts them together,
 // which is the point of running them together.
 func (a *app) pluginRun(w http.ResponseWriter, r *http.Request) {
-	p, ok := a.livePlugin(w, r.PathValue("id"))
+	p, ok := a.livePlugin(w, r, r.PathValue("id"))
 	if !ok {
 		return
 	}
@@ -175,6 +186,25 @@ func (a *app) clockLock() string {
 	if name, ok := a.cat.WallClockPlugin(); ok {
 		return name + " is registered on the wall clock and cannot follow the lab's; moving the lab would put its vendors on a different day from the platform they serve"
 	}
+	// An environment set to the wall clock that a vendor has seen is a
+	// platform running on real time (environments.md §8, OPEN 19).
+	if a.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		list, _ := a.db.List(ctx)
+		var seen map[string]map[string]*time.Time
+		for _, e := range list {
+			if e.Config.Clock != string(console.ClockWall) {
+				continue
+			}
+			if seen == nil {
+				seen = a.seenBy(ctx)
+			}
+			if _, last, _ := summarise(seen[e.ID]); last != nil {
+				return "environment " + e.ID + " runs on the wall clock and its platform has been seen; moving the lab would put its vendors on a different day from it"
+			}
+		}
+	}
 	return ""
 }
 
@@ -200,7 +230,7 @@ func uploadLimit() int64 {
 // an answer saying why there is none: 501 when it does not offer the
 // feature, which the page reads as "no button" rather than "failed".
 func (a *app) settlementPath(w http.ResponseWriter, r *http.Request, pick func(*console.PluginSettlement) string, what string) (console.Plugin, string, bool) {
-	p, ok := a.livePlugin(w, r.PathValue("id"))
+	p, ok := a.livePlugin(w, r, r.PathValue("id"))
 	if !ok {
 		return p, "", false
 	}

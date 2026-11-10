@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Routes serves the traps on a sim's control port (traps.md §8):
@@ -57,11 +58,11 @@ func (s *Store) handleList(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "state is armed, spent, expired or disarmed")
 		return
 	}
-	httputilx.WriteJSON(w, 200, map[string]any{"service": s.service, "traps": s.List(state)})
+	httputilx.WriteJSON(w, 200, map[string]any{"service": s.service, "traps": s.ListIn(tenant.FromRequest(r), state)})
 }
 
 func (s *Store) handleGet(w http.ResponseWriter, r *http.Request) {
-	t, ok := s.Get(r.PathValue("id"))
+	t, ok := s.GetIn(tenant.FromRequest(r), r.PathValue("id"))
 	if !ok {
 		httputilx.Error(w, 404, "no trap "+r.PathValue("id"))
 		return
@@ -70,7 +71,7 @@ func (s *Store) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) handleDisarm(w http.ResponseWriter, r *http.Request) {
-	t, cancelled, ok := s.Disarm(r.PathValue("id"))
+	t, cancelled, ok := s.DisarmIn(tenant.FromRequest(r), r.PathValue("id"))
 	if !ok {
 		httputilx.Error(w, 404, "no trap "+r.PathValue("id"))
 		return
@@ -79,7 +80,7 @@ func (s *Store) handleDisarm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Store) handleDisarmAll(w http.ResponseWriter, r *http.Request) {
-	n, cancelled := s.DisarmAll()
+	n, cancelled := s.DisarmAllIn(tenant.FromRequest(r))
 	httputilx.WriteJSON(w, 200, map[string]any{"service": s.service, "disarmed": n, "cancelled": cancelled})
 }
 
@@ -105,6 +106,12 @@ func (s *Store) handleArm(w http.ResponseWriter, r *http.Request) {
 	spec, err := ParseSpec(raw)
 	if err != nil {
 		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	// A trap is armed in the environment the call names, and takes only
+	// that environment's events.
+	if spec.Env = tenant.FromRequest(r); spec.Env == tenant.All {
+		httputilx.Error(w, 400, "a trap is armed in one environment, not in all of them")
 		return
 	}
 	t, err := s.Arm(spec)

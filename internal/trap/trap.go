@@ -29,6 +29,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Field types a hook's match fields have.
@@ -112,6 +113,9 @@ type Effect struct {
 // Between; Times is how many events it takes (0 means 1), Forever takes
 // every one until disarmed.
 type Spec struct {
+	// Env is the environment the trap is armed in (internal/tenant): it
+	// takes only that environment's events. Empty is the default's.
+	Env       string
 	Label     string
 	Hook      string
 	Match     map[string]any
@@ -142,6 +146,7 @@ func Between(gte, lte string) map[string]any {
 // Trap is one armed instruction, as the store reports it.
 type Trap struct {
 	ID           string         `json:"id"`
+	Env          string         `json:"env,omitempty"`
 	Label        string         `json:"label,omitempty"`
 	Hook         string         `json:"hook"`
 	Match        map[string]any `json:"match"`
@@ -187,6 +192,9 @@ type Pending struct {
 
 // Event is one event at a hook, offered to the armed traps.
 type Event struct {
+	// Env is the environment the event is about: the payer's, the
+	// boarder's. Empty is the default's.
+	Env     string
 	Hook    string
 	Subject string
 	Fields  map[string]string
@@ -295,6 +303,10 @@ func (s *Store) armLocked(spec Spec, conds []cond, standing bool) Trap {
 	s.seq++
 	t := &trap{conds: conds, spec: spec}
 	t.ID = fmt.Sprintf("trp_%04d", s.seq)
+	t.spec.Env = tenant.Normalize(spec.Env)
+	if t.spec.Env != tenant.Default {
+		t.Env = t.spec.Env
+	}
 	t.Label, t.Hook, t.ExpiresAt, t.Standing = spec.Label, spec.Hook, spec.ExpiresAt, standing
 	t.Match = map[string]any{}
 	for k, v := range spec.Match {
@@ -312,7 +324,7 @@ func (s *Store) armLocked(spec Spec, conds []cond, standing bool) Trap {
 	t.CreatedAt = s.Wall().UTC()
 	t.ctx, t.cancel = context.WithCancel(s.root)
 	s.traps = append(s.traps, t)
-	s.log.Record(activity.Event{Op: "trap.armed", Summary: fmt.Sprintf("%s armed on %s — %s", t.ID, t.Hook, describe(t.Trap)),
+	s.log.Record(activity.Event{Env: t.Env, Op: "trap.armed", Summary: fmt.Sprintf("%s armed on %s — %s", t.ID, t.Hook, describe(t.Trap)),
 		Detail: map[string]string{"trap": t.ID, "hook": t.Hook}})
 	log.Printf("%s: trap %s armed on %s — %s", s.service, t.ID, t.Hook, describe(t.Trap))
 	return s.viewLocked(t)
@@ -366,7 +378,7 @@ func (s *Store) Offer(ev Event) (*Caught, bool) {
 	defer s.mu.Unlock()
 	now := s.Wall()
 	for _, t := range s.traps {
-		if t.Hook != ev.Hook || t.State != StateArmed {
+		if t.Hook != ev.Hook || t.State != StateArmed || t.spec.Env != tenant.Normalize(ev.Env) {
 			continue
 		}
 		if t.ExpiresAt != nil && now.After(*t.ExpiresAt) {
@@ -385,7 +397,7 @@ func (s *Store) Offer(ev Event) (*Caught, bool) {
 		if label == "" {
 			label = describe(t.Trap)
 		}
-		s.log.Record(activity.Event{Op: "trap.caught", Summary: fmt.Sprintf("%s caught %s — %s", t.ID, ev.Subject, label),
+		s.log.Record(activity.Event{Env: t.Env, Op: "trap.caught", Summary: fmt.Sprintf("%s caught %s — %s", t.ID, ev.Subject, label),
 			Detail: map[string]string{"trap": t.ID, "subject": ev.Subject}})
 		log.Printf("%s: trap %s caught %s at %s", s.service, t.ID, ev.Subject, ev.Hook)
 		return &Caught{TrapID: t.ID, Label: t.Label, Subject: ev.Subject, Path: append([]Step{}, t.Effect.Path...),
@@ -451,12 +463,12 @@ func (c *Caught) run(apply func(Step) error) {
 		switch {
 		case err == nil:
 			c.t.Caught[c.idx].Applied = append(c.t.Caught[c.idx].Applied, AppliedStep{To: step.To, At: s.Wall().UTC()})
-			s.log.Record(activity.Event{Op: "trap.step", Summary: fmt.Sprintf("%s took %s to %s", c.TrapID, c.Subject, step.To),
+			s.log.Record(activity.Event{Env: c.t.Env, Op: "trap.step", Summary: fmt.Sprintf("%s took %s to %s", c.TrapID, c.Subject, step.To),
 				Detail: map[string]string{"trap": c.TrapID, "subject": c.Subject, "to": step.To}})
 			log.Printf("%s: trap %s took %s to %s", s.service, c.TrapID, c.Subject, step.To)
 		case errors.Is(err, ErrDiverted):
 			c.t.Caught[c.idx].Diverted = err.Error()
-			s.log.Record(activity.Event{Op: "trap.diverted", Status: activity.StatusWarn,
+			s.log.Record(activity.Event{Env: c.t.Env, Op: "trap.diverted", Status: activity.StatusWarn,
 				Summary: fmt.Sprintf("%s could not take %s to %s — %v", c.TrapID, c.Subject, step.To, err),
 				Detail:  map[string]string{"trap": c.TrapID, "subject": c.Subject, "to": step.To}})
 			log.Printf("%s: trap %s could not take %s to %s: %v", s.service, c.TrapID, c.Subject, step.To, err)
@@ -464,7 +476,7 @@ func (c *Caught) run(apply func(Step) error) {
 			return
 		default:
 			c.t.Caught[c.idx].Failed = err.Error()
-			s.log.Record(activity.Event{Op: "trap.step", Status: activity.StatusBad,
+			s.log.Record(activity.Event{Env: c.t.Env, Op: "trap.step", Status: activity.StatusBad,
 				Summary: fmt.Sprintf("%s: %s to %s failed — %v", c.TrapID, c.Subject, step.To, err),
 				Detail:  map[string]string{"trap": c.TrapID, "subject": c.Subject, "to": step.To}})
 			log.Printf("%s: trap %s: %s to %s failed: %v", s.service, c.TrapID, c.Subject, step.To, err)
@@ -514,28 +526,35 @@ func removePending(ps []Pending, key string) []Pending {
 	return ps
 }
 
-// List is the traps, newest first; state filters when not "".
-func (s *Store) List(state string) []Trap {
+// List is every environment's traps, newest first; state filters when
+// not "".
+func (s *Store) List(state string) []Trap { return s.ListIn(tenant.All, state) }
+
+// ListIn is scope's traps, newest first; state filters when not "".
+func (s *Store) ListIn(scope, state string) []Trap {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireLocked()
 	out := []Trap{}
 	for i := len(s.traps) - 1; i >= 0; i-- {
 		t := s.traps[i]
-		if state == "" || t.State == state {
+		if tenant.InScope(scope, t.spec.Env) && (state == "" || t.State == state) {
 			out = append(out, s.viewLocked(t))
 		}
 	}
 	return out
 }
 
-// Get is one trap.
-func (s *Store) Get(id string) (Trap, bool) {
+// Get is one trap, whichever environment armed it.
+func (s *Store) Get(id string) (Trap, bool) { return s.GetIn(tenant.All, id) }
+
+// GetIn is one of scope's traps.
+func (s *Store) GetIn(scope, id string) (Trap, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.expireLocked()
 	for _, t := range s.traps {
-		if t.ID == id {
+		if t.ID == id && tenant.InScope(scope, t.spec.Env) {
 			return s.viewLocked(t), true
 		}
 	}
@@ -543,11 +562,14 @@ func (s *Store) Get(id string) (Trap, bool) {
 }
 
 // Disarm disarms one trap and cancels its pending steps, which it returns.
-func (s *Store) Disarm(id string) (Trap, []Pending, bool) {
+func (s *Store) Disarm(id string) (Trap, []Pending, bool) { return s.DisarmIn(tenant.All, id) }
+
+// DisarmIn disarms one of scope's traps.
+func (s *Store) DisarmIn(scope, id string) (Trap, []Pending, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.traps {
-		if t.ID == id {
+		if t.ID == id && tenant.InScope(scope, t.spec.Env) {
 			cancelled := s.disarmLocked(t)
 			return s.viewLocked(t), cancelled, true
 		}
@@ -556,11 +578,17 @@ func (s *Store) Disarm(id string) (Trap, []Pending, bool) {
 }
 
 // DisarmAll disarms every trap still armed or with steps pending.
-func (s *Store) DisarmAll() (traps int, cancelled []Pending) {
+func (s *Store) DisarmAll() (traps int, cancelled []Pending) { return s.DisarmAllIn(tenant.All) }
+
+// DisarmAllIn disarms scope's traps still armed or with steps pending.
+func (s *Store) DisarmAllIn(scope string) (traps int, cancelled []Pending) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cancelled = []Pending{}
 	for _, t := range s.traps {
+		if !tenant.InScope(scope, t.spec.Env) {
+			continue
+		}
 		if t.State == StateArmed || len(t.PendingSteps) > 0 {
 			traps++
 			cancelled = append(cancelled, s.disarmLocked(t)...)
@@ -574,7 +602,7 @@ func (s *Store) disarmLocked(t *trap) []Pending {
 	t.cancel()
 	if t.State == StateArmed || len(cancelled) > 0 {
 		t.State = StateDisarmed
-		s.log.Record(activity.Event{Op: "trap.disarmed", Summary: fmt.Sprintf("%s disarmed; %d pending step(s) cancelled", t.ID, len(cancelled)),
+		s.log.Record(activity.Event{Env: t.Env, Op: "trap.disarmed", Summary: fmt.Sprintf("%s disarmed; %d pending step(s) cancelled", t.ID, len(cancelled)),
 			Detail: map[string]string{"trap": t.ID}})
 		log.Printf("%s: trap %s disarmed, %d pending step(s) cancelled", s.service, t.ID, len(cancelled))
 	}
@@ -584,13 +612,27 @@ func (s *Store) disarmLocked(t *trap) []Pending {
 // Reset is the sim's reset: every trap disarmed and forgotten, every
 // pending step cancelled, the traps log emptied — and the standing traps
 // armed again, afresh. It returns how many traps and steps it dropped.
-func (s *Store) Reset() (traps, pending int) {
+func (s *Store) Reset() (traps, pending int) { return s.ResetIn(tenant.All) }
+
+// ResetIn is the reset of what scope names. One environment's reset drops
+// only that environment's traps, their steps and their log; a standing
+// trap (the default's, from the sim's configuration) is armed again
+// afresh when its environment is reset.
+func (s *Store) ResetIn(scope string) (traps, pending int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cancel()
-	s.root, s.cancel = context.WithCancel(context.Background())
+	if tenant.Normalize(scope) == tenant.All {
+		s.cancel()
+		s.root, s.cancel = context.WithCancel(context.Background())
+	}
 	var standing []*trap
+	kept := s.traps[:0:0]
 	for _, t := range s.traps {
+		if !tenant.InScope(scope, t.spec.Env) {
+			kept = append(kept, t)
+			continue
+		}
+		t.cancel()
 		pending += len(t.PendingSteps)
 		if t.Standing {
 			standing = append(standing, t)
@@ -598,8 +640,8 @@ func (s *Store) Reset() (traps, pending int) {
 			traps++
 		}
 	}
-	s.traps = nil
-	s.log.Clear()
+	s.traps = kept
+	s.log.ClearIn(scope)
 	for _, t := range standing {
 		s.armLocked(t.spec, t.conds, true)
 	}

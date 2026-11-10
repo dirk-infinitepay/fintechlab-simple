@@ -27,6 +27,12 @@ import (
 
 // State is the on-disk file. Every field is a flat slice rather than a map
 // so the file diffs cleanly and reads in a sensible order.
+//
+// Companies, documents, beneficiaries and payments carry their owner as
+// "env" (env.go), left out for the default environment's: a file written
+// before environments loads as entirely the default's, and a lab that only
+// ever had the default writes the file it always did. Addresses, people,
+// extended profiles and vIBANs belong to their company's environment.
 type State struct {
 	Companies     []*Company         `json:"companies,omitempty"`
 	Addresses     []*CompanyAddress  `json:"addresses,omitempty"`
@@ -120,15 +126,17 @@ func (d *Directory) Snapshot(s *State) {
 	sortByCreated(s.Vibans, func(v *Viban) string { return v.CreatedAt + v.ID })
 }
 
-// Restore loads a snapshot back in, replacing whatever is there. Called
-// once at startup, before the service is listening.
+// Restore loads a snapshot back in, replacing whatever is there, each
+// record into its own environment. Called once at startup, before the
+// service is listening.
 func (d *Directory) Restore(s State) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, c := range s.Companies {
+		c.Env = owner(c.Env)
 		d.companies[c.ID] = c
 		if c.ExternalRef != "" {
-			d.companiesByRef[c.ExternalRef] = c
+			d.companiesByRef[refKey(c.Env, c.ExternalRef)] = c
 		}
 	}
 	for _, a := range s.Addresses {
@@ -142,6 +150,7 @@ func (d *Directory) Restore(s State) {
 		d.extended[e.CompanyID] = e
 	}
 	for _, doc := range s.Documents {
+		doc.Env = owner(doc.Env)
 		d.documents[doc.ID] = doc
 	}
 	for _, v := range s.Vibans {
@@ -159,17 +168,18 @@ func (s *BeneficiaryStore) Snapshot(st *State) {
 		cp := *b
 		st.Beneficiaries = append(st.Beneficiaries, &cp)
 	}
-	sortByCreated(st.Beneficiaries, func(b *Beneficiary) string { return b.ID })
+	sortByCreated(st.Beneficiaries, func(b *Beneficiary) string { return b.ID + "\x00" + b.Env })
 }
 
-// Restore loads beneficiaries back in.
+// Restore loads beneficiaries back in, each into its own environment.
 func (s *BeneficiaryStore) Restore(st State) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, b := range st.Beneficiaries {
-		s.byID[b.ID] = b
+		b.Env = owner(b.Env)
+		s.byID[refKey(b.Env, b.ID)] = b
 		if b.ExternalRef != "" {
-			s.byRef[b.ExternalRef] = b
+			s.byRef[refKey(b.Env, b.ExternalRef)] = b
 		}
 	}
 }
@@ -204,26 +214,38 @@ func (e *Engine) Snapshot(s *State) {
 // where it stopped.
 //
 // Only what the file holds resumes: a reset writes the file without the
-// payments it dropped, so a restart never brings one back.
+// payments it dropped, so a restart never brings one back. Each payment
+// resumes under its own environment's gate.
 func (e *Engine) Restore(s State) (held []Payment) {
-	resumable := make([]*Payment, 0, len(s.Payments))
-	started := e.gate.Begin(func() {
-		e.mu.Lock()
-		defer e.mu.Unlock()
-		for _, p := range s.Payments {
-			e.payments[p.ID] = p
-			switch {
-			case finished(p.State):
-			case p.Trap != "":
-				held = append(held, *p)
-			default:
-				resumable = append(resumable, p)
-			}
+	byEnv := map[string][]*Payment{}
+	var envs []string
+	for _, p := range s.Payments {
+		p.Env = owner(p.Env)
+		if _, ok := byEnv[p.Env]; !ok {
+			envs = append(envs, p.Env)
 		}
-		e.walking.Add(int64(len(resumable)))
-	})
-	for _, p := range resumable {
-		go e.process(p, started)
+		byEnv[p.Env] = append(byEnv[p.Env], p)
+	}
+	for _, env := range envs {
+		resumable := make([]*Payment, 0, len(byEnv[env]))
+		started := e.GateFor(env).Begin(func() {
+			e.mu.Lock()
+			defer e.mu.Unlock()
+			for _, p := range byEnv[env] {
+				e.payments[p.ID] = p
+				switch {
+				case finished(p.State):
+				case p.Trap != "":
+					held = append(held, *p)
+				default:
+					resumable = append(resumable, p)
+				}
+			}
+			e.walking.Add(int64(len(resumable)))
+		})
+		for _, p := range resumable {
+			go e.process(p, started)
+		}
 	}
 	return held
 }

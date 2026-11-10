@@ -6,6 +6,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Notification delivery: batching, the documented retry schedule, and
@@ -229,6 +231,9 @@ func UsesPayloadProperty(eventType string) bool {
 // than actually mailed: a warning that nobody can see is not a simulation
 // of a warning.
 type Email struct {
+	// Env is the environment of the subscription the email is about: ""
+	// for the default's.
+	Env            string    `json:"env,omitempty"`
 	To             string    `json:"to"`
 	Kind           string    `json:"kind"`
 	SubscriptionID string    `json:"subscription_id"`
@@ -255,19 +260,35 @@ func (m *MailBox) Send(e Email) {
 	}
 }
 
-// clearLocked forgets every email and says how many there were. Caller
+// clearLocked forgets scope's emails and says how many there were. Caller
 // holds m.mu.
-func (m *MailBox) clearLocked() int {
-	n := len(m.sent)
-	m.sent = nil
+func (m *MailBox) clearLocked(scope string) int {
+	kept := m.sent[:0:0]
+	for _, e := range m.sent {
+		if !tenant.InScope(scope, e.Env) {
+			kept = append(kept, e)
+		}
+	}
+	n := len(m.sent) - len(kept)
+	m.sent = kept
+	if len(m.sent) == 0 {
+		m.sent = nil
+	}
 	return n
 }
 
-// All returns every email sent so far.
-func (m *MailBox) All() []Email {
+// All returns every email sent so far, every environment's.
+func (m *MailBox) All() []Email { return m.AllIn(tenant.All) }
+
+// AllIn returns scope's emails.
+func (m *MailBox) AllIn(scope string) []Email {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Email, len(m.sent))
-	copy(out, m.sent)
+	out := make([]Email, 0, len(m.sent))
+	for _, e := range m.sent {
+		if tenant.InScope(scope, e.Env) {
+			out = append(out, e)
+		}
+	}
 	return out
 }

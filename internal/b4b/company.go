@@ -64,6 +64,10 @@ func (a Address) Validate() error {
 // one.
 type Company struct {
 	ID string `json:"id"`
+	// Env is the environment that boarded it (env.go): empty for the
+	// default. The store and the state file keep it; the copies the store
+	// hands out, and so the wire, never carry it.
+	Env string `json:"env,omitempty"`
 	// ExternalRef is the caller's own reference. Unlike a person's, this
 	// one *is* stored and is unique: re-creating a company under a
 	// reference that already exists is refused (see ErrDuplicate), which
@@ -202,7 +206,9 @@ type ExtendedProfile struct {
 // client only ever needs the id back to reference from a profile. Size and
 // digest are kept so an upload can still be told apart from another one.
 type Document struct {
-	ID           string `json:"id"`
+	ID string `json:"id"`
+	// Env is the environment that uploaded it, as on Company.
+	Env          string `json:"env,omitempty"`
 	DocumentType string `json:"document_type,omitempty"`
 	FileName     string `json:"file_name,omitempty"`
 	ContentType  string `json:"content_type,omitempty"`

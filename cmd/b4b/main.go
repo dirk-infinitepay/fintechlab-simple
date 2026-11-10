@@ -17,6 +17,10 @@
 // with no vendor auth (internal/simctl). The old /sim paths still answer on
 // LISTEN, behind the JWT as they were, until phase 4 of docs/lab-api/plan.md
 // retires them.
+//
+// One b4b serves every environment of the lab (envs.go): each platform is a
+// customer known by its JWT's kid, and sees, and is called back about, only
+// what it made.
 package main
 
 import (
@@ -45,6 +49,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
@@ -52,13 +57,24 @@ type app struct {
 	engine        *b4b.Engine
 	beneficiaries *b4b.BeneficiaryStore
 	dir           *b4b.Directory
-	pubKey        *rsa.PublicKey
-	kid           string
-	client        *http.Client
-	list          *allowlist.List
-	backs         []time.Duration
-	maxTry        int
-	bcURL         string
+	// pubKey and kid are the default environment's: B4B_JWT_KEY_ID and the
+	// key it names. Every other environment's are in envs.
+	pubKey *rsa.PublicKey
+	kid    string
+	// customers are the environments b4b serves besides the default
+	// (envs.go, internal/tenant); envs is what each one's vendor calls are
+	// verified against and called back on.
+	customers *tenant.Customers
+	envMu     sync.RWMutex
+	envs      map[string]envConfig
+	// resetMu makes a reset, and the deletion of an environment, one at a
+	// time.
+	resetMu sync.Mutex
+	client  *http.Client
+	list    *allowlist.List
+	backs   []time.Duration
+	maxTry  int
+	bcURL   string
 	// traps is the payment.create hook's store (traps.go), with a standing
 	// trap per B4B_FORCE_FAILURE_BENEFICIARY_IDS entry.
 	traps     *trap.Store
@@ -67,8 +83,9 @@ type app struct {
 	// so writes land in the order their snapshots were taken: a stale one
 	// can never overwrite a reset's.
 	persistMu sync.Mutex
-	// callbackURL is the client-account webhook endpoint: where a callback
-	// goes when the entity it is about carries no callback_url of its own.
+	// callbackURL is the default environment's client-account webhook
+	// endpoint: where a callback goes when the entity it is about carries
+	// no callback_url of its own.
 	// The real API has exactly this -- one endpoint agreed per client, not
 	// a per-record field -- so without it, boarding callbacks have nowhere
 	// to go and a client waits forever for a screening result that was
@@ -139,6 +156,7 @@ func main() {
 		cbLog: activity.New("callbacks", "Callbacks sent",
 			"Each lifecycle callback this vendor posted back, and whether the client took it."),
 	}
+	a.customers = a.newCustomers()
 	a.engine = b4b.NewEngine(delay, a.onTransition)
 	// The traps before the state: a payment a standing trap was walking
 	// when b4b stopped is caught by it again (resumeHeld).
@@ -185,9 +203,10 @@ func (a *app) control(addr string) (*simctl.Control, error) {
 		Service: "b4b", Kind: "vendor", Simulates: "B4B Payments (Oversight API)",
 		Listeners: []string{addr},
 		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
-			return a.reset(req.Scope)
+			return a.reset(req.Scope, req.Env)
 		},
-		Traps: a.traps,
+		Traps:     a.traps,
+		Customers: a.customers,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, err
@@ -195,24 +214,27 @@ func (a *app) control(addr string) (*simctl.Control, error) {
 	mux := ctl.Mux
 
 	// A read-only window onto a lab run: what the platform itself sent,
-	// what this service said back, and what the lab's traps did to it.
+	// what this service said back, and what the lab's traps did to it --
+	// the environment the call names (?env=), or every one's for "*".
 	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog, a.traps.Log()))
 
 	// Registering a payee exactly as POST /oversight/v1/beneficiaries does --
 	// the same handler, so the same body, refusals, answer, callback and
 	// state file -- for the lab API, which registers merchants' outlets and
-	// holds no B4B credential.
-	mux.HandleFunc("POST /sim/beneficiaries", a.registerBeneficiary)
+	// holds no B4B credential. It registers in the environment the call
+	// names, as if that environment's platform had.
+	mux.HandleFunc("POST /sim/beneficiaries", a.simScoped(a.registerBeneficiary))
 
 	// Real screening decides these, and they can change at any time under
 	// continuous screening. Exposing them lets a scenario exercise the paths
 	// a client has to handle -- a payee going from pass to fail, a clean
 	// payee that is nonetheless disabled, a PEP flagged separately from a
-	// sanctions hit -- instead of reading that it would.
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.setSanctions)
-	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.setBeneficiaryStatus)
-	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.setCompanySanctions)
-	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.setPersonSanctions)
+	// sanctions hit -- instead of reading that it would. Each acts on the
+	// named environment's records only.
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/sanctions", a.simScoped(a.setSanctions))
+	mux.HandleFunc("PUT /sim/beneficiaries/{id}/status", a.simScoped(a.setBeneficiaryStatus))
+	mux.HandleFunc("PUT /sim/companies/{id}/sanctions", a.simScoped(a.setCompanySanctions))
+	mux.HandleFunc("PUT /sim/people/{id}/sanctions", a.simScoped(a.setPersonSanctions))
 	return ctl, nil
 }
 
@@ -257,9 +279,10 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 
 	// The old /sim paths, answering as they did: behind the bearer JWT, but
 	// for GET /sim/activity, which never asked for one (the console held no
-	// client credential to read it with).
-	mux.Handle("GET /sim/activity", ctl)
-	mux.HandleFunc("/sim/", a.requireAuth(ctl.ServeHTTP))
+	// client credential to read it with). Both are the default
+	// environment's alone (legacySim).
+	mux.HandleFunc("GET /sim/activity", func(w http.ResponseWriter, r *http.Request) { ctl.ServeHTTP(w, defaultScoped(r)) })
+	mux.HandleFunc("/sim/", a.legacySim(ctl))
 	return mux
 }
 
@@ -323,22 +346,27 @@ func (a *app) save() error {
 	return b4b.SaveState(a.statePath, s)
 }
 
-// reset is POST /sim/reset (docs/lab-api/sim-control.md §6). flow drops the
-// payments, the callbacks in flight and both activity logs, and keeps the
-// boarding; all drops the boarding too, back to the empty state file of a
-// first start. Either way the state file is written before it answers, so
-// a restart cannot bring back -- or resume -- a payment it dropped. The
-// signing keys and B4B_FORCE_FAILURE_BENEFICIARY_IDS are configuration and
-// stay. The traps are not cleared here: simctl resets the store before
-// calling this, which disarms every trap, cancels the hops still waiting
-// and arms the standing ones again (internal/trap).
-func (a *app) reset(scope string) (simctl.ResetResult, error) {
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6) of env: one
+// environment's records, or every one's for "*" (empty is the default's).
+// flow drops the payments, the callbacks in flight and both activity logs,
+// and keeps the boarding; all drops the boarding too, back to the empty
+// state file of a first start. Either way the state file is written before
+// it answers, so a restart cannot bring back -- or resume -- a payment it
+// dropped. The signing keys, the environments themselves and
+// B4B_FORCE_FAILURE_BENEFICIARY_IDS are configuration and stay. The traps
+// are not cleared here: simctl resets the store before calling this, which
+// disarms the environment's traps, cancels the hops still waiting and arms
+// the standing ones (the default's) again (internal/trap).
+func (a *app) reset(scope, env string) (simctl.ResetResult, error) {
+	env = tenant.Normalize(env)
+	a.resetMu.Lock()
+	defer a.resetMu.Unlock()
 	var res simctl.ResetResult
 	var err error
-	a.engine.Gate().Hold(func(deliveries int) {
-		res = b4b.Reset(scope, a.engine, a.dir, a.beneficiaries)
+	a.engine.Hold(env, func(deliveries int) {
+		res = b4b.ResetIn(scope, env, a.engine, a.dir, a.beneficiaries)
 		res.Cleared["callbacks_in_flight"] = deliveries
-		res.Cleared["activity_events"] = int(a.payLog.Clear() + a.cbLog.Clear())
+		res.Cleared["activity_events"] = int(a.payLog.ClearIn(env) + a.cbLog.ClearIn(env))
 		res.Kept = append(res.Kept, "jwt_keys", "force_failure_beneficiary_ids")
 		err = a.save()
 	})
@@ -349,16 +377,19 @@ func (a *app) reset(scope string) (simctl.ResetResult, error) {
 }
 
 // later delivers in the background, counted as in flight until it is done,
-// under the epoch the work started in: a reset in between drops it.
-func (a *app) later(started uint64, deliver func(started uint64)) {
-	a.engine.Gate().Go(started, deliver)
+// under the epoch env's work started in: a reset of env in between drops it.
+func (a *app) later(env string, started uint64, deliver func(started uint64)) {
+	a.engine.GateFor(env).Go(started, deliver)
 }
 
 // requireAuth verifies the inbound Authorization: Bearer <RS512 JWT> header
-// against this service's configured public key before delegating to next.
-// Any parse/verify failure is rejected 401 with a clear log message -- B4B
-// is the server here, so it is the one doing the verifying (docs/
-// ARCHITECTURE-vendor-corrections.md section 4).
+// against the key its kid names before delegating to next: B4B_JWT_KEY_ID
+// is the default environment's, any other kid a customer's (envs.go), and
+// an unknown one is refused like a bad signature. The environment goes in
+// the request's context for the handler, and the activity log around it,
+// to read (internal/tenant). Any parse/verify failure is rejected 401 with
+// a clear log message -- B4B is the server here, so it is the one doing the
+// verifying (docs/ARCHITECTURE-vendor-corrections.md section 4).
 func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
@@ -369,12 +400,14 @@ func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		token := strings.TrimPrefix(authz, prefix)
-		if err := b4b.VerifyBearerToken(token, a.pubKey, a.kid); err != nil {
+		env, err := a.verify(token)
+		if err != nil {
 			log.Printf("b4b: rejected %s %s: %v", r.Method, r.URL.Path, err)
 			httputilx.Error(w, 401, "invalid bearer token")
 			return
 		}
-		next(w, r)
+		a.customers.Seen(env)
+		next(w, r.WithContext(tenant.With(r.Context(), env)))
 	}
 }
 
@@ -394,15 +427,24 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	}
 }
 
-// callbackTarget picks where a callback for this entity goes: its own
-// callback_url if the caller supplied one (a lab affordance), otherwise the
-// client-account endpoint from B4B_CALLBACK_URL. Empty means nowhere, and
-// the caller logs that rather than silently doing nothing.
-func (a *app) callbackTarget(override string) string {
+// callbackTarget picks where a callback for one of env's entities goes:
+// its own callback_url if the caller supplied one (a lab affordance),
+// otherwise env's client-account endpoint -- B4B_CALLBACK_URL for the
+// default, the customer's callback_url for any other. Empty means nowhere,
+// and the caller logs that rather than silently doing nothing.
+func (a *app) callbackTarget(env, override string) string {
 	if override != "" {
 		return override
 	}
-	return a.callbackURL
+	return a.callbackFor(env)
+}
+
+// noCallback is why one of env's callbacks had nowhere to go.
+func noCallback(env string) string {
+	if env = tenant.Normalize(env); env == tenant.Default {
+		return "no callback_url on the record and no B4B_CALLBACK_URL configured"
+	}
+	return "no callback_url on the record and none for environment " + env
 }
 
 // deliverCallback POSTs a plain-JSON callback, retrying with backoff until
@@ -411,25 +453,27 @@ func (a *app) callbackTarget(override string) string {
 // is why every callback here goes through one retrying path rather than
 // some of them being best-effort single shots.
 //
-// started is the epoch the work began in. Every attempt, and the activity
-// event it leaves, goes through the gate: after a reset the rest of the
-// delivery is dropped, not raced.
-func (a *app) deliverCallback(started uint64, what, dest string, body any) {
-	a.deliverMarked(started, what, dest, body, nil)
+// The callback is one of env's: it goes through env's gate, is allowed
+// where env's callbacks may go, and is recorded as env's. started is the
+// epoch the work began in. Every attempt, and the activity event it leaves,
+// goes through the gate: after a reset the rest of the delivery is dropped,
+// not raced.
+func (a *app) deliverCallback(env string, started uint64, what, dest string, body any) {
+	a.deliverMarked(env, started, what, dest, body, nil)
 }
 
 // deliverMarked is deliverCallback with mark added to the detail of every
 // activity event it records: the trap that made the transition a payment
 // callback reports (trapMark). Nothing of it goes on the wire.
-func (a *app) deliverMarked(started uint64, what, dest string, body any, mark map[string]string) {
-	gate := a.engine.Gate()
+func (a *app) deliverMarked(env string, started uint64, what, dest string, body any, mark map[string]string) {
+	gate := a.engine.GateFor(env)
 	if dest == "" {
 		gate.Do(started, func() {
-			log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
+			log.Printf("b4b: %s callback not delivered: %s", what, noCallback(env))
 			a.cbLog.Record(activity.Event{
-				Op: "callback", Summary: what + " — nowhere to send it",
+				Env: env, Op: "callback", Summary: what + " — nowhere to send it",
 				Status: activity.StatusWarn,
-				Detail: marked(map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"}, mark),
+				Detail: marked(map[string]string{"reason": noCallback(env)}, mark),
 			})
 		})
 		return
@@ -448,11 +492,11 @@ func (a *app) deliverMarked(started uint64, what, dest string, body any, mark ma
 		var st int
 		var postErr error
 		if !gate.Do(started, func() {
-			st, postErr = a.postWebhook(dest, payload)
+			st, postErr = a.postWebhook(env, dest, payload)
 			if postErr == nil {
 				log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
 				a.cbLog.Record(activity.Event{
-					Op: "callback", Peer: dest, Summary: what + " delivered",
+					Env: env, Op: "callback", Peer: dest, Summary: what + " delivered",
 					Status: activity.StatusOK,
 					Detail: marked(map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)}, mark),
 				})
@@ -480,7 +524,7 @@ func (a *app) deliverMarked(started uint64, what, dest string, body any, mark ma
 			detail["error"] = lastErr.Error()
 		}
 		a.cbLog.Record(activity.Event{
-			Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
+			Env: env, Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
 			Status: activity.StatusBad, Detail: marked(detail, mark),
 		})
 	})
@@ -497,11 +541,12 @@ func marked(detail, mark map[string]string) map[string]string {
 	return detail
 }
 
-// postWebhook does the plain JSON POST. The allowlist is enforced here as
-// well as at creation time, so a delivery can never bypass policy even if
+// postWebhook does the plain JSON POST for one of env's callbacks. The
+// allowlist -- WEBHOOK_ALLOWLIST, or env's webhook_hosts -- is enforced here
+// as well as at creation time, so a delivery can never bypass policy even if
 // the destination was stored before the policy changed.
-func (a *app) postWebhook(dest string, body []byte) (int, error) {
-	if err := a.list.Allowed(dest); err != nil {
+func (a *app) postWebhook(env, dest string, body []byte) (int, error) {
+	if err := a.allowed(env, dest); err != nil {
 		return 0, err
 	}
 	req, err := http.NewRequest(http.MethodPost, dest, bytes.NewReader(body))

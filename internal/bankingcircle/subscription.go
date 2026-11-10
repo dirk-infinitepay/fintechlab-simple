@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // Banking Circle's notification self-service API, as documented.
@@ -70,8 +72,8 @@ var (
 	// concurrency check. It maps to 412.
 	ErrRowVersionMismatch = errors.New("bankingcircle: rowVersion does not match")
 	// ErrDuplicateEndpoint is returned when a subscription is created for
-	// an endpoint another subscription already uses. Subscriptions cannot
-	// share identical endpoint URLs.
+	// an endpoint another subscription of the same customer already uses.
+	// A customer's subscriptions cannot share identical endpoint URLs.
 	ErrDuplicateEndpoint = errors.New("bankingcircle: a subscription for that endpoint already exists")
 	// ErrDuplicateEvent is returned when the same eventType is added to a
 	// subscription twice.
@@ -145,6 +147,11 @@ type Subscription struct {
 	// EncryptionKey is stored but never rendered: Public() replaces it
 	// with "*Hidden*", which is what the real API returns.
 	EncryptionKey string `json:"-"`
+
+	// Env is the environment whose subscription this is (internal/tenant):
+	// "" for the default's. It only ever hears about its own environment's
+	// payments. Never rendered: the wire shape is the vendor's.
+	Env string `json:"-"`
 
 	CreatedAt string `json:"-"`
 	UpdatedAt string `json:"-"`
@@ -236,6 +243,8 @@ func (s *SubscriptionStore) nextRowVersion() string {
 
 // CreateParams carries POST /subscription's body.
 type CreateParams struct {
+	// Env is the customer's environment, the subscription's owner.
+	Env                        string
 	Endpoint                   string
 	EncryptionKey              string
 	Status                     SubscriptionStatus
@@ -270,10 +279,11 @@ func (s *SubscriptionStore) Create(p CreateParams) (*Subscription, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	owner := Owner(p.Env)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.subs {
-		if existing.Endpoint == p.Endpoint {
+		if existing.Env == owner && existing.Endpoint == p.Endpoint {
 			return nil, ErrDuplicateEndpoint
 		}
 	}
@@ -294,6 +304,7 @@ func (s *SubscriptionStore) Create(p CreateParams) (*Subscription, error) {
 		Email:                      p.Email,
 		MaxNotificationsPerMessage: batch,
 		EncryptionKey:              p.EncryptionKey,
+		Env:                        owner,
 		CreatedAt:                  now,
 		UpdatedAt:                  now,
 	}
@@ -325,7 +336,7 @@ func (s *SubscriptionStore) Update(id, ifMatch string, p UpdateParams) (*Subscri
 	}
 	if p.Endpoint != nil {
 		for otherID, other := range s.subs {
-			if otherID != id && other.Endpoint == *p.Endpoint {
+			if otherID != id && other.Env == sub.Env && other.Endpoint == *p.Endpoint {
 				return nil, ErrDuplicateEndpoint
 			}
 		}
@@ -369,25 +380,36 @@ func checkRowVersion(current, ifMatch string) error {
 	return nil
 }
 
-// Get returns one subscription.
-func (s *SubscriptionStore) Get(id string) (*Subscription, error) {
+// Get returns one subscription, whichever environment's it is.
+func (s *SubscriptionStore) Get(id string) (*Subscription, error) { return s.GetIn(tenant.All, id) }
+
+// GetIn returns one of scope's subscriptions: another environment's is
+// ErrSubscriptionNotFound, as an unknown one is.
+func (s *SubscriptionStore) GetIn(scope, id string) (*Subscription, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub, ok := s.subs[id]
-	if !ok {
+	if !ok || !tenant.InScope(scope, sub.Env) {
 		return nil, ErrSubscriptionNotFound
 	}
 	return sub, nil
 }
 
-// List returns one page of subscriptions, ordered by id so paging is
-// stable. pageNumber is 1-based.
+// List returns one page of subscriptions, every environment's, ordered by
+// id so paging is stable. pageNumber is 1-based.
 func (s *SubscriptionStore) List(pageNumber, pageSize int) ([]*Subscription, int) {
+	return s.ListIn(tenant.All, pageNumber, pageSize)
+}
+
+// ListIn returns one page of scope's subscriptions, and how many scope has.
+func (s *SubscriptionStore) ListIn(scope string, pageNumber, pageSize int) ([]*Subscription, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ids := make([]string, 0, len(s.subs))
-	for id := range s.subs {
-		ids = append(ids, id)
+	for id, sub := range s.subs {
+		if tenant.InScope(scope, sub.Env) {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	total := len(ids)
@@ -539,12 +561,21 @@ func (s *SubscriptionStore) AddEvent(subscriptionID, eventType string, targetTyp
 	return ev, nil
 }
 
-// GetEvent returns one subscription event.
+// GetEvent returns one subscription event, whichever environment's it is.
 func (s *SubscriptionStore) GetEvent(id string) (*SubscriptionEvent, error) {
+	return s.GetEventIn(tenant.All, id)
+}
+
+// GetEventIn returns an event on one of scope's subscriptions: an event on
+// another environment's is ErrSubscriptionNotFound, as an unknown one is.
+func (s *SubscriptionStore) GetEventIn(scope, id string) (*SubscriptionEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ev, ok := s.events[id]
 	if !ok {
+		return nil, ErrSubscriptionNotFound
+	}
+	if sub, ok := s.subs[ev.SubscriptionID]; ok && !tenant.InScope(scope, sub.Env) {
 		return nil, ErrSubscriptionNotFound
 	}
 	return ev, nil
@@ -603,15 +634,25 @@ func (s *SubscriptionStore) DeleteEvent(eventID, ifMatch string) error {
 	return nil
 }
 
-// Recipients returns, for one notification, every subscription that should
-// receive it paired with the event that matched -- so the notification can
-// carry the subscriptionEventId a real one does.
+// Recipients is RecipientsIn for the default environment.
 func (s *SubscriptionStore) Recipients(eventType string, targetIDs ...string) []Recipient {
+	return s.RecipientsIn(tenant.Default, eventType, targetIDs...)
+}
+
+// RecipientsIn returns, for one notification about env's payment, every
+// subscription of env's that should receive it paired with the event that
+// matched -- so the notification can carry the subscriptionEventId a real
+// one does. Another customer's subscriptions never hear of it, whatever
+// their targets.
+func (s *SubscriptionStore) RecipientsIn(env, eventType string, targetIDs ...string) []Recipient {
+	owner := Owner(env)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ids := make([]string, 0, len(s.subs))
-	for id := range s.subs {
-		ids = append(ids, id)
+	for id, sub := range s.subs {
+		if sub.Env == owner {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids) // deterministic fan-out order
 	var out []Recipient
@@ -646,24 +687,50 @@ func (s *SubscriptionStore) snapshot() subscriptionState {
 	return subscriptionState{subs: subs, rowSeq: s.rowSeq, idSeq: s.idSeq}
 }
 
-// restoreLocked puts st back -- a copy of it, so it can be put back again --
-// and says how many subscriptions that changed: each one st does not have,
-// and each of st's that had been deleted or written to since. Caller holds
-// s.mu.
-func (s *SubscriptionStore) restoreLocked(st subscriptionState) int {
+// restoreLocked puts back scope's part of st -- a copy of it, so it can be
+// put back again -- and says how many subscriptions that changed: each of
+// scope's that st does not have, and each of st's in scope that had been
+// deleted or written to since. Another environment's subscriptions are left
+// as they are. The counters go back to st's only when nothing but st is
+// left, as on first start: while another customer's subscriptions remain,
+// they keep counting, so no id or rowVersion is handed out twice. Caller
+// holds s.mu.
+func (s *SubscriptionStore) restoreLocked(scope string, st subscriptionState) int {
+	seed := map[string]*Subscription{}
+	for id, sub := range st.subs {
+		if tenant.InScope(scope, sub.Env) {
+			seed[id] = sub
+		}
+	}
 	changed := 0
-	for id, sub := range s.subs {
-		if seed, ok := st.subs[id]; !ok || !sameVersion(seed, sub) {
-			changed++
-		}
-	}
-	for id := range st.subs {
+	for id := range seed {
 		if _, ok := s.subs[id]; !ok {
-			changed++
+			changed++ // deleted since
 		}
 	}
-	s.subs, s.events = copySubscriptions(st.subs)
-	s.rowSeq, s.idSeq = st.rowSeq, st.idSeq
+	for id, sub := range s.subs {
+		if !tenant.InScope(scope, sub.Env) {
+			continue
+		}
+		if was, ok := seed[id]; !ok || !sameVersion(was, sub) {
+			changed++ // not the seed's, or written to since
+		}
+		for _, e := range sub.Events {
+			delete(s.events, e.ID)
+		}
+		delete(s.subs, id)
+	}
+	others := len(s.subs)
+	subs, events := copySubscriptions(seed)
+	for id, sub := range subs {
+		s.subs[id] = sub
+	}
+	for id, ev := range events {
+		s.events[id] = ev
+	}
+	if others == 0 {
+		s.rowSeq, s.idSeq = st.rowSeq, st.idSeq
+	}
 	return changed
 }
 

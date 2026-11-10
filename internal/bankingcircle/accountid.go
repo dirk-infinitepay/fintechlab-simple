@@ -3,6 +3,7 @@ package bankingcircle
 import (
 	"strings"
 
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/uuidx"
 )
 
@@ -25,11 +26,14 @@ import (
 // that every validator in the chain accepts.
 
 const (
-	// SGAAccountEUR and SGAAccountGBP are the safeguarding accounts, one
-	// per currency. 978 and 826 are EUR's and GBP's ISO 4217 numeric
-	// codes, which is what makes these readable rather than arbitrary.
-	SGAAccountEUR = "00000000-0000-4000-8000-000000000978"
-	SGAAccountGBP = "00000000-0000-4000-8000-000000000826"
+	// SGAAccountEUR and SGAAccountGBP are the default environment's
+	// safeguarding accounts, one per currency. 978 and 826 are EUR's and
+	// GBP's ISO 4217 numeric codes, which is what makes these readable
+	// rather than arbitrary. They are the lab's own (internal/tenant), so
+	// the lab API and Worldline name the same two; every other
+	// environment's are tenant.SafeguardingAccount's, derived from its id.
+	SGAAccountEUR = tenant.DefaultSafeguardingEUR
+	SGAAccountGBP = tenant.DefaultSafeguardingGBP
 )
 
 // NamespaceAccount is the UUIDv5 namespace for derived account ids.
@@ -60,6 +64,32 @@ func AccountIDFor(key string) string {
 		return k
 	}
 	return uuidx.Derive(NamespaceAccount, k)
+}
+
+// AccountIDIn is AccountIDFor in one environment (internal/tenant): the
+// account a customer's payout to key lands on. The default environment's is
+// AccountIDFor's, so every id the lab handed out before there were
+// environments stays where it was. Every other environment's is derived
+// from the environment and that id, so two platforms paying the same
+// beneficiary never share an account, and neither ever lands on one the
+// default could name. AccountIDIn(env, key) and
+// AccountIDIn(env, AccountIDFor(key)) are the same account.
+func AccountIDIn(env, key string) string {
+	id := AccountIDFor(key)
+	if env = tenant.Normalize(env); env == tenant.Default {
+		return id
+	}
+	return uuidx.Derive(NamespaceAccount, env+"/"+id)
+}
+
+// Owner is how a record names the environment that owns it: "" for the
+// default's, so a record reads as it did before there were environments,
+// and the environment's id otherwise.
+func Owner(env string) string {
+	if env = tenant.Normalize(env); env != tenant.Default {
+		return env
+	}
+	return ""
 }
 
 // ValidAccountID reports whether id is shaped like a Banking Circle

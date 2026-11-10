@@ -52,6 +52,7 @@ func main() {
 		e2e.BankingCircleTrapPaths(),
 		// Last: a flow reset clears Banking Circle's payments.
 		e2e.BankingCircleResetDropsAPayoutInFlight(),
+		e2e.EnvironmentsKeepPlatformsApart(),
 	}
 
 	// E2E_ONLY=name,name runs just those scenarios, in their usual

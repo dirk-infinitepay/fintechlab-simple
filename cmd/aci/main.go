@@ -16,6 +16,15 @@
 // GET /sim/sent[/{id}], the delivery switch and the control contract. The
 // /internal/* trigger and reads and the old /sim paths still answer on
 // LISTEN until phase 4 of docs/lab-api/plan.md retires them.
+//
+// Each environment the lab created is a customer here (internal/tenant),
+// with a webhook target of its own (aci.webhook_url). ACI only sends, so
+// nothing a platform sends names the environment: the lab's trigger does,
+// in ?env= or Lab-Environment, and the notification goes to that
+// environment's target. The default environment's is
+// ACI_WEBHOOK_TARGET_URL, behind the connected switch; another
+// environment's is its own platform listening, and the switch, which is
+// about the lab's receiver stand-in, does not govern it.
 package main
 
 import (
@@ -30,6 +39,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/aci"
@@ -40,6 +50,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 type app struct {
@@ -51,10 +62,14 @@ type app struct {
 	targetURL string
 	bodyMode  string
 	sent      *aci.SentLog
-	// wiring is the delivery to targetURL. Off, a simulated payment is
-	// still recorded — held, saying why — and nothing is sent: the lab's
-	// receiver stand-in is disconnected once a platform listens itself.
+	// wiring is the delivery to targetURL, the default environment's. Off,
+	// a simulated payment is still recorded — held, saying why — and
+	// nothing is sent: the lab's receiver stand-in is disconnected once a
+	// platform listens itself.
 	wiring *labswitch.Switch
+	// customers are the environments besides the default, each with its
+	// own target. control makes them when they are not given.
+	customers *tenant.Customers
 }
 
 func main() {
@@ -110,6 +125,7 @@ func main() {
 		sent:      aci.NewSentLog(),
 		wiring: labswitch.FromEnv("aci", "delivers webhooks to ACI_WEBHOOK_TARGET_URL",
 			env("ACI_WEBHOOK_CONNECTED", "true")).Target(targetURL),
+		customers: tenant.NewCustomers(),
 	}
 
 	ctl, err := a.control(addr)
@@ -126,15 +142,24 @@ func main() {
 // the control contract and simRoutes. addr is the vendor listener, for
 // GET /sim/info and the control port's default (its port + 1000).
 func (a *app) control(addr string) (*simctl.Control, error) {
+	if a.customers == nil {
+		a.customers = tenant.NewCustomers()
+	}
+	// A customer removed takes its sent log and deliveries with it.
+	a.customers.OnDelete = func(env string) error {
+		a.sent.ResetIn(env)
+		return nil
+	}
 	ctl, err := simctl.NewControl(simctl.Config{
 		Service: "aci", Kind: "vendor", Simulates: "ACI payment notification webhooks",
 		Listeners: []string{addr},
 		// Both scopes, and they do the same: ACI holds nothing a platform
 		// set up once. Both are offered so a lab-wide all reset reaches it.
 		Scopes: []string{simctl.ScopeFlow, simctl.ScopeAll},
-		Reset: func(context.Context, simctl.ResetRequest) (simctl.ResetResult, error) {
-			return a.reset(), nil
+		Reset: func(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+			return a.reset(req.Env), nil
 		},
+		Customers: a.customers,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, err
@@ -169,12 +194,13 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	return mux
 }
 
-// reset is POST /sim/reset (docs/lab-api/sim-control.md §6): the sent log
-// emptied and every delivery in flight dropped, first attempts and retries
-// alike. The delivery switch stays as it was: it is live wiring -- whether
-// a platform listens itself -- not something a run made.
-func (a *app) reset() simctl.ResetResult {
-	sent, deliveries := a.sent.Reset()
+// reset is POST /sim/reset (docs/lab-api/sim-control.md §6) of scope, one
+// environment or every one ("*"): its sent log emptied and every delivery
+// of its in flight dropped, first attempts and retries alike. The delivery
+// switch stays as it was: it is live wiring -- whether a platform listens
+// itself -- not something a run made.
+func (a *app) reset(scope string) simctl.ResetResult {
+	sent, deliveries := a.sent.ResetIn(scope)
 	return simctl.ResetResult{
 		Cleared: map[string]int{"sent": sent, "deliveries_in_flight": deliveries},
 		Kept:    []string{"connected_switch"},
@@ -215,6 +241,14 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "merchant_transaction_id required")
 		return
 	}
+	// The environment the payment happened in, and so whose platform
+	// hears of it.
+	env := tenant.FromRequest(r)
+	targetURL, status, why := a.target(env)
+	if status != 0 {
+		httputilx.Error(w, status, why)
+		return
+	}
 
 	now := labclock.Now()
 	notif := &aci.Notification{
@@ -253,12 +287,15 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		CiphertextHex:  ciphertextHex,
 		IVHex:          ivHex,
 		TagHex:         tagHex,
-		TargetURL:      a.targetURL,
+		TargetURL:      targetURL,
 		BodyMode:       a.bodyMode,
 		CreatedAt:      now,
 		DeliveryStatus: "pending",
 	}
-	if !a.wiring.Connected() {
+	if env != tenant.Default {
+		rec.Env = env
+	}
+	if env == tenant.Default && !a.wiring.Connected() {
 		// Said where the silence lands: the record is there, held.
 		rec.DeliveryStatus = "held"
 		rec.DeliveryError = "not delivered: the webhook target is disconnected in the lab (GET /sim/connected)"
@@ -269,6 +306,48 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 	a.sent.Go(a.sent.Put(rec), func(started uint64) { a.deliver(rec, started) })
 
 	httputilx.WriteJSON(w, 202, simulateResp{ID: rec.ID})
+}
+
+// target is where env's notifications go: the default's
+// ACI_WEBHOOK_TARGET_URL, another environment's own webhook URL. A status
+// other than 0 is why there is none, for the trigger to answer with.
+func (a *app) target(env string) (url string, status int, why string) {
+	switch env {
+	case tenant.Default:
+		return a.targetURL, 0, ""
+	case tenant.All:
+		return "", 400, "a card payment happens in one environment, not in all of them"
+	}
+	c, ok := a.customers.Get(env)
+	if !ok {
+		return "", 404, "no environment " + env + " at aci"
+	}
+	if c.ACI == nil || c.ACI.WebhookURL == "" {
+		return "", 409, "environment " + env + " has no ACI webhook target: its customer needs aci.webhook_url"
+	}
+	return c.ACI.WebhookURL, 0, ""
+}
+
+// allowed reports whether rec may be delivered where it is going: a host
+// WEBHOOK_ALLOWLIST names, or, for an environment's own notification, one
+// its customer's webhook_hosts names.
+func (a *app) allowed(rec *aci.Record) error {
+	err := a.list.Allowed(rec.TargetURL)
+	if err == nil || rec.Env == "" {
+		return err
+	}
+	c, ok := a.customers.Get(rec.Env)
+	if !ok || len(c.WebhookHosts) == 0 {
+		return err
+	}
+	hosts, perr := allowlist.Parse(strings.Join(c.WebhookHosts, ","))
+	if perr != nil {
+		return fmt.Errorf("%v; environment %s's webhook_hosts: %v", err, rec.Env, perr)
+	}
+	if herr := hosts.Allowed(rec.TargetURL); herr != nil {
+		return fmt.Errorf("%v, nor in environment %s's webhook_hosts", err, rec.Env)
+	}
+	return nil
 }
 
 // deliver retries the encrypted webhook POST with backoff until 2xx or
@@ -332,7 +411,7 @@ func (a *app) deliver(rec *aci.Record, started uint64) {
 // must be real options, not just the default. IV and auth tag always travel
 // as hex in headers, never in the body.
 func (a *app) postWebhook(rec *aci.Record) (int, error) {
-	if err := a.list.Allowed(rec.TargetURL); err != nil {
+	if err := a.allowed(rec); err != nil {
 		return 0, err
 	}
 	var body []byte
@@ -369,14 +448,36 @@ func (a *app) postWebhook(rec *aci.Record) (int, error) {
 }
 
 // --- sent-notification introspection (GET /sim/sent[/{id}], and
-// GET /internal/sent[/{id}] on the vendor port) ---
+// GET /internal/sent[/{id}] on the vendor port), of the environment the
+// call names, or every one's for "*" ---
+
+// scope is the environment a read names, when ACI serves it.
+func (a *app) scope(w http.ResponseWriter, r *http.Request) (string, bool) {
+	env := tenant.FromRequest(r)
+	if env == tenant.Default || env == tenant.All {
+		return env, true
+	}
+	if _, ok := a.customers.Get(env); !ok {
+		httputilx.Error(w, 404, "no environment "+env+" at aci")
+		return "", false
+	}
+	return env, true
+}
 
 func (a *app) listSent(w http.ResponseWriter, r *http.Request) {
-	httputilx.WriteJSON(w, 200, map[string]any{"result": a.sent.List()})
+	scope, ok := a.scope(w, r)
+	if !ok {
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"result": a.sent.ListIn(scope)})
 }
 
 func (a *app) getSent(w http.ResponseWriter, r *http.Request) {
-	rec, ok := a.sent.Get(r.PathValue("id"))
+	scope, ok := a.scope(w, r)
+	if !ok {
+		return
+	}
+	rec, ok := a.sent.GetIn(scope, r.PathValue("id"))
 	if !ok {
 		httputilx.Error(w, 404, "notification not found")
 		return

@@ -12,6 +12,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // NotificationType is Banking Circle's real, closed webhook event-type enum
@@ -49,7 +50,12 @@ const (
 // direction would duplicate the notify/onTransition plumbing for no
 // benefit — real Banking Circle has no such split either.
 type Payment struct {
-	ID            string `json:"id"`
+	ID string `json:"id"`
+	// Env is the environment whose payment this is (internal/tenant): ""
+	// for the default's. A payout is its payer's, money in is the
+	// receiving account's, a return is the returned payout's. It decides
+	// who is notified, whose reports carry it and which reset clears it.
+	Env           string `json:"env,omitempty"`
 	SettlementID  string `json:"settlementId,omitempty"`
 	FromAccountID string `json:"fromAccountId"`
 	ToAccountID   string `json:"toAccountId,omitempty"`
@@ -105,10 +111,10 @@ type Payment struct {
 	CreatedAt string           `json:"createdAt"`
 	UpdatedAt string           `json:"updatedAt"`
 
-	// epoch is the run the payment was made in (Run.Current). A reset ends
-	// that run: the payment is cleared, and every step still to come for it
-	// — its processing, its notifications, its credit at the beneficiary's
-	// bank — is dropped.
+	// epoch is the run the payment was made in (Run.Current). A reset of
+	// its environment ends that run: the payment is cleared, and every step
+	// still to come for it — its processing, its notifications, its credit
+	// at the beneficiary's bank — is dropped.
 	epoch uint64
 	// trap is the lab's trap that made this state, on the copy handed to
 	// onTransition for a trap's step and on a return payment a trap's step
@@ -117,7 +123,7 @@ type Payment struct {
 }
 
 // Epoch is the run the payment was made in, for work done on its behalf
-// outside the engine (Run.Do, Dispatcher.EnqueueFrom).
+// outside the engine (Run.Do with the payment's Env, Dispatcher.EnqueueFrom).
 func (p *Payment) Epoch() uint64 { return p.epoch }
 
 // Trap is the id of the trap whose step made this state, or "" for a state
@@ -148,9 +154,9 @@ type Engine struct {
 	onTransition func(*Payment)
 	refSeq       int64 // last ReferenceNumber handed out
 
-	// run is the epoch a reset moves; the engine owns it because the
-	// payments are where in-flight work starts. NewBank shares it with the
-	// dispatcher.
+	// run is what a reset moves, per environment; the engine owns it
+	// because the payments are where in-flight work starts. NewBank shares
+	// it with the dispatcher.
 	run *Run
 	wg  sync.WaitGroup // payments still walking their phases
 }
@@ -170,7 +176,7 @@ func NewEngine(ledger *Ledger, delay time.Duration, onTransition func(*Payment))
 }
 
 // Run is the engine's run: what a reset ends, and what work on a payment's
-// behalf checks before each step.
+// behalf checks before each step, in the payment's environment.
 func (e *Engine) Run() *Run { return e.run }
 
 // Wait blocks until every payment still walking its phases has finished or
@@ -198,9 +204,11 @@ type Booking struct {
 }
 
 // Book records p and fires OutgoingPaymentBooked at once: the bank books a
-// payout the moment it arrives, whatever becomes of it next.
+// payout the moment it arrives, whatever becomes of it next. p.Env is the
+// payer's environment.
 func (e *Engine) Book(p *Payment) *Booking {
 	now := labclock.Now().Format(time.RFC3339)
+	p.Env = Owner(p.Env)
 	e.mu.Lock()
 	p.epoch = e.run.Current()
 	p.State = NotificationOutgoingPaymentBooked
@@ -230,10 +238,10 @@ func (b *Booking) Process() {
 func (e *Engine) process(p *Payment) {
 	defer e.wg.Done()
 	started := p.epoch
-	if !e.run.Sleep(started, e.delay) {
+	if !e.run.Sleep(p.Env, started, e.delay) {
 		return
 	}
-	e.run.Do(started, func(context.Context) {
+	e.run.Do(p.Env, started, func(context.Context) {
 		// The move and the state change are one step under e.mu, the lock a
 		// reset clears the payments under: a reset sees both or neither.
 		e.mu.Lock()
@@ -321,7 +329,7 @@ func (d *Diverted) Error() string {
 // account short ends the payout MissingFunding, as it would untouched).
 func (b *Booking) Step(s Step, applied func(Payment)) error {
 	var err error
-	if !b.e.run.Do(b.epoch, func(context.Context) { err = b.e.step(b.p, s, applied) }) {
+	if !b.e.run.Do(b.booked.Env, b.epoch, func(context.Context) { err = b.e.step(b.p, s, applied) }) {
 		return ErrReset
 	}
 	return err
@@ -435,24 +443,34 @@ func refusal(p *Payment, err error) string {
 	return fmt.Sprintf("the ledger refused to move the money back (%v)", err)
 }
 
-// Get returns a copy of the payment by ID.
-func (e *Engine) Get(id string) (*Payment, error) {
+// Get returns a copy of the payment by ID, whichever environment's it is.
+func (e *Engine) Get(id string) (*Payment, error) { return e.GetIn(tenant.All, id) }
+
+// GetIn returns a copy of one of scope's payments: another environment's is
+// ErrPaymentNotFound, as an unknown one is.
+func (e *Engine) GetIn(scope, id string) (*Payment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	p, ok := e.payments[id]
-	if !ok {
+	if !ok || !tenant.InScope(scope, p.Env) {
 		return nil, ErrPaymentNotFound
 	}
 	cp := *p
 	return &cp, nil
 }
 
-// List returns a copy of every payment.
-func (e *Engine) List() []*Payment {
+// List returns a copy of every payment, every environment's.
+func (e *Engine) List() []*Payment { return e.ListIn(tenant.All) }
+
+// ListIn returns a copy of each of scope's payments.
+func (e *Engine) ListIn(scope string) []*Payment {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	out := make([]*Payment, 0, len(e.payments))
 	for _, p := range e.payments {
+		if !tenant.InScope(scope, p.Env) {
+			continue
+		}
 		cp := *p
 		out = append(out, &cp)
 	}
@@ -520,7 +538,7 @@ func (e *Engine) reverseLocked(p *Payment, reason string) (Payment, error) {
 // (EnqueueFrom), which is what closes the gap between this check and the
 // notification being queued.
 func (e *Engine) notify(p Payment) {
-	if e.onTransition != nil && !e.run.Moved(p.epoch) {
+	if e.onTransition != nil && !e.run.Moved(p.Env, p.epoch) {
 		e.onTransition(&p)
 	}
 }
@@ -536,6 +554,7 @@ func (e *Engine) notify(p Payment) {
 // the initial notification: Credit's only failure mode is an unknown
 // toAccountID, which callers must resolve (or auto-vivify) before calling
 // this, so there is no MissingFunding-equivalent second outcome to report.
+// The payment is the environment's whose account it lands on.
 func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string) (*Payment, error) {
 	cents, err := money.Parse(amount)
 	if err != nil {
@@ -561,10 +580,12 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 	// land between them and leave money on the account with no payment
 	// that put it there.
 	e.mu.Lock()
-	if _, err := e.ledger.Credit(toAccountID, cents); err != nil {
+	acc, err := e.ledger.Credit(toAccountID, cents)
+	if err != nil {
 		e.mu.Unlock()
 		return nil, err
 	}
+	p.Env = acc.Env
 	p.epoch = e.run.Current()
 	p.ReferenceNumber = e.nextReferenceNumber()
 	e.payments[p.ID] = p
@@ -584,10 +605,10 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 func (e *Engine) processIncoming(p *Payment) {
 	defer e.wg.Done()
 	started := p.epoch
-	if !e.run.Sleep(started, e.delay) {
+	if !e.run.Sleep(p.Env, started, e.delay) {
 		return
 	}
-	e.run.Do(started, func(context.Context) {
+	e.run.Do(p.Env, started, func(context.Context) {
 		e.mu.Lock()
 		p.State = NotificationIncomingPaymentProcessed
 		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
@@ -680,6 +701,7 @@ func (e *Engine) returnLocked(orig *Payment, reasonCode, reasonDescription, trap
 		epoch:                   e.run.Current(),
 		trap:                    trap,
 		ID:                      "bcp_" + randomHex(6),
+		Env:                     orig.Env,
 		FromAccountID:           orig.ToAccountID,
 		ToAccountID:             orig.FromAccountID,
 		Amount:                  orig.Amount,

@@ -21,6 +21,9 @@ RUN mkdir -p /sftp/inbound /sftp/outbound /sftp/config /sftp/archive && \
 # already be writable by the non-root USER below, same reasoning as /sftp
 # above).
 RUN mkdir -p /wlsftp && chown -R 65532:65532 /wlsftp
+# Each environment's SFTP folder (docs/lab-api/environments.md §7), outside
+# the default's /wlsftp so its login cannot see them: WORLDLINE_SFTP_ENV_ROOT.
+RUN mkdir -p /wlsftp-environments && chown -R 65532:65532 /wlsftp-environments
 # Only read in WORLDLINE_FILE_SOURCE=fixture mode; baked in so the image
 # runs without a checkout. Compose mounts ./worldline/fixtures over it.
 COPY worldline/fixtures /wlsftp-fixtures

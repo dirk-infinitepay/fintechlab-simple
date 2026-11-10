@@ -5,6 +5,8 @@ import (
 	"path"
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
+	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 )
 
 // What the console's file-exchange panel says about this acquirer.
@@ -15,9 +17,17 @@ import (
 // download/…csv.pgp" is what the platform did, and that is what an
 // operator is checking. A refusal keeps the server's own error, because
 // "permission denied" and "no such file" send you to different places.
-func recordSFTP(l *activity.Log) func(user, remote, op, p string, err error) {
-	return func(user, remote, op, p string, err error) {
-		ev := activity.Event{Op: "sftp." + op, Peer: remote, Status: activity.StatusOK}
+//
+// The line is the environment's whose login it was (the session's tag),
+// and a request that was answered marks that environment as seen.
+func recordSFTP(l *activity.Log, customers *tenant.Customers) wlsftp.SessionObserver {
+	return func(sess wlsftp.Session, op, p string, err error) {
+		user, remote := sess.User, sess.Remote
+		if op != "session" || err == nil {
+			// Logged in: a refused handshake is no one's traffic.
+			customers.Seen(tenant.Normalize(sess.Tag))
+		}
+		ev := activity.Event{Env: sess.Tag, Op: "sftp." + op, Peer: remote, Status: activity.StatusOK}
 		detail := map[string]string{}
 		if user != "" {
 			detail["user"] = user

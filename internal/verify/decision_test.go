@@ -164,3 +164,54 @@ func TestResetKeepsTheForceDeclineSet(t *testing.T) {
 	}
 	engine.running.Wait()
 }
+
+// TestEachEnvironmentHasItsOwnDecisions: the same merchantApplicationId in
+// two environments is two decisions, and a reset of one drops only its own
+// -- its triggers still in their delay included.
+func TestEachEnvironmentHasItsOwnDecisions(t *testing.T) {
+	engine := NewEngine(0, map[int]bool{7: true})
+	engine.TriggerIn("sbx", 7)
+	engine.Trigger(7)
+	engine.running.Wait()
+
+	if d, ok := engine.GetIn("sbx", 7); !ok || d.OverallDecision != "APPROVED" {
+		t.Errorf("sbx's 7 = %+v, %v; want APPROVED: the force-decline set is the default's", d, ok)
+	}
+	if d, ok := engine.Get(7); !ok || d.OverallDecision != "DECLINE" {
+		t.Errorf("the default's 7 = %+v, %v; want DECLINE", d, ok)
+	}
+	if _, ok := engine.GetIn("other", 7); ok {
+		t.Error("an environment that triggered nothing reads a decision")
+	}
+
+	if decisions, pending := engine.ResetIn("sbx"); decisions != 1 || pending != 0 {
+		t.Errorf("ResetIn(sbx) = %d, %d; want 1, 0", decisions, pending)
+	}
+	if _, ok := engine.GetIn("sbx", 7); ok {
+		t.Error("sbx's decision survived its reset")
+	}
+	if _, ok := engine.Get(7); !ok {
+		t.Error("the default's decision went with sbx's reset")
+	}
+}
+
+// TestAResetOfOneEnvironmentLeavesTheOthersTriggersInFlight: only the reset
+// environment's sleepers are woken and dropped.
+func TestAResetOfOneEnvironmentLeavesTheOthersTriggersInFlight(t *testing.T) {
+	engine := NewEngine(30*time.Millisecond, nil)
+	engine.TriggerIn("sbx", 1)
+	engine.Trigger(1)
+	if _, pending := engine.ResetIn("sbx"); pending != 1 {
+		t.Fatalf("ResetIn(sbx) pending = %d, want 1", pending)
+	}
+	engine.running.Wait()
+	if _, ok := engine.GetIn("sbx", 1); ok {
+		t.Error("sbx's trigger from before its reset was recorded after it")
+	}
+	if _, ok := engine.Get(1); !ok {
+		t.Error("the default's trigger was dropped by sbx's reset")
+	}
+	if decisions, _ := engine.Forget("default"); decisions != 1 {
+		t.Errorf("Forget(default) = %d decisions, want 1", decisions)
+	}
+}

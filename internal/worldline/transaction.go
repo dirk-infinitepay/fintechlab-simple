@@ -29,6 +29,11 @@ type Transaction struct {
 	AmountCents int64  `json:"amount_cents"`
 	Date        string `json:"date"` // YYYY-MM-DD, the transaction (not settlement) date
 
+	// Env is the environment whose platform the submerchant belongs to
+	// (internal/tenant): empty for the default's. The acquirer sets it from
+	// the lab hook's scope; a submitted value is ignored.
+	Env string `json:"env,omitempty"`
+
 	// Card metadata a real acquirer knows and the platform does not. Each
 	// is optional on submission: GenerateBambora synthesizes anything left
 	// empty, deterministically from the transaction's own identity, so an

@@ -22,6 +22,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // A notification's "payment" object comes in two shapes, both copied from
@@ -189,6 +190,9 @@ func bookingDate(ts string) string {
 // everyone made the target and event-type configuration decorative, so a
 // client with a broken subscription looked like a working one.
 //
+// Only the payment's own environment hears of it: another customer's
+// subscription is never a recipient, whatever its targets name.
+//
 // It never blocks the engine: the dispatcher batches and delivers on its
 // own goroutines, so a down or slow subscriber never stalls payments.
 func (a *app) onTransition(p *bankingcircle.Payment) {
@@ -204,7 +208,7 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 
 	// The accounts this payment touches are the targets a subscription may
 	// have scoped itself to.
-	recipients := a.subs.Recipients(eventType, p.ToAccountID, p.FromAccountID)
+	recipients := a.subs.RecipientsIn(p.Env, eventType, p.ToAccountID, p.FromAccountID)
 	if len(recipients) == 0 {
 		log.Printf("banking-circle: %s for payment %s matched no active subscription", eventType, p.ID)
 		return
@@ -250,7 +254,7 @@ func newNotification(rec bankingcircle.Recipient, eventType string, detail any) 
 // It flushes immediately rather than waiting for the batch timer, because
 // the whole point is an answer now.
 func (a *app) clientTest(w http.ResponseWriter, r *http.Request) {
-	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	sub, err := a.subs.GetIn(scopeOf(r), r.PathValue("subscriptionId"))
 	if err != nil {
 		writeSubscriptionError(w, err)
 		return
@@ -306,7 +310,7 @@ func (a *app) sendEncrypted(ctx context.Context, sub *bankingcircle.Subscription
 	if err != nil {
 		return fmt.Errorf("encrypt notification: %w", err)
 	}
-	status, err := a.postNotification(ctx, sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
+	status, err := a.postNotification(ctx, sub.Env, sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
 	a.recordNotification(sub, env, status, err)
 	return err
 }
@@ -355,8 +359,11 @@ func utf16LEBytes(s string) []byte {
 	return out
 }
 
-func (a *app) postNotification(ctx context.Context, dest string, ciphertext, nonce, tag, checksum []byte, version int) (int, error) {
-	if err := a.list.Allowed(dest); err != nil {
+// postNotification sends one encrypted batch to dest, a subscription of
+// env's: dest must pass env's destination rule (allowed) at the moment it
+// is sent, not only when the subscription was made.
+func (a *app) postNotification(ctx context.Context, env, dest string, ciphertext, nonce, tag, checksum []byte, version int) (int, error) {
+	if err := a.allowed(env, dest); err != nil {
 		return 0, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, dest, bytes.NewReader(ciphertext))
@@ -393,6 +400,10 @@ func (a *app) postNotification(ctx context.Context, dest string, ciphertext, non
 // The POST goes through the payment's run: if a reset has cleared the
 // payment by the time this goroutine gets to it, nothing is credited, and a
 // reset that lands while the POST is on the wire aborts it.
+//
+// It says whose payout it was, in a Lab-Environment header (omitted for
+// the default's), so the business bank can keep each environment's credits
+// apart (docs/lab-api/sim-control.md §8).
 func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 	if a.bankCreditURL == "" {
 		return
@@ -428,7 +439,7 @@ func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 		log.Printf("banking-circle: credit payload for %s: %v", p.ID, err)
 		return
 	}
-	a.engine.Run().Do(p.Epoch(), func(run context.Context) {
+	a.engine.Run().Do(p.Env, p.Epoch(), func(run context.Context) {
 		ctx, cancel := context.WithTimeout(run, 5*time.Second)
 		defer cancel()
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.bankCreditURL, bytes.NewReader(body))
@@ -437,6 +448,9 @@ func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if env := tenant.Normalize(p.Env); env != tenant.Default {
+			req.Header.Set(tenant.Header, env)
+		}
 		resp, err := a.client.Do(req)
 		if err != nil {
 			log.Printf("banking-circle: crediting beneficiary bank for %s: %v", p.ID, err)

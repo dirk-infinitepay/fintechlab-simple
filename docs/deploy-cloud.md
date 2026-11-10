@@ -189,6 +189,29 @@ front of `:8085` has to pass TCP through.
 
 ## Connecting a platform
 
+**Give a deployed platform an environment of its own** when the lab serves
+anything else too: a runner on someone's laptop, an e2e run, a second
+stack ([lab-api/environments.md](lab-api/environments.md)). Create it once,
+with the admin token:
+
+```sh
+T=$(deploy/aws/lab.sh token)
+curl -s -H "Authorization: Bearer $T" http://<PublicHost>:8097/v1/environments \
+  -d '{"name": "sbx", "config": {"settlement_identifier": "Infinite_Payment",
+       "webhook_hosts": ["<the platform's callback ALB hosts>"]}}'
+curl -OJ -H "Authorization: Bearer $T" "http://<PublicHost>:8097/v1/connect/env?env=sbx"
+```
+
+`fintechlab-sbx.env` is that platform's kit: its own Banking Circle login
+and safeguarding account ids, its own B4B signing key, its own SFTP user,
+and its own lab token (`FINTECH_SIM_LAB_TOKEN`), which reaches only its
+data. Its settlement identifier and callback hosts are its environment's
+config, not `LAB_SET` or `LAB_WEBHOOK_ALLOW`, which stay for the default
+environment. The console's *Environments* view does the same, and its
+selector shows each one's payouts, files and activity apart. A platform on
+the default environment needs none of this, and everything below still
+applies to it.
+
 - **Addresses and keys.** `make aws-env` (or *Configuration → Connect your
   platform*) downloads one `.env` with every vendor's address, lab
   credentials and keys, addressed to the lab's public host. The certificates
@@ -209,13 +232,17 @@ front of `:8085` has to pass TCP through.
   `LAB_SET="aci.ACI_WEBHOOK_TARGET_URL=https://hooks.example.com/aci"`.
   Outbound, the lab trusts the public CAs as well as its own
   ([security/ca-and-tls.md](security/ca-and-tls.md)). Then `make aws-deploy`.
-- **Its card.** A deployed platform registers at `/v1/plugins` with
-  `"clock": "wall"` ([plugins.md](plugins.md)). The card's live parts need
-  the lab API to reach the platform's `base_url` — a public address of the
-  platform's.
+- **Its card, if it wants one.** An environment turns green in the console
+  once a vendor has seen its platform log in, with no card at all. A
+  platform that brings buttons registers at `/v1/plugins` with
+  `"clock": "wall"` ([plugins.md](plugins.md)), with its environment's
+  token. The card's live parts need the lab API to reach the platform's
+  `base_url`, which has to be a public address of the platform's.
 - **Banking Circle forgets.** Its subscriptions and payments are in memory:
   after a redeploy or a stop, the platform subscribes again when it
-  restarts.
+  restarts. The environments do not forget: they are in the lab API's
+  database, on the data volume, and every vendor gets its customers back
+  within seconds of starting.
 
 ## A runner on your machine
 

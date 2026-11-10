@@ -15,6 +15,12 @@ package main
 // Every file a reset deletes is one this service wrote, recognised by its
 // name in the directory it writes it to. The SFTP root and ./sftp are
 // shared with the platform and the host; anything else in them stays.
+//
+// A reset names an environment (sim-control.md §8, rule 6): it clears that
+// environment's records and files only, in its own jail, and "*" clears
+// every environment's. The SFT channel over HTTP is the default's, so only
+// a reset that reaches the default touches the archive and the channel
+// configuration.
 
 import (
 	"context"
@@ -26,6 +32,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -43,6 +50,9 @@ import (
 type runGuard struct {
 	epoch simctl.Epoch
 	mu    sync.RWMutex
+	// retired is an environment that was deleted: nothing of it applies
+	// again, whenever it started.
+	retired bool
 }
 
 // start is the epoch to remember when work begins.
@@ -68,7 +78,7 @@ func (g *runGuard) apply(started uint64, effect func()) bool {
 	}
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-	if g.epoch.Moved(started) {
+	if g.retired || g.epoch.Moved(started) {
 		return false
 	}
 	effect()
@@ -77,13 +87,38 @@ func (g *runGuard) apply(started uint64, effect func()) bool {
 
 // resetting moves the epoch and runs clear with every effect held off.
 func (g *runGuard) resetting(clear func() error) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.epoch.Bump()
+	return resettingAll([]*runGuard{g}, clear)
+}
+
+// resettingAll is resetting over several guards at once: every
+// environment a reset reaches. Only a reset takes more than one, resets
+// run one at a time, and no effect waits on another guard, so the order
+// cannot deadlock.
+func resettingAll(gs []*runGuard, clear func() error) error {
+	for _, g := range gs {
+		g.mu.Lock()
+		g.epoch.Bump()
+	}
+	defer func() {
+		for _, g := range gs {
+			g.mu.Unlock()
+		}
+	}()
 	return clear()
 }
 
-// sim is everything a reset of worldline reaches.
+// retire is a last reset: clear runs with every effect held off, and no
+// effect applies after it.
+func (g *runGuard) retire(clear func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.epoch.Bump()
+	g.retired = true
+	clear()
+}
+
+// sim is everything a reset of worldline reaches. guard, acq and desk are
+// the default environment's; every other environment's are in tenants.
 type sim struct {
 	guard      *runGuard
 	acq        *settlementApp
@@ -91,44 +126,28 @@ type sim struct {
 	sftpLog    *activity.Log
 	ch         *sftpgateway.Channel
 	merchantID string
+	tenants    environments
 }
 
 // reset is worldline's simctl.ResetFunc. A file it cannot delete is
 // returned as an error, answered 500, after everything else is done; a
 // second reset finishes the job.
 func (s *sim) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
+	scope := tenant.Normalize(req.Env)
+	envs := s.in(scope)
+	guards := make([]*runGuard, len(envs))
+	for i, e := range envs {
+		guards[i] = e.guard
+	}
 	cleared := map[string]int{}
-	err := s.guard.resetting(func() error {
+	err := resettingAll(guards, func() error {
 		var errs []error
-		note := func(err error) {
-			if err != nil {
-				errs = append(errs, err)
-			}
+		for _, e := range envs {
+			errs = append(errs, s.clearEnv(e, req.Scope, cleared))
 		}
-
-		runs, lumpSums, published := s.acq.clearRuns()
-		cleared["cycle_runs"], cleared["lump_sums"] = runs, lumpSums
-		cleared["transactions"] = s.acq.store.Clear()
-
-		n, err := s.removeSettlementFiles(published)
-		cleared["settlement_files"] = n
-		note(err)
-		n, err = s.ch.ClearArchive()
-		cleared["archived_reports"] = n
-		note(err)
-
-		cleared["activity"] = int(s.sftpLog.Clear())
-		cleared["enrolment_rejections"] = s.desk.clearRejections()
-
-		if req.Scope == simctl.ScopeAll {
-			cleared["answered_batches"] = s.desk.forgetAnswered()
-			n, err = wlsftp.RemoveFiles(s.acq.root, wlsftp.DirFromWLNordic, worldline.IsReceiptFilename)
-			cleared["enrolment_receipts"] = n
-			note(err)
-			n, err = s.restoreChannel()
-			cleared["channel_config"] = n
-			note(err)
-		}
+		// An environment's activity is cleared with it; "*" takes every
+		// ring the log has.
+		cleared["activity"] = int(s.sftpLog.ClearIn(scope))
 		return errors.Join(errs...)
 	})
 	if err != nil {
@@ -143,13 +162,59 @@ func (s *sim) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetRes
 	return simctl.ResetResult{Cleared: cleared, Kept: kept}, nil
 }
 
+// clearEnv clears one environment's part of a reset, adding what it cleared
+// to cleared. The caller holds the environment's guard.
+func (s *sim) clearEnv(e *envSim, scope string, cleared map[string]int) error {
+	var errs []error
+	note := func(err error) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	add := func(k string, n int) { cleared[k] += n }
+	def := e.env == tenant.Default
+
+	runs, lumpSums, published := e.acq.clearRuns()
+	add("cycle_runs", runs)
+	add("lump_sums", lumpSums)
+	add("transactions", e.acq.store.Clear())
+
+	n, err := removeSettlementFiles(e.acq, published)
+	add("settlement_files", n)
+	note(err)
+	n = 0
+	if def {
+		// The SFT channel over HTTP is the default's alone.
+		n, err = s.ch.ClearArchive()
+		note(err)
+	}
+	add("archived_reports", n)
+	add("enrolment_rejections", e.desk.clearRejections())
+
+	if scope == simctl.ScopeAll {
+		add("answered_batches", e.desk.forgetAnswered())
+		n, err = wlsftp.RemoveFiles(e.acq.root, wlsftp.DirFromWLNordic, worldline.IsReceiptFilename)
+		add("enrolment_receipts", n)
+		note(err)
+		n = 0
+		if def {
+			n, err = s.restoreChannel()
+		} else {
+			err = wlsftp.EnsureLayout(e.acq.root)
+		}
+		add("channel_config", n)
+		note(err)
+	}
+	return errors.Join(errs...)
+}
+
 // removeSettlementFiles deletes the settlement files the cycle published,
 // from both download/ and to_WLNORDIC/: a name the cycle gives a file
 // (generated, or a fixture's own) with .pgp appended, or one the run
 // history says it published. The platform's enrolment batches beside them
 // in to_WLNORDIC/ never match.
-func (s *sim) removeSettlementFiles(published map[string]bool) (int, error) {
-	cut, err := s.acq.cfg.CutNames()
+func removeSettlementFiles(acq *settlementApp, published map[string]bool) (int, error) {
+	cut, err := acq.config().CutNames()
 	if err != nil {
 		cut = func(string) bool { return false }
 	}
@@ -163,7 +228,7 @@ func (s *sim) removeSettlementFiles(published map[string]bool) (int, error) {
 	var total int
 	errs := []error{err}
 	for _, dir := range []string{wlsftp.DirDownload, wlsftp.DirToWLNordic} {
-		n, err := wlsftp.RemoveFiles(s.acq.root, dir, ours)
+		n, err := wlsftp.RemoveFiles(acq.root, dir, ours)
 		total += n
 		errs = append(errs, err)
 	}

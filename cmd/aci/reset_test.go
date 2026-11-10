@@ -13,6 +13,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/aci"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/labswitch"
+	"github.com/webduvet/fintechlab-simple/internal/tenant"
 )
 
 // target stands in for the platform's webhook listener and counts the
@@ -145,7 +146,7 @@ func TestADeliveryPutBeforeAResetIsNotSent(t *testing.T) {
 	a, _ := testServer(t, tg)
 	rec := &aci.Record{ID: "aci_evt_1", TargetURL: tg.srv.URL, BodyMode: "raw", CiphertextHex: "00"}
 	before := a.sent.Put(rec)
-	a.reset()
+	a.reset(tenant.All)
 	a.deliver(rec, before)
 	if n := tg.attempts(); n != 0 {
 		t.Fatalf("%d attempt(s) for a record the reset removed", n)
