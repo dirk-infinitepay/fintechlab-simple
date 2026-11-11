@@ -131,6 +131,14 @@ below is what the code does.
     again on a restart). Balances and payouts are lost on a restart, as
     they are today.
 
+    **[DECIDED 2026-11-11, built]** Banking Circle's, yes: a redeploy of
+    the cloud lab mid-run took a platform's safeguarding balance and its
+    subscription with it. Everything it holds is written to
+    `BC_STATE_PATH` (`/bc-data/state.json`), as B4B's is, and a payout
+    interrupted by a restart finishes after it
+    ([banking-circle.md](../api/services/banking-circle.md#state-file)).
+    Worldline's is unchanged.
+
 24. **What does an admin call that names no environment mean?**
     *Proposal:* `default`, so today's scripts, buddy's runner and the e2e
     suite keep working untouched. `Lab-Environment: *` means all, for a

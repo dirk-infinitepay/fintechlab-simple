@@ -4,7 +4,7 @@
 
 | Sim (this repo) | Prod |
 | --- | --- |
-| In-memory ledger, lost on restart | Durable books, reconciliation |
+| A ledger in memory or in one JSON file, rewritten whole | Durable books, reconciliation |
 | Fake IBANs `GB00SIM…` | Issued IBANs, sanctions, KYC |
 | HMAC secret `sim-hmac-dev-only` | Rotated secrets in a vault |
 | Allowlist = compose hostnames | Named public CIDRs + mTLS + WAF |

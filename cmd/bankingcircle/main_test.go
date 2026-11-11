@@ -53,6 +53,16 @@ func newTestApp(t *testing.T) *app {
 // process log, for a test whose deliveries may finish after it has.
 func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app {
 	t.Helper()
+	a := buildTestApp(t, logf, 5*time.Millisecond, 5*time.Millisecond)
+	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+	return a
+}
+
+// buildTestApp is a test app without its bank: newTestAppLogging makes one
+// at once, a test of the state file opens one from the file (app.open).
+// delay is PROCESSING_DELAY, flush the batch flush interval.
+func buildTestApp(t *testing.T, logf func(format string, args ...any), delay, flush time.Duration) *app {
+	t.Helper()
 	list, err := allowlist.Parse("127.0.0.1,localhost")
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +84,7 @@ func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app
 		Schedule:                          []bankingcircle.RetryStep{{After: bankingcircle.Duration(time.Millisecond)}},
 		TimeScale:                         1,
 		DeactivateAfterRetries:            1,
-		BatchFlushInterval:                bankingcircle.Duration(5 * time.Millisecond),
+		BatchFlushInterval:                bankingcircle.Duration(flush),
 		DefaultMaxNotificationsPerMessage: bankingcircle.MinNotificationsPerMessage,
 		RequestTimeout:                    bankingcircle.Duration(2 * time.Second),
 	}
@@ -83,9 +93,8 @@ func newTestAppLogging(t *testing.T, logf func(format string, args ...any)) *app
 	a.dispatch = bankingcircle.NewDispatcher(cfg, a.subs, a.mail, logf)
 	a.dispatch.Send = a.sendEncrypted
 	a.dispatch.OnQueued = a.recordQueued
-	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
-	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
-	a.traps = newTraps(5 * time.Millisecond)
+	a.engine = bankingcircle.NewEngine(ledger, delay, a.onTransition)
+	a.traps = newTraps(delay)
 	a.customers = a.newCustomers()
 	return a
 }

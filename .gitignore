@@ -27,6 +27,10 @@
 # payments). Lab data, same as the console registry.
 /b4b-data/
 
+# Banking Circle's state (balances, payments, subscriptions, notifications
+# not yet delivered, tokens). Lab data, same as B4B's.
+/bc-data/
+
 # Pod runtime output (CWD-relative, recipe-relative, or a test's package
 # directory). Must not be anchored to the repo root: `go test ./core/pod`
 # wrote keys under core/pod/pod-data/.

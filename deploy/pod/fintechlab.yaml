@@ -22,6 +22,7 @@
 #   fintechlab-sftp             /sftp   the SFT channel tree
 #   fintechlab-settlement-data  /data   settlement's state
 #   fintechlab-b4b-data         /b4b-data
+#   fintechlab-bc-data          /bc-data        Banking Circle's state
 #   fintechlab-console-data     /console-data   the lab API's merchant registry
 # and the config files a checkout mounts are baked into the images.
 apiVersion: v1
@@ -83,6 +84,8 @@ spec:
           mountPath: /data
         - name: b4b-data
           mountPath: /b4b-data
+        - name: bc-data
+          mountPath: /bc-data
         - name: console-data
           mountPath: /console-data
   containers:
@@ -329,10 +332,14 @@ spec:
           value: "5"
         - name: BC_SEED_SUBSCRIPTION_EMAIL
           value: "alerts@fintechlab-simple.local"
+        - name: BC_STATE_PATH
+          value: "/bc-data/state.json"
       volumeMounts:
         - name: keys
           mountPath: /keys
           readOnly: true
+        - name: bc-data
+          mountPath: /bc-data
     - name: b4b
       image: localhost/fintechlab/b4b:v1
       ports:
@@ -505,6 +512,9 @@ spec:
     - name: b4b-data
       persistentVolumeClaim:
         claimName: fintechlab-b4b-data
+    - name: bc-data
+      persistentVolumeClaim:
+        claimName: fintechlab-bc-data
     - name: console-data
       persistentVolumeClaim:
         claimName: fintechlab-console-data

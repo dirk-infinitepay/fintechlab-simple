@@ -576,7 +576,11 @@ func (a *app) supportsEnvironments(svc string) bool {
 // service whether it supports environments, and gives each one that does
 // exactly the customers the database has — so a sim that restarted (and
 // lost them) has them back within one interval, and one that missed a
-// delete forgets it.
+// delete forgets it. A sim that restarted (its started_at moved since it
+// was last given every customer, or the lab API has not seen it since its
+// own start) is given every customer again, the ones it lists included: a
+// sim that keeps its customers on disk may hold one as it was before a
+// change it missed while it was down.
 func (a *app) syncCustomers(ctx context.Context, every time.Duration) {
 	for {
 		a.syncOnce(ctx)
@@ -604,7 +608,8 @@ func (a *app) syncOnce(ctx context.Context) {
 		}
 		c, cancel := context.WithTimeout(ctx, 3*time.Second)
 		var info struct {
-			Environments bool `json:"environments"`
+			Environments bool      `json:"environments"`
+			StartedAt    time.Time `json:"started_at"`
 		}
 		_, err := a.simCall(c, http.MethodGet, s.ID, "/sim/info", nil, &info)
 		cancel()
@@ -613,10 +618,12 @@ func (a *app) syncOnce(ctx context.Context) {
 		}
 		a.envMu.Lock()
 		a.envAware[s.ID] = info.Environments
+		last, known := a.synced[s.ID]
 		a.envMu.Unlock()
 		if !info.Environments {
 			continue
 		}
+		restarted := !known || !last.Equal(info.StartedAt)
 		var body struct {
 			Customers []tenant.Status `json:"customers"`
 		}
@@ -631,17 +638,27 @@ func (a *app) syncOnce(ctx context.Context) {
 			has[st.Env] = true
 		}
 		want := map[string]bool{}
+		gaveAll := true
 		for _, e := range envs {
 			want[e.ID] = true
-			if !has[e.ID] {
+			if !has[e.ID] || restarted {
 				c, cancel := context.WithTimeout(ctx, 3*time.Second)
 				if status, err := a.simCall(c, http.MethodPut, s.ID, "/sim/customers/"+e.ID, customerOf(e), nil); err != nil || status >= 300 {
 					log.Printf("lab-api: sync: %s did not take %s: %v %d", s.ID, e.ID, err, status)
-				} else {
+					gaveAll = false
+				} else if !has[e.ID] {
 					log.Printf("lab-api: sync: gave %s environment %s", s.ID, e.ID)
 				}
 				cancel()
 			}
+		}
+		if restarted && gaveAll {
+			a.envMu.Lock()
+			if a.synced == nil {
+				a.synced = map[string]time.Time{}
+			}
+			a.synced[s.ID] = info.StartedAt
+			a.envMu.Unlock()
 		}
 		for env := range has {
 			if env != tenant.Default && !want[env] {

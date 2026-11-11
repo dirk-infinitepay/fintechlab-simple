@@ -67,7 +67,9 @@ func (a *app) customerArrived(c tenant.Customer, created bool) error {
 // customerLeft clears everything a customer made, as a reset of scope all
 // of its environment would, and its safeguarding accounts and tokens with
 // it: DELETE /sim/customers/{env}. Its tokens go first, so nothing it sends
-// from here on lands.
+// from here on lands. The state file is written before it answers, so a
+// restart cannot bring any of it back; the customer itself leaves the file
+// once the store has let it go (tenant.Customers.OnChange).
 func (a *app) customerLeft(env string) error {
 	tokens := a.tokens.drop(env)
 	var traps, steps int
@@ -79,7 +81,7 @@ func (a *app) customerLeft(env string) error {
 	})
 	cleared["tokens"], cleared["traps"], cleared["trap_steps"] = tokens, traps, steps
 	log.Printf("banking-circle: customer %s deleted — cleared %v", env, cleared)
-	return nil
+	return a.persistNow()
 }
 
 // customerFor is the environment a Banking Circle login belongs to: the

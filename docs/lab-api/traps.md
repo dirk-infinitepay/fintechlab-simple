@@ -202,9 +202,12 @@ armed ──(times reached)──▶ spent
   lists what was cancelled ([OPEN 9](open.md)).
 - `POST /sim/reset` disarms every trap and cancels every pending step
   ([sim-control.md §6](sim-control.md#6-post-simreset)).
-- Traps are in memory, like the rest of a run. A sim restart loses them,
-  except the standing traps a sim arms from its own environment at start
-  (`B4B_FORCE_FAILURE_BENEFICIARY_IDS`, `VERIFY_FORCE_DECLINE_IDS`).
+- Traps are in memory. A sim restart loses them, except the standing traps
+  a sim arms from its own environment at start
+  (`B4B_FORCE_FAILURE_BENEFICIARY_IDS`, `VERIFY_FORCE_DECLINE_IDS`). A sim
+  that keeps its records on disk (B4B, Banking Circle) leaves a record a
+  lost trap had caught where the trap had it, rather than walking it the
+  vendor's own way.
 
 ## 7. What a trap leaves behind
 

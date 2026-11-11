@@ -206,6 +206,10 @@ type SubscriptionStore struct {
 	idSeq   int
 	newID   func(prefix string) string
 	nowFunc func() string
+
+	// OnChange is called after each change to a subscription or its
+	// events. May be nil; it must not block or call back in.
+	OnChange func()
 }
 
 // NewSubscriptionStore returns an empty store. newID may be nil, in which
@@ -309,6 +313,7 @@ func (s *SubscriptionStore) Create(p CreateParams) (*Subscription, error) {
 		UpdatedAt:                  now,
 	}
 	s.subs[sub.ID] = sub
+	changed(s.OnChange)
 	return sub, nil
 }
 
@@ -364,6 +369,7 @@ func (s *SubscriptionStore) Update(id, ifMatch string, p UpdateParams) (*Subscri
 	}
 	sub.RowVersion = s.nextRowVersion()
 	sub.UpdatedAt = s.nowFunc()
+	changed(s.OnChange)
 	return sub, nil
 }
 
@@ -503,6 +509,7 @@ func (s *SubscriptionStore) setActiveLocked(sub *Subscription, active bool, reas
 	}
 	sub.RowVersion = s.nextRowVersion()
 	sub.UpdatedAt = s.nowFunc()
+	changed(s.OnChange)
 }
 
 // Delete removes a subscription under If-Match. Irreversible, as documented.
@@ -520,6 +527,7 @@ func (s *SubscriptionStore) Delete(id, ifMatch string) error {
 		delete(s.events, e.ID)
 	}
 	delete(s.subs, id)
+	changed(s.OnChange)
 	return nil
 }
 
@@ -558,6 +566,7 @@ func (s *SubscriptionStore) AddEvent(subscriptionID, eventType string, targetTyp
 	s.events[ev.ID] = ev
 	sub.RowVersion = s.nextRowVersion()
 	sub.UpdatedAt = s.nowFunc()
+	changed(s.OnChange)
 	return ev, nil
 }
 
@@ -604,6 +613,7 @@ func (s *SubscriptionStore) ReplaceTargets(eventID, ifMatch string, targetType T
 		})
 	}
 	ev.RowVersion = s.nextRowVersion()
+	changed(s.OnChange)
 	return ev, nil
 }
 
@@ -631,6 +641,7 @@ func (s *SubscriptionStore) DeleteEvent(eventID, ifMatch string) error {
 		sub.UpdatedAt = s.nowFunc()
 	}
 	delete(s.events, eventID)
+	changed(s.OnChange)
 	return nil
 }
 

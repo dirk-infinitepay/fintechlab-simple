@@ -55,9 +55,11 @@ type app struct {
 	// default environment alone, as before environments.
 	db *labdb.DB
 	// envAware is, per lab service, whether it said it supports
-	// environments in its GET /sim/info at the last sync.
+	// environments in its GET /sim/info at the last sync; synced, the
+	// started_at it gave at the last sync that pushed it every customer.
 	envMu    sync.Mutex
 	envAware map[string]bool
+	synced   map[string]time.Time
 	// seederURL is the platform's seeder in the lab's pod (seeder.go):
 	// LAB_SEEDER_URL, empty when the lab runs none.
 	seederURL string

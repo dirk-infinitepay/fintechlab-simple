@@ -93,6 +93,10 @@ func (a *app) book(p *bankingcircle.Payment) bankingcircle.Payment {
 	b := a.engine.Book(p)
 	if a.traps != nil {
 		if caught, ok := a.traps.Offer(trap.Event{Env: p.Env, Hook: hookPayout, Subject: p.ID, Fields: fields}); ok {
+			// Marked before the path starts: a restart leaves a caught
+			// payout where the trap had it, rather than walking it the
+			// bank's own way (bankingcircle.Engine.Restore).
+			b.Caught(caught.TrapID)
 			caught.Run(a.stepper(b, caught.TrapID))
 			return b.Booked()
 		}

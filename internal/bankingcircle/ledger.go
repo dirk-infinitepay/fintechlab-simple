@@ -66,7 +66,8 @@ func (a *Account) opening() {
 	}
 }
 
-// Ledger is a tiny in-memory account store, same shape as cmd/bank's store.
+// Ledger is a tiny account store, same shape as cmd/bank's store, kept in
+// the state file with the rest of the bank (state.go).
 type Ledger struct {
 	mu      sync.Mutex
 	accts   map[string]*Account
@@ -75,6 +76,11 @@ type Ledger struct {
 	// it was seeded at: what a reset puts back. Accounts opened later by a
 	// payout (GetOrCreate) are not in it.
 	seeded map[string]int64
+
+	// OnChange is called after each change to an account: one opened, a
+	// holder renamed, money moved. May be nil; it must not block or call
+	// back in.
+	OnChange func()
 }
 
 var (
@@ -132,7 +138,10 @@ func (l *Ledger) OpenSafeguarding(env, currency, holder string) (*Account, error
 		if a.Env != owner {
 			return nil, fmt.Errorf("%w: %s", ErrAccountNotYours, id)
 		}
-		a.Holder = holder
+		if a.Holder != holder {
+			a.Holder = holder
+			changed(l.OnChange)
+		}
 		cp := *a
 		return &cp, nil
 	}
@@ -142,6 +151,7 @@ func (l *Ledger) OpenSafeguarding(env, currency, holder string) (*Account, error
 	}
 	sum := sha256.Sum256([]byte(id))
 	l.seedLocked(owner, id, prefix+strings.ToUpper(hex.EncodeToString(sum[:]))[:8], holder, strings.ToUpper(currency), 0)
+	changed(l.OnChange)
 	cp := *l.accts[id]
 	return &cp, nil
 }
@@ -216,6 +226,7 @@ func (l *Ledger) GetOrCreateIn(env, id, currency string) (*Account, error) {
 	}
 	l.accts[id] = a
 	l.byVIBAN[a.VIBAN] = a
+	changed(l.OnChange)
 	cp := *a
 	return &cp, nil
 }
@@ -265,6 +276,7 @@ func (l *Ledger) Move(fromID, toID string, cents int64) (from, to *Account, err 
 	t.cents += cents
 	f.Balance = money.Format(f.cents)
 	t.Balance = money.Format(t.cents)
+	changed(l.OnChange)
 	fcp, tcp := *f, *t
 	return &fcp, &tcp, nil
 }
@@ -283,6 +295,7 @@ func (l *Ledger) Credit(toID string, cents int64) (*Account, error) {
 	t.opening()
 	t.cents += cents
 	t.Balance = money.Format(t.cents)
+	changed(l.OnChange)
 	cp := *t
 	return &cp, nil
 }

@@ -71,17 +71,20 @@ make start    # restart from the images already built
   `--no-deps`: `podman-compose up -d --no-deps console` runs the console with
   `--requires` on everything it `depends_on`, and recreates or restarts bank,
   receiver, verify, banking-circle, worldline, b4b and settlement with it —
-  even with `compose.yml` unchanged since the lab came up. Banking Circle's
-  in-memory state (the platform's subscription included) goes with it; after
-  a compose.yml edit the dependants were also left `Created` rather than
-  running. So treat a console rebuild as a lab restart: `make up`, then
-  restart the runner (next point).
-- **After the lab restarts, restart the runner.** A fresh banking-circle has
-  no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
-  needs the restart to get a new subscription (its id changes every time —
-  read it from `GET :8097/v1/banking-circle/subscriptions`). The runner's
-  card and clock need nothing: it re-registers within ten seconds of a
-  lab API restart, and keeps the last offset while the clock is away.
+  even with `compose.yml` unchanged since the lab came up. After a
+  compose.yml edit the dependants were also left `Created` rather than
+  running. So treat a console rebuild as a lab restart: `make up` (next
+  point).
+- **A lab restart keeps Banking Circle's state.** It is in
+  `bc-data/state.json` (`BC_STATE_PATH`): the platform's subscription (same
+  id), its safeguarding balance, its bearer token and the payouts and
+  notifications in flight all come back, so the runner needs no restart.
+  It does when that state is gone — `bc-data/` deleted, or a `POST
+  /sim/reset` of scope `all` — since buddy's `apps/banking-circle`
+  subscribes only on boot (read the new id from
+  `GET :8097/v1/banking-circle/subscriptions`). The runner's card and clock
+  need nothing: it re-registers within ten seconds of a lab API restart,
+  and keeps the last offset while the clock is away.
 
 Runner, from `~/infinite/buddy/infinite-local-runner`. Its generic half is
 the library `~/gh/fintechlab-runner`, linked into the runner's
@@ -165,7 +168,7 @@ curl -s -H "$A" -X DELETE localhost:8097/v1/environments/e2e-1          # gone, 
 images (docs/deploy-pod.md), on the same ports — so `make down` first.
 Container names become `fintechlab-<service>` (e.g.
 `podman logs fintechlab-banking-circle`), and state lives in `fintechlab-*`
-volumes rather than `keys/`, `console-data/` and `b4b-data/`. `make pod-down`
+volumes rather than `keys/`, `console-data/`, `b4b-data/` and `bc-data/`. `make pod-down`
 stops it and keeps the volumes.
 
 ## The lab in the cloud
@@ -536,10 +539,10 @@ in the middle of a platform run you care about.
 
 ## Start clean, and read every service's log
 
-Between runs, reset the lab instead of restarting it: a restart loses
-Banking Circle's subscriptions and needs the runner restarted, a `flow`
-reset keeps them (and B4B's boarding, Worldline's enrolment, the merchant
-registry) and clears only what a run made.
+Between runs, reset the lab instead of restarting it: a restart keeps
+what the last run made (Banking Circle's and B4B's state are on disk), a
+`flow` reset clears only that, and keeps Banking Circle's subscriptions,
+B4B's boarding, Worldline's enrolment and the merchant registry.
 
 ```sh
 curl -s -XPOST localhost:8097/v1/lab/reset | python3 -c "
@@ -601,21 +604,24 @@ long to appear, and the panel refreshes every few seconds.
 - **The runner's balance check fails with Banking Circle `401` right after
   you rebuilt the console:** with podman-compose 1.0.6,
   `podman-compose up -d --no-deps console` still recreates the services the
-  console depends on — Banking Circle, B4B, worldline, the bank — and they
-  keep tokens and subscriptions in memory. Restart the runner after any
-  console rebuild, as after any lab restart.
+  console depends on — Banking Circle, B4B, worldline, the bank. Banking
+  Circle's tokens and subscriptions survive that (`bc-data/`); if the `401`
+  persists, `bc-data/` was emptied: restart the runner.
 - **Every runner process dies at start with "@fintechlab/runner is not
   linked":** the link script has not run — `bash init/link-lab-runner.sh`.
 - **Mailer `Service Unavailable` errors** in the runner log: the report
   emails have no mailer locally. Unrelated to payments.
 - **`IncomingPaymentProcessed` ignored** by accounts-settlement: buddy does
   not act on incoming payments (including returns) today.
-- **A subscription id you used an hour ago is gone:** the lab was restarted.
+- **A subscription id you used an hour ago is gone:** Banking Circle's
+  state was emptied (`bc-data/` deleted) or reset with scope `all`; a
+  restart alone keeps it.
 - **The sweep logs `Banking Circle does not know paymentId=…` and closes a
-  root as `PARTIALLY_PROCESSED`:** that root's payouts were made before the
-  lab last restarted, and Banking Circle keeps payments in memory. The amber
-  `not found (404)` status reads in *Reconciliation reads* are the same thing.
-  Only roots from the current lab session say anything about the sweep.
+  root as `PARTIALLY_PROCESSED`:** that root's payouts were made before
+  Banking Circle's state was last emptied — a reset, or `bc-data/` deleted
+  (a plain restart keeps its payments). The amber `not found (404)` status
+  reads in *Reconciliation reads* are the same thing. Only roots from after
+  that say anything about the sweep.
 - **No *intraday reconciliation* arrow and an empty *Reconciliation reads*
   panel right after a run:** the sweep only takes stages an hour old by the
   lab clock. Advance the clock an hour and trigger it. The panel is

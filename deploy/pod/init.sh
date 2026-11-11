@@ -1,8 +1,8 @@
 #!/bin/sh
 # The pod's init container (deploy/pod/fintechlab.yaml): runs to completion,
 # as root, before any service in the pod starts. It does for the pod's named
-# volumes what `make certs sftp-dirs key-dirs console-dir b4b-dir` does for
-# a checkout's bind mounts.
+# volumes what `make certs sftp-dirs key-dirs console-dir b4b-dir bc-dir`
+# does for a checkout's bind mounts.
 #
 # Podman runs it once per `kube play`, not on a pod restart. What exists is
 # left alone, so the PKI and keys a platform was configured with survive a
@@ -17,7 +17,7 @@ mkdir -p /keys/certs /keys/b4b-keys /keys/wlsftp-keys \
 # own fake material, shared across a UID boundary (docs/security/ca-and-tls.md).
 chmod 777 /keys/b4b-keys /keys/wlsftp-keys \
   /sftp /sftp/out /sftp/staging /sftp/outbound /sftp/inbound /sftp/config /sftp/archive \
-  /data /b4b-data /console-data
+  /data /b4b-data /bc-data /console-data
 
 # The SFT channel's onboarding config, as a checkout has it in
 # sftp/config/. Seeded once: worldline rewrites it when you PUT /config.

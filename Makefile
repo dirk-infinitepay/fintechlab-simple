@@ -20,7 +20,7 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console e2e e2e-docker tidy rebuild pod-images pod-up pod-down pod-bundle cloud-manifest cloud-bundle
+.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir bc-dir up start down logs test vet fmt-check demo-payment console e2e e2e-docker tidy rebuild pod-images pod-up pod-down pod-bundle cloud-manifest cloud-bundle
 
 help:
 	@echo "make up             build, replace the containers, start the lab"
@@ -95,7 +95,7 @@ keys-regenerate:
 	fi
 	$(COMPOSE) down
 	rm -f "$(LAB_KEYS_DIR)"/certs/* "$(LAB_KEYS_DIR)"/b4b-keys/* "$(LAB_KEYS_DIR)"/wlsftp-keys/*
-	@$(MAKE) --no-print-directory certs key-dirs sftp-dirs console-dir b4b-dir
+	@$(MAKE) --no-print-directory certs key-dirs sftp-dirs console-dir b4b-dir bc-dir
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "new keys in $(LAB_KEYS_DIR). Restart the platform's runner, and download its .env again"
@@ -150,6 +150,16 @@ b4b-dir:
 	@mkdir -p b4b-data
 	@chmod 777 b4b-data
 
+# Banking Circle's own state: the safeguarding balances, the payouts and
+# where each had got to, the subscriptions, the notifications not yet
+# delivered and the bearer tokens. Same bind-mount-and-777 tradeoff as
+# b4b-data, for the same reason -- `cat bc-data/state.json` is everything
+# the bank remembers, and a bank that forgets the money on a restart takes
+# a run with it.
+bc-dir:
+	@mkdir -p bc-data
+	@chmod 777 bc-data
+
 # Why `up` tears down first under podman.
 #
 # podman-compose 1.x does not replace a container when its image changes:
@@ -174,7 +184,7 @@ else
 COMPOSE_UP = $(COMPOSE) up -d --build
 endif
 
-up: certs sftp-dirs key-dirs console-dir b4b-dir
+up: certs sftp-dirs key-dirs console-dir b4b-dir bc-dir
 	$(COMPOSE_UP)
 	@echo "lab is up. payment-api :8080  bank :8081  notifier :8082  receiver :8443"
 	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088  clock :8096"
@@ -204,7 +214,7 @@ else
 COMPOSE_START = $(COMPOSE) up -d
 endif
 
-start: certs sftp-dirs key-dirs console-dir b4b-dir
+start: certs sftp-dirs key-dirs console-dir b4b-dir bc-dir
 	$(COMPOSE_START)
 	@echo "lab restarted from the images already built. Use 'make up' after a code change."
 

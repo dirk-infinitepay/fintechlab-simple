@@ -343,9 +343,17 @@ services:
       # e2e suite sees batching happen rather than one-notification messages.
       BC_SEED_BATCH_SIZE: "5"
       BC_SEED_SUBSCRIPTION_EMAIL: alerts@fintechlab-simple.local
+      # Everything the bank has been told: the safeguarding balances, the
+      # payouts and where each had got to, the subscriptions with their
+      # keys, the notifications not yet delivered, the bearer tokens and the
+      # customers. A restart that forgot them took a run's money and its
+      # webhook subscription with it; with them, a payout interrupted by a
+      # restart finishes after it.
+      BC_STATE_PATH: /bc-data/state.json
     volumes:
       - ${LAB_KEYS_DIR:-./keys}/certs:/keys/certs:ro
       - ./config:/config:ro
+      - ./bc-data:/bc-data:rw
     depends_on:
       receiver:
         condition: service_started

@@ -44,7 +44,7 @@ Parameters:
     Type: Number
     Default: 20
     MinValue: 10
-    Description: podman's images, containers and the pod's five named volumes.
+    Description: podman's images, containers and the pod's six named volumes.
   DomainName:
     Type: String
     Default: ""

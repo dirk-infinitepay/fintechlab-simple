@@ -214,10 +214,12 @@ The pattern is the same everywhere:
 
 - **Customers are pushed to the sim on its control port**, with
   `PUT /sim/customers/{env}` and the credentials it should accept. The lab
-  DB is their record, because Banking Circle's and Worldline's state is in
-  memory. When a sim's `/sim/info` epoch changes (it restarted), the lab API
-  pushes its customers again, so a platform's credentials survive a lab
-  restart.
+  DB is their record: most sims keep them in memory. When a sim's
+  `/sim/info` `started_at` changes (it restarted), the lab API pushes its
+  customers again, so a platform's credentials survive a lab restart.
+  Banking Circle also keeps its customers in its state file, with its
+  records: a customer the lab deleted while it was down is still listed
+  when it comes back, so the sync deletes it and everything it made.
 - **Each record gets an owner:** an account, payout, subscription, company,
   beneficiary, payment, transaction or file. The sim sets it from the
   customer the vendor call authenticated as.

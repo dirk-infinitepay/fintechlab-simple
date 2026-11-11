@@ -33,6 +33,12 @@
 // The bank serves several platforms at once, one customer per environment
 // (environments.go): its login says whose a call is, and everything a
 // customer makes is its own.
+//
+// Everything it is told is written to one state file (BC_STATE_PATH,
+// state.go), so a restart -- a redeploy of the lab included -- keeps the
+// balances, the subscriptions, the tokens and the payouts and notifications
+// in flight, and picks the work up where it stopped. SIGTERM writes it a
+// last time with nothing moving.
 package main
 
 import (
@@ -50,9 +56,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
@@ -109,12 +117,16 @@ type app struct {
 	customers *tenant.Customers
 	// listeners are the vendor-facing addresses, for GET /sim/info.
 	listeners []string
+	// state is the state file (state.go), written on every change; nil
+	// keeps everything in memory.
+	state *stateFile
 }
 
 func main() {
 	logring.Install()
 	addr := env("LISTEN", ":8085")
 	internalAddr := env("INTERNAL_LISTEN", ":8095")
+	statePath := env("BC_STATE_PATH", "/bc-data/state.json")
 	delay := envDuration("PROCESSING_DELAY", 2*time.Second)
 	dest := env("WEBHOOK_URL", "https://receiver:8443/webhooks")
 	spec := env("WEBHOOK_ALLOWLIST", "receiver,receiver:8443,localhost,127.0.0.1")
@@ -210,38 +222,45 @@ func main() {
 	// lab's engine can fire, so a demo works without an explicit subscribe
 	// call first. A real client creates its own and picks its own events;
 	// this is a convenience, and every field on it is one the real API
-	// would have required.
-	seeded, err := a.subs.Create(bankingcircle.CreateParams{
-		Endpoint:                   dest,
-		EncryptionKey:              string(notifKey),
-		Status:                     bankingcircle.StatusActive,
-		Email:                      env("BC_SEED_SUBSCRIPTION_EMAIL", "alerts@fintechlab-simple.local"),
-		MaxNotificationsPerMessage: envInt("BC_SEED_BATCH_SIZE", bankingcircle.MinNotificationsPerMessage),
-	})
-	if err != nil {
-		log.Fatalf("seed default subscription: %v", err)
-	}
-	for _, et := range []bankingcircle.NotificationType{
-		bankingcircle.NotificationOutgoingPaymentBooked,
-		bankingcircle.NotificationOutgoingPaymentProcessed,
-		bankingcircle.NotificationOutgoingPaymentRejected,
-		bankingcircle.NotificationMissingFunding,
-		bankingcircle.NotificationReversed,
-		bankingcircle.NotificationIncomingPaymentProcessed,
-		bankingcircle.NotificationIncomingPaymentBooked,
-		bankingcircle.NotificationPaymentStatus,
-	} {
-		// No targetIds: subscription-wide, which is what a seed should be.
-		if _, err := a.subs.AddEvent(seeded.ID, string(et), bankingcircle.TargetCompany, nil); err != nil {
-			log.Fatalf("seed subscription event %s: %v", et, err)
+	// would have required. On the first start only: after that it is the
+	// state file's, with whatever the platform did to it since.
+	seed := func() error {
+		seeded, err := a.subs.Create(bankingcircle.CreateParams{
+			Endpoint:                   dest,
+			EncryptionKey:              string(notifKey),
+			Status:                     bankingcircle.StatusActive,
+			Email:                      env("BC_SEED_SUBSCRIPTION_EMAIL", "alerts@fintechlab-simple.local"),
+			MaxNotificationsPerMessage: envInt("BC_SEED_BATCH_SIZE", bankingcircle.MinNotificationsPerMessage),
+		})
+		if err != nil {
+			return fmt.Errorf("seed default subscription: %w", err)
 		}
+		for _, et := range []bankingcircle.NotificationType{
+			bankingcircle.NotificationOutgoingPaymentBooked,
+			bankingcircle.NotificationOutgoingPaymentProcessed,
+			bankingcircle.NotificationOutgoingPaymentRejected,
+			bankingcircle.NotificationMissingFunding,
+			bankingcircle.NotificationReversed,
+			bankingcircle.NotificationIncomingPaymentProcessed,
+			bankingcircle.NotificationIncomingPaymentBooked,
+			bankingcircle.NotificationPaymentStatus,
+		} {
+			// No targetIds: subscription-wide, which is what a seed should be.
+			if _, err := a.subs.AddEvent(seeded.ID, string(et), bankingcircle.TargetCompany, nil); err != nil {
+				return fmt.Errorf("seed subscription event %s: %w", et, err)
+			}
+		}
+		log.Printf("banking-circle: seeded subscription %s -> %s (batch=%d, retries=%d, time_scale=%g)",
+			seeded.ID, dest, seeded.MaxNotificationsPerMessage,
+			deliveryCfg.DeactivateAfterRetries, deliveryCfg.TimeScale)
+		return nil
 	}
-	log.Printf("banking-circle: seeded subscription %s -> %s (batch=%d, retries=%d, time_scale=%g)",
-		seeded.ID, dest, seeded.MaxNotificationsPerMessage,
-		deliveryCfg.DeactivateAfterRetries, deliveryCfg.TimeScale)
-	// Taken after the seed, before any listener: the subscriptions as
-	// they stand now are what a reset of scope all puts back.
-	a.bank = bankingcircle.NewBank(a.engine, a.dispatch)
+	// Restore before anything can serve: money that landed a second before
+	// the restart is there a second after it, and a payout caught
+	// mid-lifecycle walks on rather than hanging (state.go).
+	if err := a.open(statePath, seed); err != nil {
+		log.Fatalf("banking-circle state: %v", err)
+	}
 
 	// The control surface: the lab's /sim hooks on a port of their own,
 	// apart from the vendor's login (internal/simctl).
@@ -249,12 +268,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("banking-circle: %v", err)
 	}
-	ctl.Start()
+	control := &http.Server{Addr: ctl.Addr(), Handler: ctl.Handler()}
+	log.Printf("banking-circle: control listening on %s", ctl.Addr())
+	go serve(control, func() error { return control.ListenAndServe() })
 
-	go func() {
-		log.Printf("banking-circle internal listening on %s (plain, no auth) — B4B bridge only", internalAddr)
-		log.Fatal(http.ListenAndServe(internalAddr, logReq(a.internalMux())))
-	}()
+	internal := &http.Server{Addr: internalAddr, Handler: logReq(a.internalMux())}
+	log.Printf("banking-circle internal listening on %s (plain, no auth) — B4B bridge only", internalAddr)
+	go serve(internal, func() error { return internal.ListenAndServe() })
 
 	// mTLS is optional. Real integrations vary -- some present a client
 	// certificate, some do not -- and a simulator that forces it on makes
@@ -269,8 +289,33 @@ func main() {
 	if err != nil {
 		log.Fatalf("tls listener: %v", err)
 	}
-	log.Printf("banking-circle listening on %s mtls=%s dest=%s allowlist=%s delay=%s", addr, mode, dest, spec, delay)
-	log.Fatal(http.Serve(ln, logReq(a.mux(ctl.Mux))))
+	vendor := &http.Server{Addr: addr, Handler: logReq(a.mux(ctl.Mux))}
+	log.Printf("banking-circle listening on %s mtls=%s dest=%s allowlist=%s delay=%s state=%s", addr, mode, dest, spec, delay, statePathLabel(statePath))
+	go serve(vendor, func() error { return vendor.Serve(ln) })
+
+	// A redeploy stops the container with SIGTERM: stop taking calls, let
+	// the bank's work stop where it stands, and write it all down once more.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer cancel()
+	<-ctx.Done()
+	log.Printf("banking-circle: stopping")
+	a.shutdown(vendor, internal, control)
+}
+
+// serve runs one listener until it is shut down. A listener that fails
+// otherwise stops the process: a bank half of whose surfaces are down is
+// not one to keep running.
+func serve(srv *http.Server, run func() error) {
+	if err := run(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("banking-circle: %s: %v", srv.Addr, err)
+	}
+}
+
+func statePathLabel(p string) string {
+	if p == "" {
+		return "(disabled, in-memory only)"
+	}
+	return p
 }
 
 // tlsListener builds the credentialed API's TLS listener. mode selects how
@@ -456,6 +501,9 @@ func (a *app) simRoutes() map[string]http.HandlerFunc {
 // platform's Banking Circle client out, and nothing the lab does needs one.
 // Work in flight is dropped, not raced (bankingcircle.Bank.ResetIn). Never
 // refused: nothing here is unsafe to cut short.
+//
+// The state file is written before it answers, so a restart cannot bring
+// back -- or resume -- anything it cleared.
 func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 	all := req.Scope == simctl.ScopeAll
 	scope := tenant.Normalize(req.Env)
@@ -469,7 +517,11 @@ func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetRes
 	if all {
 		kept = []string{"tokens"}
 	}
-	return simctl.ResetResult{Cleared: cleared, Kept: kept}, nil
+	res := simctl.ResetResult{Cleared: cleared, Kept: kept}
+	if err := a.persistNow(); err != nil {
+		return res, fmt.Errorf("reset in memory, but %w", err)
+	}
+	return res, nil
 }
 
 // internalMux is the lab-only, unauthenticated B4B<->Banking-Circle bridge
@@ -508,6 +560,8 @@ func (a *app) incomingPayments(bridge bool) http.HandlerFunc {
 type tokenStore struct {
 	mu     sync.Mutex
 	tokens map[string]issuedToken
+	// onChange is called after a token is issued or dropped (state.go).
+	onChange func()
 }
 
 // issuedToken is one bearer token: when it expires, and the environment of
@@ -530,7 +584,14 @@ func (s *tokenStore) issueTo(env string, ttl time.Duration) string {
 	s.mu.Lock()
 	s.tokens[tok] = issuedToken{expires: time.Now().Add(ttl), env: tenant.Normalize(env)}
 	s.mu.Unlock()
+	s.changed()
 	return tok
+}
+
+func (s *tokenStore) changed() {
+	if s.onChange != nil {
+		s.onChange()
+	}
 }
 
 func (s *tokenStore) valid(tok string) bool {
@@ -557,7 +618,6 @@ func (s *tokenStore) lookup(tok string) (string, bool) {
 func (s *tokenStore) drop(env string) int {
 	env = tenant.Normalize(env)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	n := 0
 	for tok, t := range s.tokens {
 		if t.env == env {
@@ -565,6 +625,8 @@ func (s *tokenStore) drop(env string) int {
 			n++
 		}
 	}
+	s.mu.Unlock()
+	s.changed()
 	return n
 }
 

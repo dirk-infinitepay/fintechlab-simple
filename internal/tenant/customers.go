@@ -87,13 +87,20 @@ var ErrUnknown = errors.New("no such environment here")
 // and is only tracked for when it was last seen.
 //
 // The lab API's database is their record, and it pushes them again when a
-// sim restarts, so a sim may keep them in memory.
+// sim restarts, so a sim may keep them in memory. One that keeps records on
+// disk keeps its customers with them (OnChange), so a record whose
+// environment the lab has since deleted is still listed, and the lab API's
+// sync deletes it.
 type Customers struct {
 	// OnPut and OnDelete are the sim's own work when a customer arrives or
 	// goes: opening its accounts, making its SFTP folder, clearing what it
 	// made. Both are called without the store's lock held.
 	OnPut    func(c Customer, created bool) error
 	OnDelete func(env string) error
+	// OnChange is called once a Put or a Delete has taken effect -- the
+	// customer is in the store, or gone from it -- without the store's lock
+	// held: a sim that writes its customers down writes them then.
+	OnChange func()
 
 	mu          sync.Mutex
 	m           map[string]*entry
@@ -125,12 +132,19 @@ func (s *Customers) Put(c Customer) (bool, error) {
 	// A customer the sim could not set up stays known, so its login is
 	// refused rather than taken for the default's; the lab API checks a
 	// customer before it pushes one, and a corrected one replaces it.
+	defer s.changed()
 	if s.OnPut != nil {
 		if err := s.OnPut(c, !ok); err != nil {
 			return !ok, err
 		}
 	}
 	return !ok, nil
+}
+
+func (s *Customers) changed() {
+	if s.OnChange != nil {
+		s.OnChange()
+	}
 }
 
 // Get is env's customer.
@@ -164,6 +178,7 @@ func (s *Customers) Delete(env string) error {
 	s.mu.Lock()
 	delete(s.m, env)
 	s.mu.Unlock()
+	s.changed()
 	return nil
 }
 

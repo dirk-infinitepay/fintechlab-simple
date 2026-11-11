@@ -5,6 +5,7 @@ certs
 b4b-keys
 wlsftp-keys
 b4b-data
+bc-data
 console-data
 sftp/out
 sftp/staging

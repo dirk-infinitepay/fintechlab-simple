@@ -17,8 +17,9 @@ customer per [environment](#environments), each with its own login,
 safeguarding accounts, payouts and subscriptions. Simplified: a login no
 customer has is accepted, as the default environment's; no
 payment-creation endpoint (real Banking Circle has none; B4B bridges in),
-no FX, bulk payments, direct debits or bank holidays, and everything is in
-memory.
+no FX, bulk payments, direct debits or bank holidays. What it holds is
+kept in one [state file](#state-file), so a restart picks up where it
+stopped.
 
 ## At a glance
 
@@ -28,7 +29,7 @@ memory.
 | Auth | `:8085`: TLS 1.2+ with a server certificate from the lab CA. A client certificate per `BC_MTLS` (`require`, the default and compose's; `optional`; `off`), verified against `CA_FILE`; without one under `require` the handshake fails and there is no HTTP answer. Then `GET /api/v1/authorizations/authorize` with a customer's login, or any other non-empty Basic credentials (the default environment's), returns a bearer token for that customer, and every other route on `:8085` except `GET /health` needs `Authorization: Bearer <token>` (`401` `{"error": "bearer token required", "status": 401}` otherwise). `:8095`: none. The control port: no vendor auth, no TLS. It takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | the lab API's connect kit (`GET :8097/v1/connect/env/banking-circle`): `BC_AUTH_BASE_URL` and `BC_API_BASE_URL` (both `https://…:8085`), `BC_API_M2M_USERNAME`, `BC_API_M2M_PASSWORD`, `BC_API_MTLS_ENABLED`, `BC_API_CLIENT_CERT_PEM_BASE64`, `BC_API_CLIENT_KEY_PEM_BASE64`, `BC_SAFEGUARDING_ACCOUNT_ID_EUR`, `BC_SAFEGUARDING_ACCOUNT_ID_GBP`, `NODE_EXTRA_CA_CERTS`. Lab peers: `BANKING_CIRCLE_URL` on b4b (the bridge, `:8095`), `BC_INTERNAL_URL` on worldline and settlement (the bridge), `CONSOLE_URL_BANKING_CIRCLE` on the lab API (the control port is its port + 1000, or `CONSOLE_CONTROL_URL_BANKING_CIRCLE`), `BANKING_CIRCLE_URL` (`:8085`) on the e2e suite, which reaches the rest through the lab API. The same name `BANKING_CIRCLE_URL` means the bridge on b4b and the Connect API in the e2e suite |
 | Activity logs | `GET /sim/activity` (on the control port) keeps four logs. `payments` (*Payments received*): `payment.create` for each `POST /internal/payments`, `payment.incoming` for each `POST /internal/incoming-payments` and `POST /sim/incoming-payments`, written from the caller's request so a refused one still shows its amount; `payment.state` for each state a trap's step took a payout to, with `detail.trap` (green when processed, amber otherwise). `notifications` (*Notifications sent*): `notification` for each encrypted batch POST (every retry is its own line; red on a non-2xx or a refused connection), `notification.queued` for each batch parked behind a pause, `notification.pause` for each pause and resume; a batch carrying a notification a trap's step made has `detail.trap` (the trap ids, comma-separated). `reports` (*Reconciliation reads*): `report.intraday`, `report.rejection` and `payment.status`, amber when refused or not found. `traps` (*Traps*): `trap.armed`, `trap.caught`, `trap.step`, `trap.diverted` (amber), `trap.disarmed`, each with `detail.trap`. Each event carries `env` when it is not the default environment's, and `?env=` picks whose are shown. `POST /sim/reset` empties all four for the environment it resets |
-| Configuration | The important variables are in the table below. Seeded at start, the default environment's: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. A restart forgets tokens, subscriptions, payments, balances, traps and the customers (the lab API pushes them again). `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`), in the environment it names |
+| Configuration | The important variables are in the table below. Seeded on the first start (no state file, or an empty one), the default environment's: the safeguarding accounts `00000000-0000-4000-8000-000000000978` (EUR, vIBAN `BE00SIMSGA00000001`) and `00000000-0000-4000-8000-000000000826` (GBP, `GB00SIMSGA00000001`), both `0.00`; and one active subscription to `WEBHOOK_URL`, subscribed subscription-wide (target type `1`, no targets) to `OutgoingPaymentBooked`, `OutgoingPaymentProcessed`, `OutgoingPaymentRejected`, `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`, `IncomingPaymentBooked` and `PaymentStatus`. Everything the bank is told is written to `BC_STATE_PATH` and survives a restart, work in flight included; the traps and the activity logs do not ([State file](#state-file)). `POST /sim/reset` forgets the run and keeps the subscriptions, accounts and tokens (`flow`), or puts back this seed and keeps the tokens (`all`), in the environment it names |
 | Design record | [ARCHITECTURE-banking-circle-webhooks.md](../../ARCHITECTURE-banking-circle-webhooks.md) (subscriptions, batching, retries, the lab-only endpoints), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §3 and Addendum B, C, G and H (auth, webhook cipher, the bridge, two listeners, UUID account ids, the reconciliation reads), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §1 (the safeguarding-account model), [structure/banking-circle.md](../../structure/banking-circle.md). [ARCHITECTURE-banking-circle.md](../../ARCHITECTURE-banking-circle.md) is superseded |
 
 | Variable | Default | Effect |
@@ -45,6 +46,7 @@ memory.
 | `BC_DELIVERY_CONFIG` | `/config/banking-circle.json` | Retry schedule, email steps, `batch_flush_interval` (2 s), default batch size. A missing file means the documented schedule at real time |
 | `BC_TIME_SCALE` | unset (compose `86400`) | Overrides the file's `time_scale` (3600): every retry delay is divided by it. At 86400 the whole schedule takes about four seconds |
 | `BANK_CREDIT_URL` | empty (compose `http://bank:8081/internal/credit`) | Where a processed payout is credited. Empty turns that hop off |
+| `BC_STATE_PATH` | `/bc-data/state.json` (compose binds `./bc-data`; the pod mounts the `fintechlab-bc-data` volume) | The [state file](#state-file). Empty keeps everything in memory, and a restart forgets it all |
 | `SIM_CONTROL_LISTEN` | `LISTEN`'s port + 1000 (`:9085`) | The control port's address |
 | `SIM_CONTROL_ALLOW` | unset | Comma-separated addresses or CIDRs the control port takes calls from; anything else is `403`. Unset, anything that can reach it. A malformed list is fatal at start |
 
@@ -105,6 +107,55 @@ before there were environments.
 - **Deleting a customer** (`DELETE /sim/customers/{env}`) clears everything
   it made, as a reset of scope `all` would, and its safeguarding accounts,
   tokens and traps with it.
+
+## State file
+
+Everything the bank is told is written to one JSON file, `BC_STATE_PATH`
+(`/bc-data/state.json`): whole, write-then-rename, within a quarter of a
+second of each change, and once more on `SIGTERM`, after the listeners
+have stopped and with nothing moving. It is read once at start, before any
+listener opens. No file, or an empty one, is a first start: the seed under
+*Configuration* is made then and only then, so a `WEBHOOK_URL` or
+`BC_SEED_*` changed later takes effect only with a new file. A file the
+bank cannot write is logged, not fatal: the bank carries on in memory.
+
+**Survives a restart:**
+
+- Every account, both environments' safeguarding accounts and the creditor
+  accounts payouts opened, with its balance, the day its
+  `beginOfDayAmount` belongs to, and what a reset puts it back to.
+- Every payment in the state it had reached, and the reference counter
+  (no `010F10…` is handed out twice). A payout still
+  `OutgoingPaymentBooked` is processed after the restart, and money in
+  still `IncomingPaymentBooked` too, each after `PROCESSING_DELAY`; only
+  the notifications still to come fire.
+- Every subscription with its id, events, targets, status, `rowVersion`
+  and encryption key, the counters behind them, and the seed a reset of
+  scope `all` puts back: the first start's, same id.
+- Every notification not yet delivered: batching, parked behind a pause,
+  retained after a deactivation, or mid-delivery; and the pauses. One
+  that was mid-delivery is sent again from its first attempt, so a
+  subscriber may get it twice (Banking Circle delivers at least once),
+  never not at all.
+- The emails (`GET /sim/emails`).
+- Every bearer token not yet expired, and whose it is: a platform's cached
+  token keeps working.
+- The customers, as far as the bank reads them (`env`, `name`,
+  `banking_circle`, `webhook_hosts`). A customer's token works the moment
+  the bank is back, and a customer the lab deleted meanwhile is still
+  listed, so the lab API's sync deletes it and everything it made. The lab
+  API pushes every customer again once the bank's `started_at` moves, so
+  none is kept stale.
+
+**Does not:** the traps and the steps they had scheduled
+([traps.md §6](../../lab-api/traps.md)), the outcome queue's included: a
+payout a trap held stays where it stopped, never walked the bank's own
+way. The activity logs. A credit to the business bank on the wire when the
+process stopped (fire-and-forget, as ever). A process killed without
+`SIGTERM` loses at most its last quarter of a second.
+
+`POST /sim/reset` and `DELETE /sim/customers/{env}` write the file before
+they answer, so a restart never brings back what they cleared.
 
 ## Vendor surface
 
@@ -672,7 +723,8 @@ Puts the bank back to a known state. Synchronous, and never refused.
   Reference numbers keep counting, so no `010F10…` reference is handed out
   twice.
 - **`all`** also puts back what start-up seeded: the seeded subscription
-  alone, as it was at start (same id and `rowVersion`); the two
+  alone, as the first start made it (same id and `rowVersion`, across
+  restarts too); the two
   safeguarding accounts alone; references from `010F100000000001` once no
   payment of any environment is left.
 - **Tokens survive both scopes.** A lab reset never logs the platform's
@@ -685,6 +737,9 @@ Puts the bank back to a known state. Synchronous, and never refused.
   mid-retry is never sent, mails nothing and deactivates nothing. A webhook
   or credit already on the wire is aborted, so a hung subscriber does not
   hold the reset up.
+- The [state file](#state-file) is written before the answer, so a restart
+  brings nothing back. `500` if it could not be: the reset stands in
+  memory, and the error says the file is behind.
 
 ```json
 {"service": "banking-circle", "scope": "flow", "env": "default",
@@ -740,6 +795,8 @@ Removes a customer, and everything it made.
   (safeguarding accounts included) and activity are cleared, as
   `POST /sim/reset` of scope `all` would, and its work in flight is
   dropped. Its login is then an unknown one, the default environment's.
+  The [state file](#state-file) is written without them before the
+  answer.
 
 ### `GET /sim/emails`
 

@@ -41,6 +41,11 @@ type Dispatcher struct {
 	// look like. May be nil.
 	OnQueued func(sub *Subscription, env Envelope)
 
+	// OnChange is called after each change to what Snapshot copies: a
+	// notification queued, sent on, delivered, retained or parked, a pause.
+	// May be nil; it must not block or call back in.
+	OnChange func()
+
 	mu     sync.Mutex
 	queues map[string]*queue
 	// pending holds notifications for subscriptions that were deactivated
@@ -62,7 +67,8 @@ type Dispatcher struct {
 	queued map[string][]Notification
 	// inflight is every batch on its way out: being sent, or waiting out
 	// the retry schedule. Kept so a reset can say how many notifications it
-	// dropped mid-delivery.
+	// dropped mid-delivery, and so the state file holds what a restart
+	// would otherwise lose before the subscriber had it.
 	inflight map[*flight]struct{}
 	// owners is the environment of every subscription the dispatcher has
 	// held anything for, so a reset of one environment finds its own even
@@ -78,10 +84,13 @@ type queue struct {
 }
 
 // flight is one batch's delivery, counted by its notifications, in its
-// subscription's environment.
+// subscription's environment: the subscription's id and the batch itself,
+// for the state file.
 type flight struct {
-	n   int
-	env string
+	n     int
+	env   string
+	sub   string
+	batch []Notification
 }
 
 // NewDispatcher builds a Dispatcher. logf may be nil.
@@ -127,6 +136,7 @@ func (d *Dispatcher) EnqueueFrom(started uint64, sub *Subscription, n Notificati
 	if parked, dropped := d.park(sub, []Notification{n}, started, nil); parked || dropped {
 		return
 	}
+	defer changed(d.OnChange)
 
 	size := d.batchSize(sub)
 
@@ -150,7 +160,7 @@ func (d *Dispatcher) EnqueueFrom(started uint64, sub *Subscription, n Notificati
 			q.timer.Stop()
 			q.timer = nil
 		}
-		f := d.launchLocked(len(batch), sub.Env)
+		f := d.launchLocked(sub.ID, sub.Env, batch)
 		d.mu.Unlock()
 		d.deliverLaunched(sub, batch, started, f)
 		return
@@ -204,8 +214,9 @@ func (d *Dispatcher) flush(subscriptionID string) {
 	// Read under d.mu, where a reset clears the queues: whatever was still
 	// queued belongs to the run now.
 	started := d.run.Current()
-	f := d.launchLocked(len(batch), q.env)
+	f := d.launchLocked(subscriptionID, q.env, batch)
 	d.mu.Unlock()
+	changed(d.OnChange)
 
 	sub, err := d.subs.Get(subscriptionID)
 	if err != nil {
@@ -217,12 +228,12 @@ func (d *Dispatcher) flush(subscriptionID string) {
 	d.deliverLaunched(sub, batch, started, f)
 }
 
-// launchLocked counts a batch of n, env's, as on its way out, and as work
-// Wait waits for: counted under d.mu, so a reset or a Wait that comes after
-// it is ordered after it too. Whoever launches a flight delivers it
-// (deliverLaunched) or calls d.wg.Done. Caller holds d.mu.
-func (d *Dispatcher) launchLocked(n int, env string) *flight {
-	f := &flight{n: n, env: env}
+// launchLocked counts a batch for subscription id, env's, as on its way out,
+// and as work Wait waits for: counted under d.mu, so a reset or a Wait that
+// comes after it is ordered after it too. Whoever launches a flight
+// delivers it (deliverLaunched) or calls d.wg.Done. Caller holds d.mu.
+func (d *Dispatcher) launchLocked(id, env string, batch []Notification) *flight {
+	f := &flight{n: len(batch), env: env, sub: id, batch: batch}
 	d.inflight[f] = struct{}{}
 	d.wg.Add(1)
 	return f
@@ -237,6 +248,7 @@ func (d *Dispatcher) land(f *flight) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.inflight, f)
+	changed(d.OnChange)
 }
 
 // deliverLaunched runs one launched batch through the retry schedule in its
@@ -358,6 +370,7 @@ func (d *Dispatcher) retain(sub *Subscription, batch []Notification) {
 	defer d.mu.Unlock()
 	d.owners[sub.ID] = sub.Env
 	d.pending[sub.ID] = append(d.pending[sub.ID], batch...)
+	changed(d.OnChange)
 }
 
 // Pending reports how many notifications are held for redelivery.
@@ -402,6 +415,7 @@ func (d *Dispatcher) Pause(subscriptionID string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.paused[subscriptionID] = true
+	changed(d.OnChange)
 	return len(d.queued[subscriptionID])
 }
 
@@ -433,9 +447,10 @@ func (d *Dispatcher) Resume(sub *Subscription) int {
 	for start := 0; start < len(held); start += size {
 		end := min(start+size, len(held))
 		batches = append(batches, held[start:end])
-		flights = append(flights, d.launchLocked(end-start, sub.Env))
+		flights = append(flights, d.launchLocked(sub.ID, sub.Env, held[start:end]))
 	}
 	d.mu.Unlock()
+	changed(d.OnChange)
 
 	if len(held) == 0 {
 		d.logf("banking-circle: delivery to %s resumed; nothing was waiting", sub.Endpoint)
@@ -494,6 +509,7 @@ func (d *Dispatcher) park(sub *Subscription, batch []Notification, started uint6
 	d.queued[sub.ID] = append(d.queued[sub.ID], batch...)
 	depth := len(d.queued[sub.ID])
 	d.mu.Unlock()
+	changed(d.OnChange)
 
 	d.logf("banking-circle: delivery to %s is paused; %d notification(s) queued (%d waiting)",
 		sub.Endpoint, len(batch), depth)

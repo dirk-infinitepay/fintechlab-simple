@@ -441,7 +441,11 @@ The lab API pushes each environment to every vendor that keeps them
 apart when it is created or changed, and checks every few seconds
 (`LAB_SYNC_INTERVAL`, default `5s`) that each vendor has exactly the
 environments the database has, so a vendor that restarted gets its
-customers back.
+customers back. A vendor whose `GET /sim/info` `started_at` moved (it
+restarted), or that the lab API has not synced since its own start, is
+given every environment again, the ones it lists included: Banking Circle
+keeps its customers on disk, and one changed while it was down would
+otherwise stay as it was.
 
 ### `GET /v1/environment`
 

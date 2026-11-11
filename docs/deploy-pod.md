@@ -15,7 +15,7 @@ source — a colleague's laptop, or a server the platform points at.
   │ console                                                    │
   └────────────────────────────────────────────────────────────┘
    published: 8080-8090, 8095, 8443, 2222 (the same as compose)
-   state: five named volumes (see "What persists")
+   state: six named volumes (see "What persists")
 ```
 
 ## From a checkout
@@ -77,6 +77,7 @@ kept by `podman kube down`:
 | `fintechlab-sftp` | `/sftp` | the SFT channel tree |
 | `fintechlab-settlement-data` | `/data` | settlement's state and archived files |
 | `fintechlab-b4b-data` | `/b4b-data` | everything B4B has been told |
+| `fintechlab-bc-data` | `/bc-data` | everything Banking Circle has been told: balances, payouts, subscriptions, notifications not yet delivered, tokens |
 | `fintechlab-console-data` | `/console-data` | the merchant registry |
 
 **The keys survive every play.** A redeploy (`make pod-up` again, or

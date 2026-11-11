@@ -120,6 +120,10 @@ type Payment struct {
 	// onTransition for a trap's step and on a return payment a trap's step
 	// made. Never on the wire: see Trap.
 	trap string
+	// caught is the trap that caught this payout (Booking.Caught): its path
+	// is the trap's, not the bank's, and a restart leaves it where it
+	// stopped (Engine.Restore). Never on the wire.
+	caught string
 }
 
 // Epoch is the run the payment was made in, for work done on its behalf
@@ -159,6 +163,10 @@ type Engine struct {
 	// it with the dispatcher.
 	run *Run
 	wg  sync.WaitGroup // payments still walking their phases
+
+	// OnChange is called after each change to a payment. May be nil; it
+	// must not block or call back in.
+	OnChange func()
 }
 
 // NewEngine builds an Engine backed by ledger. onTransition fires (with a
@@ -224,6 +232,16 @@ func (e *Engine) Book(p *Payment) *Booking {
 
 // Booked is the payout as it was booked, whatever has happened to it since.
 func (b *Booking) Booked() Payment { return b.booked }
+
+// Caught records that trap caught the booked payout and takes it along its
+// own path: the bank will not process it its own way, before or after a
+// restart (Engine.Restore).
+func (b *Booking) Caught(trap string) {
+	b.e.mu.Lock()
+	b.p.caught = trap
+	b.e.mu.Unlock()
+	changed(b.e.OnChange)
+}
 
 // Process ends the booked payout the bank's own way, after the engine's
 // delay, in the background (see Create).
@@ -537,10 +555,15 @@ func (e *Engine) reverseLocked(p *Payment, reason string) (Payment, error) {
 // the payment was made in. The dispatcher checks again under its own lock
 // (EnqueueFrom), which is what closes the gap between this check and the
 // notification being queued.
+//
+// Every change to a payment is notified, so this is also where the engine
+// reports one (OnChange): after the caller has queued its notifications,
+// so a state file written for the change holds them too.
 func (e *Engine) notify(p Payment) {
 	if e.onTransition != nil && !e.run.Moved(p.Env, p.epoch) {
 		e.onTransition(&p)
 	}
+	changed(e.OnChange)
 }
 
 // CreditIncoming simulates Worldline's lump sum landing in the

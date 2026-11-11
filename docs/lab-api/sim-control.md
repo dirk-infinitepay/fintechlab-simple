@@ -135,9 +135,9 @@ POST /sim/reset
 - **`flow`** (the default) clears what a run makes: payments, files,
   callbacks, notifications in flight, activity, traps. It keeps what a
   platform set up once and would otherwise have to set up again: Banking
-  Circle subscriptions, B4B boarding, Worldline enrolment. That is the
-  difference from a lab restart, which today loses Banking Circle's
-  subscriptions and forces a runner restart
+  Circle subscriptions, B4B boarding, Worldline enrolment. A lab restart
+  keeps those too, and what the run made with them: Banking Circle and B4B
+  keep their state on disk (`BC_STATE_PATH`, `B4B_STATE_PATH`)
   ([agent.runbooks.md](../../agent.runbooks.md#lifecycle)).
 - **`all`** puts the sim back as it was on first start.
 
@@ -217,7 +217,7 @@ environment's alone and refuses a reset of any other.
 | Route | |
 | --- | --- |
 | `GET /sim/customers` | every customer, the default first, with `created_at` and `last_seen` (the last vendor call it made) |
-| `PUT /sim/customers/{env}` | add or replace one: a `tenant.Customer`, the logins its platform will present. The lab API pushes every customer again when the sim restarts |
+| `PUT /sim/customers/{env}` | add or replace one: a `tenant.Customer`, the logins its platform will present. The lab API pushes every customer again when the sim restarts (its `GET /sim/info` `started_at` moved), so one that keeps its customers on disk (Banking Circle) holds none stale |
 | `DELETE /sim/customers/{env}` | remove one, and everything it made |
 
 The rules every such sim keeps:

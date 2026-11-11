@@ -487,8 +487,8 @@ cmd_stop() {
   need_stack
   local id
   id="$(output InstanceId)"
-  say "stopping $id. Keys and files survive; what the vendors hold in memory does not --"
-  say "Banking Circle's subscriptions and payments among it: restart the platform after 'start'."
+  say "stopping $id. Keys and state files survive -- Banking Circle's balances, subscriptions"
+  say "and tokens among them; what the other vendors hold only in memory does not."
   aws ec2 stop-instances --instance-ids "$id" >/dev/null
   aws ec2 wait instance-stopped --instance-ids "$id"
   say "stopped"

@@ -24,7 +24,16 @@ type envSim struct {
 	*httptest.Server
 	customers *tenant.Customers
 	mu        sync.Mutex
-	named     []string // ?env= of each /sim/echo call
+	named     []string  // ?env= of each /sim/echo call
+	started   time.Time // its GET /sim/info started_at
+}
+
+// restart moves the sim's started_at, as a process that started again
+// does, and keeps its customers, as one that keeps them on disk does.
+func (s *envSim) restart() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.started = s.started.Add(time.Minute)
 }
 
 func newEnvSim(t *testing.T, aware bool) *envSim {
@@ -32,7 +41,10 @@ func newEnvSim(t *testing.T, aware bool) *envSim {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mux.HandleFunc("GET /sim/info", func(w http.ResponseWriter, r *http.Request) {
-		httputilx.WriteJSON(w, 200, map[string]any{"environments": aware})
+		s.mu.Lock()
+		started := s.started
+		s.mu.Unlock()
+		httputilx.WriteJSON(w, 200, map[string]any{"environments": aware, "started_at": started})
 	})
 	mux.HandleFunc("GET /sim/echo", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
@@ -284,6 +296,37 @@ func TestTheSyncGivesARestartedVendorItsCustomersBack(t *testing.T) {
 	}
 	if _, ok := bc.customers.Get("stale"); ok {
 		t.Fatal("the sync left an environment the lab does not have")
+	}
+}
+
+// A vendor that keeps its customers on disk comes back from a restart
+// still listing them, possibly as they were before a change it missed
+// while it was down. The sync gives it every customer again once its
+// started_at moves, and only then.
+func TestTheSyncGivesARestartedVendorEveryCustomerAgain(t *testing.T) {
+	a, bc, _ := envApp(t)
+	createEnv(t, a, `{"id": "sbx", "name": "Sandbox"}`)
+	if _, err := bc.customers.Put(tenant.Customer{Env: "sbx", Name: "as it was"}); err != nil {
+		t.Fatal(err)
+	}
+	a.syncOnce(context.Background())
+	if c, _ := bc.customers.Get("sbx"); c.Name != "as it was" {
+		t.Fatalf("a vendor that did not restart was given sbx again: %+v", c)
+	}
+
+	bc.restart()
+	a.syncOnce(context.Background())
+	c, ok := bc.customers.Get("sbx")
+	if !ok || c.Name != "Sandbox" || c.BankingCircle == nil || c.BankingCircle.Username == "" {
+		t.Fatalf("after the vendor restarted, sbx = %+v, %v; want the database's", c, ok)
+	}
+
+	if _, err := bc.customers.Put(tenant.Customer{Env: "sbx", Name: "changed since"}); err != nil {
+		t.Fatal(err)
+	}
+	a.syncOnce(context.Background())
+	if c, _ := bc.customers.Get("sbx"); c.Name != "changed since" {
+		t.Fatalf("the sync pushed every customer again without a second restart: %+v", c)
 	}
 }
 

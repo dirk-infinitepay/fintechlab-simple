@@ -58,8 +58,11 @@ appears at the top, green and *registered*, and the **Vendors →
 Banking Circle** card lists a subscription to
 `host.containers.internal:3114`: the platform registered for webhooks.
 
-**Restart the runner whenever the lab restarts.** Banking Circle keeps its
-subscriptions in memory, and the platform only subscribes when it starts.
+**A lab restart keeps the platform's subscription.** Banking Circle keeps
+its subscriptions, balances and tokens in `bc-data/state.json`. Restart the
+runner only when that is gone — `bc-data/` deleted, or a
+`POST /sim/reset` of scope `all` — since the platform only subscribes when
+it starts.
 
 ## 3. Run a settlement
 

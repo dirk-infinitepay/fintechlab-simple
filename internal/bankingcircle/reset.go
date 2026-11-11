@@ -30,8 +30,11 @@ type Bank struct {
 	mail   *MailBox
 	subs   *SubscriptionStore
 	// seed is the subscriptions as start-up left them: what a reset of
-	// scope all puts back. They are the default environment's.
+	// scope all puts back. They are the default environment's. A restart
+	// puts back the first start's (Restore).
 	seed subscriptionState
+	// stop is Stop, done once.
+	stop sync.Once
 }
 
 // NewBank gathers the engine and the dispatcher, and the ledger, mailbox

@@ -20,24 +20,36 @@ binary:
 schedule (11 steps, real delays; `time_scale` compresses them for the lab);
 `BC_NOTIFICATION_KEY` is the raw-UTF-8-bytes AES-256 key.
 
+`BC_STATE_PATH=/bc-data/state.json` is a read-write volume, and it is
+what makes a restart of the lab a non-event for a platform: the
+safeguarding balances a lump sum landed, the subscription the platform made
+at start-up, its bearer token, and the payouts and notifications in flight
+all come back, and the work picks up where it stopped. Before it, a
+redeploy in the middle of a settlement run lost the money and the
+subscription both. `make up` creates `bc-data/` world-writable, the same
+tradeoff as `b4b-data/`; the pod mounts the `fintechlab-bc-data` volume
+there.
+
 ## `cmd/bankingcircle/` — the binary (`package main`)
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | env/flags; builds the mTLS listener (`tlsListener`, modes `require`/`optional`/`off`); wires `Ledger`+`Engine`+`SubscriptionStore`+`Dispatcher` into one `*app`; seeds a default subscription; follows the lab clock (`LAB_CLOCK_URL`); starts both listeners (the internal one on its own goroutine). Also the report handlers (intraday reconciliation, rejection; parameter validation and the 400 body), the payment-status read, and the lab hooks: `/internal/payments/{id}/return\|reverse` (mirrored at `/sim/payments/…` for the console) and `/internal/payments/outcomes` |
+| `main.go` | env/flags; builds the mTLS listener (`tlsListener`, modes `require`/`optional`/`off`); wires `Ledger`+`Engine`+`SubscriptionStore`+`Dispatcher` into one `*app`; seeds a default subscription on the first start; follows the lab clock (`LAB_CLOCK_URL`); serves the three listeners and, on `SIGTERM`, shuts them and the bank down (`shutdown`). Also the report handlers (intraday reconciliation, rejection; parameter validation and the 400 body), the payment-status read, and the lab hooks: `/internal/payments/{id}/return\|reverse` (mirrored at `/sim/payments/…` for the console) and `/internal/payments/outcomes` |
 | `subscriptions.go` | REST handlers for the subscription self-service API — create/list/get/update/activate/deactivate/delete, events + targets, `If-Match` concurrency |
 | `notify.go` | `onTransition` (routes a `Payment` into subscription-matched `Notification`s), `paymentDetail` (the two payload shapes of the vendor's examples: booked vs status events), `sendEncrypted` + `encryptNotification` (the real AES-256-GCM envelope), `clientTest` handler |
 | `activity.go` | summaries for the `/sim/activity` logs the console reads |
+| `state.go` | the state file: `open` (load, seed on a first start, restore the customers, tokens and bank, resume), `snapshot`, and `stateFile` — one writer that coalesces every change into a write a quarter of a second later, `flush` for a reset and a deleted customer, and `stop`, the last write on `SIGTERM`. The token store's snapshot/restore |
 
 `tokenStore` (bearer-token issuance) is defined in `main.go`, not in
 `internal/bankingcircle` — auth/routing glue stays in `cmd`, domain logic
-goes in `internal`.
+goes in `internal`. Its tokens are written to the same state file as the
+bank (`bankingcircle.State.Tokens`), so the file is one.
 
 ## `internal/bankingcircle/` — the logic (`package bankingcircle`, no `net/http` import)
 
 | File | Responsibility |
 | --- | --- |
-| `ledger.go` | `Account`/`Ledger` — in-memory balances, one safeguarding account (SGA) per currency seeded at **zero**, auto-vivified creditor accounts, `Move`/`Credit` |
+| `ledger.go` | `Account`/`Ledger` — balances, one safeguarding account (SGA) per currency seeded at **zero**, auto-vivified creditor accounts, `Move`/`Credit` |
 | `payment.go` | `Engine` — outgoing (`Create`) and incoming (`CreditIncoming`) payment lifecycle, reversal (`Reverse`) and return (`Return`, a new incoming payment), forced outcomes (`ForceNext`), the bank's own reference numbers; fires notifications through an injected callback |
 | `subscription.go` | `SubscriptionStore` — subscription CRUD, `rowVersion`/`If-Match` optimistic concurrency, event/target matching |
 | `dispatcher.go` | `Dispatcher` — one queue per subscription, batches, drives retries via an injected `Send` func |
@@ -48,6 +60,7 @@ goes in `internal`.
 | `status.go` | `PaymentStatus` — a payment's state in the vendor's `PaymentStatus` vocabulary |
 | `businessdate.go` | `BusinessDate` — the bank's business day (CET, 19:00 cutoff, weekends to Monday) |
 | `accountid.go` | account-id validation and the safeguarding account ids |
+| `state.go` | `State` (the state file: flat, sorted lists, each record's `env` left out for the default's), `LoadState`/`SaveState` (missing or empty file = first start; empty path = in memory; write-then-rename), `Snapshot`/`Restore` per store, `Bank.Snapshot` (one instant: every lock a reset holds, so a payout's state and its ledger move are written together), `Bank.Restore` (resumes booked payments and sends on the notifications held), `Bank.Stop` (the work ends where it stands, for the last write) |
 
 Every file above has a `_test.go` sibling exercised by `make test`
 (`go test ./...`, no Docker). `internal/e2e/scenario_bankingcircle.go`

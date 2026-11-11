@@ -240,11 +240,13 @@ applies to it.
   `"clock": "wall"` ([plugins.md](plugins.md)), with its environment's
   token. The card's live parts need the lab API to reach the platform's
   `base_url`, which has to be a public address of the platform's.
-- **Banking Circle forgets.** Its subscriptions and payments are in memory:
-  after a redeploy or a stop, the platform subscribes again when it
-  restarts. The environments do not forget: they are in the lab API's
-  database, on the data volume, and every vendor gets its customers back
-  within seconds of starting.
+- **Banking Circle remembers.** Its balances, payouts, subscriptions,
+  notifications not yet delivered and bearer tokens are in its state file,
+  on the data volume (`fintechlab-bc-data`): after a redeploy or a stop the
+  platform's safeguarding balance, subscription and token are still there,
+  and a payout caught mid-run finishes. So do the environments: they are in
+  the lab API's database, on the data volume, and every vendor gets its
+  customers again within seconds of starting.
 
 ## A runner on your machine
 
@@ -297,12 +299,12 @@ address, and has to allow those for as long as it runs on the tunnel.
 | `make aws-stop` / `make aws-start` | a stopped host costs only its disks and address; the pod comes back on start |
 | `make aws-destroy` | everything, after you type the stack's name |
 
-**What persists:** the data volume holds podman's storage — the five named
-volumes ([deploy-pod.md](deploy-pod.md#what-persists)) and the images — and
-the lab API's token. It
+**What persists:** the data volume holds podman's storage — the six named
+volumes ([deploy-pod.md](deploy-pod.md#what-persists)), Banking Circle's
+and B4B's state among them, and the images — and the lab API's token. It
 survives a redeploy, a stop and a replaced host; it goes with
-`aws-destroy`. **What does not:** everything the vendors keep in memory,
-as locally.
+`aws-destroy`. **What does not:** what the other vendors keep only in
+memory, as locally.
 
 **Several labs** are several stacks: `LAB_STACK=fintechlab-qa lab.sh infra`.
 The pod is single-host by design — its containers find each other on the

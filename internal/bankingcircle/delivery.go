@@ -247,6 +247,10 @@ type Email struct {
 type MailBox struct {
 	mu   sync.Mutex
 	sent []Email
+
+	// OnChange is called after each email. May be nil; it must not block
+	// or call back in.
+	OnChange func()
 }
 
 // Send records one email.
@@ -258,6 +262,7 @@ func (m *MailBox) Send(e Email) {
 	if len(m.sent) > 500 {
 		m.sent = m.sent[len(m.sent)-500:]
 	}
+	changed(m.OnChange)
 }
 
 // clearLocked forgets scope's emails and says how many there were. Caller
