@@ -31,6 +31,8 @@ var controlRoutes = []string{
 	"GET /sim/transactions",
 	"POST /sim/settlement-cycle/run",
 	"GET /sim/settlement-cycle/runs",
+	"POST /sim/settlement-files/render",
+	"POST /sim/settlement-files/publish",
 	"GET /sim/enrolment",
 	"POST /sim/enrolment/process",
 	"POST /sim/enrolment/reject",

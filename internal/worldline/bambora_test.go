@@ -21,9 +21,9 @@ func sampleBamboraLedger() []Transaction {
 }
 
 func TestBamboraFilenameFormat(t *testing.T) {
-	at := time.Date(2026, 9, 4, 13, 5, 9, 0, time.UTC)
+	at := time.Date(2026, 9, 4, 13, 5, 9, 0, time.UTC) // 15:05:09 in Paris, CEST
 	got := BamboraFilename("Worldline_Settlement", at, "ER", "eur")
-	want := "20260904130509_Worldline_Settlement_ER_EUR.csv"
+	want := "20260904150509_Worldline_Settlement_ER_EUR.csv"
 	if got != want {
 		t.Fatalf("BamboraFilename = %q, want %q", got, want)
 	}
@@ -32,7 +32,7 @@ func TestBamboraFilenameFormat(t *testing.T) {
 func TestBamboraFilenameAfternoonFile(t *testing.T) {
 	at := time.Date(2026, 9, 4, 18, 0, 0, 0, time.UTC)
 	got := BamboraFilename("Worldline_Settlement", at, "AR", "USD")
-	want := "20260904180000_Worldline_Settlement_AR_USD.csv"
+	want := "20260904200000_Worldline_Settlement_AR_USD.csv"
 	if got != want {
 		t.Fatalf("BamboraFilename = %q, want %q", got, want)
 	}
@@ -314,5 +314,12 @@ func TestParseRejectsAThirdDecimal(t *testing.T) {
 	bad := strings.Replace(buddySampleExcerpt, "6660.27", "6660.275", 1)
 	if _, err := ParseBamboraCSV(strings.NewReader(bad)); err == nil {
 		t.Fatal("expected an error for an amount with three decimals")
+	}
+}
+
+func TestAFileCutLateInTheEveningIsTomorrowsInParis(t *testing.T) {
+	at := time.Date(2026, 11, 10, 23, 55, 0, 0, time.UTC) // 00:55 on the 11th in Paris, CET
+	if got := FileStamp(at); got != "20261111005500" {
+		t.Fatalf("FileStamp = %s, want the Paris date", got)
 	}
 }

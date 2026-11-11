@@ -117,6 +117,8 @@ var envConfigSchema = obj(map[string]any{
 	"settlement_identifier": str("Worldline's settlement file name for this environment"),
 	"webhook_hosts":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the platform's callback hosts its subscriptions and callbacks may reach"},
 	"aci_webhook_url":       str("where ACI delivers this environment's webhooks"),
+	"poll_url":              str("the platform's Worldline poll, which POST /v1/platform/poll calls"),
+	"poll_token":            str("sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out"),
 	"b4b_callback_url":      str("where B4B calls back a record that names no callback_url"),
 	"clock":                 str("follows or wall: a seen wall environment blocks moving the lab clock"),
 })
@@ -144,7 +146,23 @@ var opSpecs = map[string]opSpec{
 		"name":   str("a new name; the id does not change"),
 		"config": envConfigSchema,
 	})},
-	"DELETE /v1/environments/{id}":     {Bodyless: true},
+	"DELETE /v1/environments/{id}": {Bodyless: true},
+	"POST /v1/settlement-files": {BodyRequired: true, Status: 201, BodyMedia: "application/octet-stream",
+		Query: []param{{Name: "name", About: "what to keep it as", Required: true}}},
+	"POST /v1/settlement-files/generate": {BodyRequired: true, Status: 201, Body: obj(map[string]any{
+		"currency": str("EUR or GBP"),
+		"date":     str("YYYY-MM-DD, the trading day; default what the cycle would settle"),
+		"slot":     str("ER (the morning file, default) or AR"),
+	}, "currency")},
+	"GET /v1/settlement-files/preview": {Query: []param{{Name: "name", About: "the file's name", Required: true}, {Name: "lines", Type: "integer", About: "1 to 1000, default 100"}}},
+	"DELETE /v1/settlement-files":      {Bodyless: true, Query: []param{{Name: "name", About: "the file's name", Required: true}}},
+	"POST /v1/settlement-files/publish": {BodyRequired: true, Body: obj(map[string]any{
+		"files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the files to publish, at most one per currency"},
+		"wire":  boolean("wire each ER file's lump sum to the environment's safeguarding account, as Worldline's morning does; default true"),
+	}, "files")},
+	"POST /v1/platform/poll": {BodyRequired: true, Verbatim: true, Body: obj(map[string]any{
+		"fileType": str("ER (the morning file) or AR (the afternoon's)"),
+	}, "fileType")},
 	"POST /v1/environments/{id}/token": {Bodyless: true},
 	"GET /v1/services/{id}/logs":       {Query: logQuery, Verbatim: true},
 	"POST /v1/services/{id}/reset":     {Body: scopeBody, Verbatim: true},

@@ -31,6 +31,8 @@ tags:
     description: Accounts and payouts at the business bank and Banking Circle.
   - name: actions
     description: Make a vendor do now what it would otherwise do on its schedule.
+  - name: card
+    description: 'The environment''s own card: its settlement files, publishing them at Worldline, and the platform''s poll.'
   - name: plugins
     description: 'The platform under test: registration, its buttons and its settlement files.'
   - name: connect
@@ -819,6 +821,12 @@ paths:
                     clock:
                       description: 'follows or wall: a seen wall environment blocks moving the lab clock'
                       type: string
+                    poll_token:
+                      description: sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out
+                      type: string
+                    poll_url:
+                      description: the platform's Worldline poll, which POST /v1/platform/poll calls
+                      type: string
                     settlement_identifier:
                       description: Worldline's settlement file name for this environment
                       type: string
@@ -935,6 +943,12 @@ paths:
                       type: string
                     clock:
                       description: 'follows or wall: a seen wall environment blocks moving the lab clock'
+                      type: string
+                    poll_token:
+                      description: sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out
+                      type: string
+                    poll_url:
+                      description: the platform's Worldline poll, which POST /v1/platform/poll calls
                       type: string
                     settlement_identifier:
                       description: Worldline's settlement file name for this environment
@@ -1709,6 +1723,40 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#post-v1partners
+  /v1/platform/poll:
+    post:
+      operationId: postPlatformPoll
+      summary: Run the platform's own Worldline poll now, at the poll_url its config names
+      description: 'Reaches: the environment''s poll_url. The answer is the upstream''s own, status and body.'
+      tags:
+        - card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                fileType:
+                  description: ER (the morning file) or AR (the afternoon's)
+                  type: string
+              required:
+                - fileType
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: the upstream's own answer, or the lab API's error when it cannot be reached
+          content:
+            application/json:
+              schema: {}
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1platformpoll
   /v1/plugins:
     get:
       operationId: getPlugins
@@ -2461,6 +2509,207 @@ paths:
               schema: {}
       externalDocs:
         url: docs/api/lab-api.md#any-v1servicesidsimpath
+  /v1/settlement-files:
+    delete:
+      operationId: deleteSettlementFiles
+      summary: Delete one of the environment's files
+      description: 'Reaches: the lab API''s own volume.'
+      tags:
+        - card
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#delete-v1settlement-files
+    get:
+      operationId: getSettlementFiles
+      summary: 'The environment''s settlement files: generated or uploaded, read with Worldline''s parser'
+      description: 'Reaches: the lab API''s own volume.'
+      tags:
+        - card
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1settlement-files
+    post:
+      operationId: postSettlementFiles
+      summary: Upload a settlement file to the environment's files
+      description: 'Reaches: the lab API''s own volume.'
+      tags:
+        - card
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: what to keep it as
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              format: binary
+              type: string
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1settlement-files
+  /v1/settlement-files/generate:
+    post:
+      operationId: postSettlementFilesGenerate
+      summary: Keep the file Worldline would cut from the environment's trading
+      description: 'Reaches: worldline POST /sim/settlement-files/render.'
+      tags:
+        - card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                currency:
+                  description: EUR or GBP
+                  type: string
+                date:
+                  description: YYYY-MM-DD, the trading day; default what the cycle would settle
+                  type: string
+                slot:
+                  description: ER (the morning file, default) or AR
+                  type: string
+              required:
+                - currency
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1settlement-filesgenerate
+  /v1/settlement-files/preview:
+    get:
+      operationId: getSettlementFilesPreview
+      summary: The first lines of one of the environment's files
+      description: 'Reaches: the lab API''s own volume.'
+      tags:
+        - card
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+        - name: lines
+          in: query
+          required: false
+          description: 1 to 1000, default 100
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1settlement-filespreview
+  /v1/settlement-files/publish:
+    post:
+      operationId: postSettlementFilesPublish
+      summary: Have Worldline publish files in the environment's SFTP folder, one per currency
+      description: 'Reaches: worldline POST /sim/settlement-files/publish, per file.'
+      tags:
+        - card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                files:
+                  description: the files to publish, at most one per currency
+                  items:
+                    type: string
+                  type: array
+                wire:
+                  description: wire each ER file's lump sum to the environment's safeguarding account, as Worldline's morning does; default true
+                  type: boolean
+              required:
+                - files
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1settlement-filespublish
   /v1/stand-ins:
     get:
       operationId: getStandIns

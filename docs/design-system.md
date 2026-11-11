@@ -634,6 +634,40 @@ One **Card** per environment, the default first and marked `lab's own`:
   answer's token is shown in the toast, because the environment's card
   shows it again anyway.
 
+### Environment card — the platform card every environment has
+
+The Platform view opens on the card of the environment the selector shows
+([lab-api/plan.md, phase 6](lab-api/plan.md#phase-6--the-platform-card-is-the-environments)),
+drawn by the lab from the environment itself. It is there whether or not a
+runner registered a **Plugin card**, which sits below it with its own
+buttons when there is one.
+
+- **Head:** the environment's state dot (green once a vendor has seen its
+  platform, grey until then; never red with age), its name, and *last seen
+  … ago by banking-circle* on the right.
+- **Its settlement files**, a **Table** with **Row selection**: file,
+  currency, MIDs, total, a `generated` or `uploaded` **Pill**, and the
+  parser's reason under a file it refuses (that row has no box and no
+  *Run*). One box per currency counts: ticking another file of a currency
+  swaps it for the one ticked now, because a platform settles two
+  currencies at once, never two files of one. *Preview* and *Delete* per
+  row, each in its own column.
+- **Run N selected** publishes the ticked files at Worldline, in the
+  environment's SFTP folder. Its toast says the platform's next poll picks
+  them up. **Run** on a row does the same for that one file.
+- **Poll now (ER)** and **Poll now (AR)** call the platform's own poll and
+  toast its answer verbatim. Without a `poll_url` in the environment's
+  config there are no buttons, and a `.hint` says where to set one.
+- **Generate** is a `.form` row: currency, trading date (blank: what the
+  cycle would settle), and the button. It keeps the file Worldline would
+  cut from the environment's trading, without publishing it.
+- **Upload a file…** opens a picker made on the spot, as the **File field**
+  does, and streams the file to the environment's files.
+
+The Dashboard's *Platform under test* widget shows this environment when no
+plugin is registered: its dot and name, when it was last seen, and how many
+files its card holds.
+
 ### Guide — the Docs view
 
 A page to read inside a tool to operate: how the parts of the system fit,

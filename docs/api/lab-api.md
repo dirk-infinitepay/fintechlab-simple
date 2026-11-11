@@ -429,7 +429,10 @@ An environment is shown as:
   `webhook_hosts` (callback hosts its subscriptions and callbacks may
   reach, on top of each vendor's allowlist), `aci_webhook_url`,
   `b4b_callback_url`, `clock` (`follows` or `wall`: a seen `wall`
-  environment blocks moving the lab clock). All optional.
+  environment blocks moving the lab clock), `poll_url` and `poll_token`
+  (the platform's own Worldline poll, which
+  [`POST /v1/platform/poll`](#post-v1platformpoll) calls; the token is
+  shown as `(set)` and never handed back). All optional.
 
 The lab API pushes each environment to every vendor that keeps them
 apart when it is created or changed, and checks every few seconds
@@ -489,10 +492,14 @@ otherwise).
 Rename an environment or replace its config. *Admin.*
 
 **Body** — `{"name": "…", "config": {…}}`, either; `config` replaces the
-whole config.
+whole config, except that a `poll_token` it leaves out (or sends back as
+`(set)`) keeps the one there is. For `default`, only `config` can be set,
+and only its `poll_url`, `poll_token` and `clock`: its vendor settings are
+the lab's deployment.
 
-**Answers** — `200 {"environment": {…}, "pushed": {…}}`; `400` for
-`default` or a bad config; `404`.
+**Answers** — `200 {"environment": {…}, "pushed": {…}}` (no `pushed` for
+`default`); `400` for a bad config, a rename of `default`, or a vendor
+setting on `default`; `404`.
 
 **Reaches** — the lab's database; each vendor's control
 `PUT /sim/customers/{env}`.
@@ -520,6 +527,112 @@ Give an environment a new token; the old one stops working at once.
 (its token is the admin's); `404`.
 
 **Reaches** — the lab's database.
+
+## Platform card
+
+Every environment's card ([../lab-api/plan.md, phase
+6](../lab-api/plan.md#phase-6--the-platform-card-is-the-environments)): its
+settlement files, kept by the lab per environment on its own volume
+(`<CONSOLE_STATE_FILE's directory>/files/<env>/`); publishing them at
+Worldline, in the environment's SFTP folder, as the morning's file; and the
+platform's own poll, called now rather than at its next window. All in the
+call's environment; none takes `*`.
+
+A file is shown as:
+
+```json
+{"name": "Infinite_Payment_ER_20261110093000_EUR.csv", "source": "generated",
+ "bytes": 4210, "modified": "…", "currency": "EUR", "mids": ["6001…"],
+ "total": "4394.87", "items": 30}
+```
+
+`source` is `generated` or `uploaded`; a file Worldline's parser refuses
+has no currency and a `problem` instead, and cannot be published.
+
+### `GET /v1/settlement-files`
+
+The environment's files, newest first.
+
+**Answers** — `200 {"env": "sbx", "files": [ … ]}`.
+
+**Reaches** — the lab API's own volume.
+
+### `POST /v1/settlement-files`
+
+Upload a file: the raw bytes, streamed, kept under `?name=` (letters,
+digits, `.`, `-`, `_`), capped at `CONSOLE_UPLOAD_MAX_MB` (512).
+
+**Answers** — `201 {"file": {…}, "note": "…"}`, the note saying what the
+parser made of it; `400` for a bad name or an empty file; `409` for the
+name of a generated file; `413` over the cap.
+
+**Reaches** — the lab API's own volume.
+
+### `POST /v1/settlement-files/generate`
+
+Keep the file Worldline would cut from the environment's trading, without
+publishing it.
+
+**Body** — `{"currency": "EUR", "date": "YYYY-MM-DD", "slot": "ER"}`;
+`date` and `slot` default as the cycle does (T+1, the morning).
+
+**Answers** — `201 {"file": {…}}`; Worldline's `404` when nothing settles,
+with its reason.
+
+**Reaches** — worldline `POST /sim/settlement-files/render`.
+
+### `GET /v1/settlement-files/preview`
+
+The first lines of one file: `?name=`, `?lines=` (1 to 1000, default 100).
+
+**Answers** — `200 {"name", "lines": […], "truncated", "long_lines",
+"bytes"}`; `404`.
+
+**Reaches** — the lab API's own volume.
+
+### `DELETE /v1/settlement-files`
+
+Delete one file, `?name=`.
+
+**Answers** — `204`; `404`.
+
+**Reaches** — the lab API's own volume.
+
+### `POST /v1/settlement-files/publish`
+
+Have Worldline publish files in the environment's SFTP download folder,
+encrypted and signed as its own, under its own naming. The platform's next
+poll picks them up, or `POST /v1/platform/poll` asks it now.
+
+**Body** — `{"files": ["…EUR…", "…GBP…"], "wire": true}`: at most one
+file per currency (a platform settles two currencies at once, never two
+files of one). `wire` (default `true`) wires each ER file's total to the
+environment's safeguarding account, as Worldline's morning does.
+
+**Answers** — `200 {"env", "published": 2, "results": [{…Worldline's
+answer…, "file"}, …], "note"}`: each result is Worldline's answer (its
+`name` and `published` path: a file named as Worldline names its own is
+published under the moment's timestamp, since a platform's poll takes only
+its own day's files) with `file`, the lab's copy; a result with `error` for
+a file that did not publish; `502` when none did; `400` for a file the parser refuses;
+`404` for one the environment does not have; `409` for two of one
+currency.
+
+**Reaches** — worldline `POST /sim/settlement-files/publish`, per file.
+
+### `POST /v1/platform/poll`
+
+Run the platform's own Worldline poll now: `POST` to the `poll_url` the
+environment's config names, with `Authorization: Bearer <poll_token>` and
+the body below. The platform downloads what Worldline has published and
+starts its settlement, as its scheduled poll would.
+
+**Body** — `{"fileType": "ER"}`, or `"AR"` for the afternoon file.
+
+**Answers** — *verbatim*: the platform's status and body. `409` when the
+environment has no `poll_url`; `502` when it cannot be reached (90 s).
+
+**Reaches** — the environment's `poll_url`.
 
 ## Services
 

@@ -116,14 +116,16 @@ func vendorRoutes(ch *sftpgateway.Channel, sftpLog *activity.Log) *http.ServeMux
 
 // controlRoutes registers the lab's hooks on the control surface, beside
 // the contract simctl mounts there (and the customers, environments.go):
-// seeding transactions, running the cycle, the enrolment desk, the
-// activity log, and the channel config. Each acts in the environment the
-// call names. GET and PUT /sim/config are GET and PUT /config, the same
+// seeding transactions, running the cycle, rendering and publishing a
+// settlement file by hand (files.go), the enrolment desk, the activity
+// log, and the channel config. Each acts in the environment the call
+// names. GET and PUT /sim/config are GET and PUT /config, the same
 // handlers answering the same, so the lab never has to call the vendor's
 // own API to read or change a setting; the channel is the default's, and
 // lab-wide.
 func (s *sim) controlRoutes(mux *http.ServeMux) {
 	s.cycleRoutes(mux)
+	s.fileRoutes(mux)
 	s.enrolmentRoutes(mux)
 	// A read-only window onto a lab run, carrying no key material: only
 	// who connected and which files they touched.

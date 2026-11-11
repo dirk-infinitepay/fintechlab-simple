@@ -58,6 +58,9 @@ type app struct {
 	// environments in its GET /sim/info at the last sync.
 	envMu    sync.Mutex
 	envAware map[string]bool
+	// dataDir is the lab API's own volume (beside registry.json and
+	// lab.db): the environments' settlement files live under files/.
+	dataDir string
 	// regs are the environments' merchant registries, loaded on first use.
 	regMu sync.Mutex
 	regs  map[string]*console.Registry
@@ -92,6 +95,7 @@ func main() {
 		log.Fatalf("lab-api: registry: %v", err)
 	}
 	a.reg = reg
+	a.dataDir = filepath.Dir(stateFile)
 
 	// The lab's database, beside the registry on the lab API's volume.
 	if path := env("LAB_DB", filepath.Join(filepath.Dir(stateFile), "lab.db")); path != "off" {

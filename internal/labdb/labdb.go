@@ -45,6 +45,11 @@ type Config struct {
 	// Clock is "follows" or "wall" (§8): a seen "wall" environment blocks
 	// moving the lab clock.
 	Clock string `json:"clock,omitempty"`
+	// PollURL and PollToken are the platform's own Worldline poll
+	// (plan.md, phase 6): the lab POSTs {"fileType"} there, with the token
+	// as a bearer, when the card's *Poll now* is pressed.
+	PollURL   string `json:"poll_url,omitempty"`
+	PollToken string `json:"poll_token,omitempty"`
 }
 
 // Kit is an environment's credentials at each vendor, made when it is
@@ -112,6 +117,10 @@ CREATE TABLE IF NOT EXISTS environments (
 	config     TEXT NOT NULL DEFAULT '{}',
 	kit        TEXT NOT NULL DEFAULT '{}',
 	created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS default_config (
+	id     INTEGER PRIMARY KEY CHECK (id = 1),
+	config TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS registries (
 	env TEXT PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
@@ -197,6 +206,35 @@ func (db *DB) List(ctx context.Context) ([]Environment, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// DefaultConfig is the default environment's config: what can be set for
+// it at all (its poll), empty until someone does.
+func (db *DB) DefaultConfig(ctx context.Context) (Config, error) {
+	var raw string
+	err := db.sql.QueryRowContext(ctx, `SELECT config FROM default_config WHERE id = 1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Config{}, nil
+	}
+	if err != nil {
+		return Config{}, err
+	}
+	var c Config
+	if err := json.Unmarshal([]byte(raw), &c); err != nil {
+		return Config{}, fmt.Errorf("labdb: the default's config: %w", err)
+	}
+	return c, nil
+}
+
+// SaveDefaultConfig writes the default environment's config.
+func (db *DB) SaveDefaultConfig(ctx context.Context, c Config) error {
+	b, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	_, err = db.sql.ExecContext(ctx,
+		`INSERT INTO default_config (id, config) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET config = excluded.config`, string(b))
+	return err
 }
 
 // Registry is env's merchant registry document, nil when it has none yet.

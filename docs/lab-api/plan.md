@@ -253,3 +253,108 @@ apart.
 - A plugin registers under its environment's token, only for its buttons,
   files and logs.
 - `stand_ins` applies only to `default`.
+
+## Phase 6 — the platform card is the environment's
+
+**[DECIDED 2026-11-10, the owner]**: every environment has a platform
+card, drawn by the lab from the environment itself rather than registered
+by a runner, and its buttons are lab API calls that the console, a script
+and an agent make alike. Running settlement replicates the real morning:
+Worldline drops the file in the platform's SFTP folder, and the platform's
+own poll picks it up. The trigger lives where that poll lives, the gateway.
+**Status, 2026-11-10: building.**
+
+### How a deployed platform settles today (lightyear, sbx)
+
+1. **The gateway polls Worldline**
+   (`apps/gateway/src/modules/worldline-downloader`). It runs hourly in a
+   morning window (08–10 GMT+2, the ER file) and an afternoon one (14–16,
+   AR), each with a cut-off run that alerts on a missing currency. It lists
+   and downloads through acquirer-fts (SFTP), and writes each new file to
+   the settle-incoming bucket, `worldline/` (or `worldline-invalid/`).
+2. **The write starts the run.** An `s3:ObjectCreated` notification on
+   `worldline/` invokes settle-processing (`processing-s3.lambda.ts`). The
+   11:00 UTC rule is a separate batch check, not a trigger.
+3. In sbx the poll was off: `WORLDLINE_DOWNLOADER_CRON_ENABLED` was the
+   literal `false` in the gateway's `deploy.yaml`.
+
+So *run now* is *poll now*: settlement already starts when a file lands in
+S3, and the waiting is the poll window.
+
+### The card
+
+For the environment the console shows, with or without a runner:
+
+- **Its settlement files**, kept by the lab per environment on its data
+  volume (`<lab data>/files/<env>/`, beside `lab.db`): generated from the
+  environment's own merchants and trading, or uploaded from anywhere.
+  Each is listed with its currency, MIDs and total, read with Worldline's
+  own parser; a file the parser refuses is listed with why.
+- **Run**: tick one or two files, at most one per currency (a platform
+  settles two currencies at once, never two files of one), and the lab has
+  Worldline publish them: encrypted and signed as its own, in the
+  environment's SFTP download folder, with the morning lump sum wired to the
+  environment's safeguarding account when asked. The platform's next poll
+  picks them up.
+- **Poll now**: the lab calls the poll the environment's config names, and
+  shows the platform's answer. The run starts at once instead of at the
+  next poll.
+- A registered card (buddy's runner) still adds its own buttons, run log
+  and stages, as phase 5.6 has it; the environment's card does not need one.
+
+### The lab API
+
+| Route | |
+| --- | --- |
+| `GET /v1/settlement-files` | the environment's files: name, bytes, source (`generated`, `uploaded`), currency, MIDs, total, or the parser's `problem` |
+| `POST /v1/settlement-files?name=` | upload one (raw bytes, `CONSOLE_UPLOAD_MAX_MB`) |
+| `POST /v1/settlement-files/generate` | `{"currency", "date", "slot"}`: what Worldline would cut from the environment's trading, kept as a file, not published |
+| `GET /v1/settlement-files/preview?name=&lines=` | its first lines |
+| `DELETE /v1/settlement-files?name=` | delete one |
+| `POST /v1/settlement-files/publish` | `{"files": [...], "wire": true}`: Worldline publishes them in the environment's SFTP folder; `409` for two files of one currency |
+| `POST /v1/platform/poll` | `{"fileType": "ER"\|"AR"}`: `POST` to the environment's `poll_url` with `Authorization: Bearer <poll_token>`; the platform's answer, verbatim |
+
+The environment's config gains `poll_url` and `poll_token`. The default
+environment's config can now be set too (`PATCH /v1/environments/default`,
+`config` only, kept in the lab DB), so a lab with no other environment has
+a card that polls.
+
+### Worldline
+
+Two lab hooks on its control port, in the environment the call names:
+
+- `POST /sim/settlement-files/render` `{"currency", "date", "slot"}`: the
+  file the cycle would cut from that environment's transactions, as plain
+  text with its name, currency, MIDs and total; `404` when nothing settles.
+- `POST /sim/settlement-files/publish?name=&wire=` with the plain text: the
+  file parsed (`400` if it is not a settlement file), encrypted and signed,
+  and put in the environment's download folder under the cycle's own naming
+  (`<name>.pgp`). With `wire=true` (an ER file), the lump sum (the file's
+  total) is wired to the environment's safeguarding account, as the
+  morning cycle does.
+
+### The platform (lightyear and AWS-Cloud)
+
+- **The gateway's poll becomes config.** `WORLDLINE_DOWNLOADER_CRON_ENABLED:
+  ${config?:WORLDLINE_DOWNLOADER_CRON_ENABLED}` (absent: off, as before), on
+  in sbx's lab mode.
+- **`POST /api/v1/worldline-downloader/poll` `{"fileType": "ER"|"AR"}`** on
+  the gateway runs exactly the job the cron runs, now, whether the cron is
+  on or not. It is `404` unless `WORLDLINE_DOWNLOADER_TRIGGER_TOKEN` is set
+  (a secret, optional), and wants `Authorization: Bearer` that token, so a
+  production gateway never offers it. The answer says what it found,
+  downloaded and skipped, and which currencies are still missing.
+- **The deploy tool gains optional secrets**, `secret?:<path>`, like
+  `${config?:KEY}`: a parameter that does not exist is left out instead of
+  failing the deploy, so one environment can carry the trigger token and
+  the rest need not.
+- **sbx**: the cron on and the token set in AWS-Cloud; the lab's `sbx`
+  environment gets `poll_url` (the gateway's ALB, already reachable by the
+  lab through its WAF) and `poll_token`.
+
+### Done when
+
+On the cloud lab, with `sbx` selected, an operator ticks an EUR and a GBP
+file, presses *Run* and *Poll now*, and sbx's settle-processing starts a
+run for each, seen in sbx's logs and in the vendors' arrows on the
+Dashboard. The same works from `curl` with sbx's token.

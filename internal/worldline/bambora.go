@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata" // the image has no zoneinfo, and file names are stamped in CET
 )
 
 // This file implements the real Worldline/Bambora European settlement file
@@ -636,6 +637,24 @@ func (f *BamboraFile) WriteCSV(w io.Writer) error {
 // ("Morning file") or "AR" ("Afternoon file") -- two delivery slots for
 // the same content shape, not different report types. currency is
 // upper-cased to match the documented 3-letter uppercase convention.
+//
+// The timestamp is Worldline's local time, CET/CEST: the zone of its cut-off
+// ("00:00 CET"), and the zone the platform reads the file's day in (lightyear's
+// gateway takes only files whose name starts with today's date in
+// Europe/Paris). In UTC, a file cut late in the evening would read as the day
+// before for an hour or two.
 func BamboraFilename(identifier string, at time.Time, fileType, currency string) string {
-	return fmt.Sprintf("%s_%s_%s_%s.csv", at.UTC().Format("20060102150405"), identifier, fileType, strings.ToUpper(currency))
+	return fmt.Sprintf("%s_%s_%s_%s.csv", FileStamp(at), identifier, fileType, strings.ToUpper(currency))
 }
+
+// worldlineZone is the zone Worldline stamps its file names in.
+var worldlineZone = func() *time.Location {
+	loc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		panic("worldline: Europe/Paris: " + err.Error()) // time/tzdata is embedded
+	}
+	return loc
+}()
+
+// FileStamp is the timestamp a Worldline file name starts with, for at.
+func FileStamp(at time.Time) string { return at.In(worldlineZone).Format("20060102150405") }

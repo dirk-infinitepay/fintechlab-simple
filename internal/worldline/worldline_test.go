@@ -149,6 +149,44 @@ func TestCutRoundTripsThroughTheParser(t *testing.T) {
 	}
 }
 
+// ParseSettlementFile reads what Cut wrote, with the MIDs Cut named, and
+// refuses what is not a settlement file where ParseBamboraCSV would read it
+// as an empty one.
+func TestParseSettlementFileRefusesWhatIsNotOne(t *testing.T) {
+	files, err := Cut(seededStore(t), CycleConfig{Identifier: "Worldline_Settlement"},
+		SlotMorning, "2026-09-03", "2026-09-03", time.Date(2026, 9, 4, 8, 42, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		parsed, err := ParseSettlementFile(strings.NewReader(string(f.Bytes)))
+		if err != nil {
+			t.Fatalf("%s: %v", f.Filename, err)
+		}
+		if got, want := strings.Join(parsed.MIDs(), ","), strings.Join(f.MIDs, ","); got != want {
+			t.Errorf("%s: MIDs() = %s, want the cut's %s", f.Filename, got, want)
+		}
+	}
+
+	headerOnly := `"VERSION_NUMBER","RECORD_TYPE","SETTLEMENT_AMOUNT","SETTLEMENT_CURRENCY","VALUE_DATE","NUMBER_OF_ITEMS","TO_ACCOUNT","PAYMENT_REFERENCE"` + "\n"
+	noCurrency := headerOnly + `"V2.10","Settlement","1.00","","2026-09-03","1","ACC","REF"` + "\n"
+	for name, body := range map[string]string{
+		"plain text":        "hello, this is not a settlement file\n",
+		"empty":             "",
+		"headers only":      headerOnly,
+		"no currency":       noCurrency,
+		"a third decimal":   strings.Replace(noCurrency, `"1.00","",`, `"1.005","EUR",`, 1),
+		"an unclosed quote": `"V2.10,"Settlement"`,
+	} {
+		if _, err := ParseSettlementFile(strings.NewReader(body)); err == nil {
+			t.Errorf("%s: parsed as a settlement file", name)
+		}
+	}
+	if _, err := ParseBamboraCSV(strings.NewReader("hello\n")); err != nil {
+		t.Errorf("ParseBamboraCSV is lenient and stays so: %v", err)
+	}
+}
+
 func TestCutFromFixturesServesBytesVerbatim(t *testing.T) {
 	dir := t.TempDir()
 	morning := "20260904084200_Worldline_Settlement_ER_EUR.csv"

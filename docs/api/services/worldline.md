@@ -24,7 +24,7 @@ plain HTTP rather than SFTP.
 | Listens | HTTP `:8084` (`LISTEN`) and SSH/SFTP `:2222` (`WORLDLINE_SFTP_PORT`), both in one process. Compose service `worldline`; from the host `http://127.0.0.1:8084` and `sftp://127.0.0.1:2222`.<br>`:9084`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. It steers the SFTP side too, which has no control port of its own. Not published by compose; the lab API reaches it at `http://worldline:9084` |
 | Auth | HTTP: none, on every route; it is the default environment's. SFTP: an environment's username takes only its own password, and opens that environment's folder ([Environments](#environments)). Every other username is the default environment's: password (`WORLDLINE_SFTP_PASSWORD`, compose `sim-sftp-dev-only`) and public key (`WORLDLINE_SFTP_AUTHORIZED_KEY`), each enabled independently, and the username itself is not checked. With both unset, any credential is accepted for it (logged as a warning at start).<br>The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | The settlement stand-in (`compose.yml`): `WORLDLINE_SFTP_HOST`, `WORLDLINE_SFTP_PORT`, `WORLDLINE_SFTP_USER`, `WORLDLINE_SFTP_PASSWORD` or `WORLDLINE_SFTP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_KNOWN_HOST_PATH`, `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `WORLDLINE_SFTP_DIR` (default `download`). the lab API's connect kit (`GET :8097/v1/connect/env/worldline`) hands a platform `WORLDLINE_SFTP_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_HOST_KEY_FINGERPRINT`, `_DOWNLOAD_DIR`, `_RECONCILIATION_DIR`, `_DISPUTES_DIR`, `_UPLOAD_DIR`, `WORLDLINE_SETTLEMENT_IDENTIFIER`, `WORLDLINE_PGP_PUBLIC_KEY` and `INFINITE_PGP_PRIVATE_KEY`. The HTTP side is found with `CONSOLE_URL_WORLDLINE` (lab API); the lab API takes the control port as that port plus 1000 unless `CONSOLE_CONTROL_URL_WORLDLINE` names it |
-| Activity logs | `GET /sim/activity` keeps one log, `sftp` (*File exchange*): `sftp.session` for each SSH login or refused handshake, then one event per SFTP request (`sftp.list`, `sftp.download`, `sftp.upload`, and the jail's other verbs, such as `sftp.rename`, `sftp.remove`, `sftp.mkdir`), each with `user` and `path`; a refused request is amber with the server's error. Stats are not logged. Each file taken over `GET /outbound/{merchant_id}/{category}/{filename}` lands in the same log as `http.download`. Each event is its environment's: a session's, and the refused handshake of an environment's username, carry `env` and are kept apart from the default's |
+| Activity logs | `GET /sim/activity` keeps one log, `sftp` (*File exchange*): `sftp.session` for each SSH login or refused handshake, then one event per SFTP request (`sftp.list`, `sftp.download`, `sftp.upload`, and the jail's other verbs, such as `sftp.rename`, `sftp.remove`, `sftp.mkdir`), each with `user` and `path`; a refused request is amber with the server's error. Stats are not logged. Each file taken over `GET /outbound/{merchant_id}/{category}/{filename}` lands in the same log as `http.download`, and each file the lab hands Worldline to publish ([`POST /sim/settlement-files/publish`](#post-simsettlement-filespublish)) as `settlement-file.published`. Each event is its environment's: a session's, and the refused handshake of an environment's username, carry `env` and are kept apart from the default's |
 | Configuration | The important variables are in the table below. Slot times are read in the container's local zone; the image sets no `TZ`, so that is UTC |
 | Design record | [ARCHITECTURE-worldline-acquirer.md](../../ARCHITECTURE-worldline-acquirer.md) (who owns the file, the two slots, one file per currency), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §1–2 and Addendum E (Bambora format, SFTP+PGP, encryption direction), [ARCHITECTURE-worldline-sftp-channel.md](../../ARCHITECTURE-worldline-sftp-channel.md) (historical; its SFT directory conventions still hold), [structure/worldline.md](../../structure/worldline.md) |
 
@@ -283,8 +283,9 @@ customer of its own, and nothing of one reaches another.
   Worldline has no customer for is `404` `{"error": "no environment nope
   at worldline"}`. Reads answer that environment's records only, and
   `*` every environment's. A hook that makes something
-  (`POST /sim/transactions`, `POST /sim/enrolment/reject`) makes it in
-  the named environment and refuses `*` with `400`. A record read across
+  (`POST /sim/transactions`, `POST /sim/enrolment/reject`,
+  `POST /sim/settlement-files/render` and `/publish`) makes it in the
+  named environment and refuses `*` with `400`. A record read across
   environments says whose it is with `env`; the default's carry none.
   `GET` and `PUT /sim/config` are the SFT channel's, which is the
   default's and lab-wide, and take no `env`.
@@ -352,8 +353,10 @@ Puts the acquirer back to a known state. Synchronous; the body is optional
   start again at `wltxn_000001` (`transactions`); the cycle-run history
   (`cycle_runs`) and the lump sums in it (`lump_sums`; the wires are not
   recalled, Banking Circle's own reset clears them); the settlement files
-  the cycle published (`settlement_files`); the reports the download route
-  archived (`archived_reports`); armed enrolment rejections
+  the cycle and `POST /sim/settlement-files/publish` published
+  (`settlement_files`), and the lump sums wired with the latter (in
+  `lump_sums`); the reports the download route archived
+  (`archived_reports`); armed enrolment rejections
   (`enrolment_rejections`); and the `sftp` activity log (`activity`). It
   keeps what a platform set up once: the enrolment receipts and the desk's
   record of the batches it answered (the MIDs it issued), and the SFT
@@ -386,7 +389,8 @@ else:
   `{14 digits}_{identifier}_{ER|AR}_{CCY}.csv.pgp`, with the environment's
   identifier as it stands; in `fixture` mode also `{fixture name}.pgp` for
   each fixture the cycle serves; and any name the environment's run
-  history says was published.
+  history says was published, or `POST /sim/settlement-files/publish`
+  published (its last 100).
 - `{SFTP_BASE_DIR}/archive/{YYYY}/{MM}/`:
   `{merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}`, the WX reports the
   download route archived. A file of another name there (a financial
@@ -399,10 +403,11 @@ correction files, the WX reports in `outbound/` (the settlement
 stand-in's; its own reset deletes them), the fixtures and the keys.
 
 **Work in flight** is dropped, not raced: a slot that is cutting and
-publishing, the lump-sum wire and the desk answering a batch each stop at
-their next step after the reset, so no file is published, no wire sent, no
-receipt written and no run recorded after it. Only the environments reset
-are held: another environment's run carries on. A wire already on its way
+publishing, a file being published by hand, the lump-sum wire and the
+desk answering a batch each stop at their next step after the reset, so
+no file is published, no wire sent, no receipt written and no run
+recorded after it. Only the environments reset are held: another
+environment's run carries on. A wire already on its way
 when the reset arrives is waited for, so it lands before the reset, and
 Banking Circle's own reset clears the payment. The schedule keeps running:
 the next slot fires as it would have.
@@ -501,6 +506,96 @@ The last 100 runs of an environment, scheduled and manual, oldest first.
   oldest first).
 - Answers `200` `{"count": 1, "runs": [{…}]}`, each run as
   `POST /sim/settlement-cycle/run` returns it.
+
+### `POST /sim/settlement-files/render`
+
+The settlement file of one currency the cycle would cut now from an
+environment's transactions, as plain text: the cycle's own cut and
+naming, and nothing else. Nothing is published, no lump sum is wired and
+no run is recorded. The lab API keeps what it answers as a file
+([plan](../../lab-api/plan.md), phase 6).
+
+- Query: `env`, whose transactions and identifier (the default's when
+  none; `*` is `400`).
+- Body: `{"currency": "EUR", "date": "2026-09-24", "slot": "ER"}`.
+  `currency` is required, three letters, any case. `date` (`YYYY-MM-DD`)
+  is the single day settled; without it, the day the cycle would settle
+  now by the lab clock (`WORLDLINE_SETTLEMENT_DELAY` before now). `slot`
+  as `POST /sim/settlement-cycle/run` takes it, `ER` when empty. Unknown
+  fields are `400`.
+- Answers `200`:
+
+  ```json
+  {"name": "20260925090000_Infinite_Payment_ER_EUR.csv",
+   "content": "\"VERSION_NUMBER\",\"RECORD_TYPE\",…",
+   "currency": "EUR", "mids": ["MID-A", "MID-B"], "total": "100.00", "items": 2,
+   "slot": "ER", "from_date": "2026-09-24", "to_date": "2026-09-24"}
+  ```
+
+  `name` is exactly the name the cycle would publish the file under now,
+  before `.pgp`: the lab clock's time, the environment's
+  `settlement_identifier`, the slot and the currency. `content` is the
+  file byte for byte as the cycle would cut it, `total` its
+  `SETTLEMENT_AMOUNT` in major units, `mids` every MID it settles
+  (`ADDITIONAL_REF_2`). In `fixture` mode it is the slot's first fixture
+  in that currency, under the fixture's own name.
+- `404` `{"error": "nothing settles in EUR on 2026-09-24 in sbx: worldline
+  holds no EUR transaction of that day there"}` when no transaction would
+  be in the file. `400` for a missing or malformed `currency`, `date` or
+  `slot`. `409` when a reset of the environment landed while it was
+  rendered: render again.
+
+### `POST /sim/settlement-files/publish`
+
+Publishes a settlement file the lab hands over, in an environment's SFTP
+folder, exactly as the cycle publishes one it cut, so the platform's next
+poll takes it as it takes the cycle's.
+
+A file named as Worldline names its own (`<14-digit timestamp>_…`) is
+published under the moment's timestamp, as Worldline names a file when it
+drops it: a platform's poll takes only its own day's files, so a file
+rendered yesterday reads as today's. Any other name is kept.
+
+- Query: `name`, required: the file's name, to which `.pgp` is added, as
+  the cycle names its own; no `/`, `\`, `..` or control character, at
+  most 250 bytes. `wire`, `true` or `false` (default `false`). `env`, whose
+  folder (the default's when none; `*` is `400`).
+- Body: the file, plain text, at most 64 MiB (`413` beyond).
+- The body is read with Worldline's own parser
+  (`worldline.ParseSettlementFile`): `400` with the parser's reason when
+  it is not a settlement file, such as `{"error": "worldline: not a
+  settlement file: it has no \"Settlement\" row"}` or an amount with
+  three decimals. Then it is encrypted and signed as the cycle's files
+  are, and written as `{name}.pgp` into `download/` and `to_WLNORDIC/` of
+  the environment's jail, replacing a file of that name.
+- With `wire=true`, the file's total (its `SETTLEMENT_AMOUNT`) is wired as
+  the morning slot wires its lump sum: to the environment's safeguarding
+  account over Banking Circle's bridge, referenced `WORLDLINE SETTLEMENT
+  {CCY} {VALUE_DATE}`, with `Lab-Environment: {env}` for any environment
+  but the default. As the cycle, it wires nothing for a file whose name
+  says it is an afternoon (`_AR_`) confirmation, or whose total is not
+  positive.
+- Answers `201`:
+
+  ```json
+  {"published": "20260925090000_Infinite_Payment_ER_EUR.csv.pgp",
+   "name": "20260925090000_Infinite_Payment_ER_EUR.csv",
+   "currency": "EUR", "total": "100.00", "mids": ["MID-A", "MID-B"],
+   "lump_sum": {"currency": "EUR", "amount_cents": 10000, "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24",
+                "account_id": "…", "status": "credited"}}
+  ```
+
+  `published` is the name in the folder, as a cycle run lists it.
+  `lump_sum` is as in a cycle run (`credited`, `not configured` or
+  `error: …`; a failed wire never stops the file), and `null` when
+  nothing was wired. `409` when a reset of the environment landed while it
+  ran: what it published went with the reset, and nothing after it
+  happened. `500` when the file cannot be written.
+- Side effects: no cycle run is recorded. The `sftp` activity log of the
+  environment gains a `settlement-file.published` event, with `file`,
+  `path`, `currency`, `total`, `mids` and, when wired, `lump_sum` and
+  `account_id` (amber when the wire did not credit). A `flow` reset
+  deletes the file, whatever its name, and counts its lump sum.
 
 ### `GET /sim/enrolment`
 

@@ -107,6 +107,43 @@ func ParseBamboraCSV(r io.Reader) (*ParsedFile, error) {
 	return f, nil
 }
 
+// ParseSettlementFile is ParseBamboraCSV for bytes that must be a
+// settlement file, as a lab hook taking one from anywhere wants them.
+// ParseBamboraCSV is lenient by design and reads text that is no
+// settlement file at all as an empty one; this refuses a file with no
+// Settlement row, or whose Settlement row names no currency, with the
+// reason.
+func ParseSettlementFile(r io.Reader) (*ParsedFile, error) {
+	f, err := ParseBamboraCSV(r)
+	if err != nil {
+		return nil, err
+	}
+	if f.Meta == (BamboraMeta{}) {
+		return nil, fmt.Errorf("worldline: not a settlement file: it has no %q row", bamboraRecordTypeSettlement)
+	}
+	if f.Meta.SettlementCurrency == "" {
+		return nil, fmt.Errorf("worldline: not a settlement file: its %s row names no SETTLEMENT_CURRENCY", bamboraRecordTypeSettlement)
+	}
+	return f, nil
+}
+
+// MIDs lists every merchant the file settles, by the TXER rows' grouping
+// key ADDITIONAL_REF_2 (see PayoutsByMID), each once, in the order the
+// file first names it: for a file Cut wrote, its CutFile.MIDs.
+func (f *ParsedFile) MIDs() []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, b := range f.Batches {
+		for _, t := range b.Transactions {
+			if !seen[t.AdditionalRef2] {
+				seen[t.AdditionalRef2] = true
+				out = append(out, t.AdditionalRef2)
+			}
+		}
+	}
+	return out
+}
+
 // recordTypeOf identifies a data row's section, or "" for a header row or
 // anything unrecognized. A header row is distinguishable because its own
 // RECORD_TYPE cell holds the literal string "RECORD_TYPE".

@@ -70,6 +70,34 @@ type envBody struct {
 	Config *labdb.Config `json:"config"`
 }
 
+// tokenShown is what a view shows for a poll token that is set: the
+// platform's secret is the lab's to send, not to hand back.
+const tokenShown = "(set)"
+
+// masked is c as a view shows it.
+func masked(c labdb.Config) labdb.Config {
+	if c.PollToken != "" {
+		c.PollToken = tokenShown
+	}
+	return c
+}
+
+// configPatch decodes a PATCH's config: a whole config, except that a
+// poll_token it leaves out (or sends back as "(set)") keeps the one there
+// is, so editing an environment's other settings never drops its token.
+func configPatch(raw json.RawMessage, was labdb.Config) (labdb.Config, error) {
+	var c labdb.Config
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return c, err
+	}
+	var keys map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &keys)
+	if _, sent := keys["poll_token"]; !sent || c.PollToken == tokenShown {
+		c.PollToken = was.PollToken
+	}
+	return c, nil
+}
+
 func (a *app) needDB(w http.ResponseWriter) bool {
 	if a.db == nil {
 		httputilx.Error(w, 503, "this lab has no database: environments are off")
@@ -131,7 +159,7 @@ func (a *app) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	seen := a.seenBy(r.Context())
 	out := []envView{}
 	if p.admin {
-		out = append(out, a.defaultView(seen))
+		out = append(out, a.defaultView(r.Context(), seen))
 	}
 	if a.db != nil {
 		list, err := a.db.List(r.Context())
@@ -171,7 +199,7 @@ func (a *app) answerEnvironment(w http.ResponseWriter, r *http.Request, id strin
 	}
 	seen := a.seenBy(r.Context())
 	if id == tenant.Default {
-		httputilx.WriteJSON(w, 200, a.defaultView(seen))
+		httputilx.WriteJSON(w, 200, a.defaultView(r.Context(), seen))
 		return
 	}
 	if !a.needDB(w) {
@@ -187,19 +215,14 @@ func (a *app) answerEnvironment(w http.ResponseWriter, r *http.Request, id strin
 
 func (a *app) patchEnvironment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if id == tenant.Default {
-		httputilx.Error(w, 400, "the default environment is the lab's own: its settings are the lab's deployment")
-		return
-	}
 	if !a.needDB(w) {
 		return
 	}
-	e, err := a.db.Get(r.Context(), id)
-	if err != nil {
-		envError(w, id, err)
-		return
+	var b struct {
+		ID     string          `json:"id"`
+		Name   string          `json:"name"`
+		Config json.RawMessage `json:"config"`
 	}
-	var b envBody
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&b); err != nil {
 		httputilx.Error(w, 400, `want {"name": "…", "config": {…}}: `+err.Error())
 		return
@@ -208,15 +231,28 @@ func (a *app) patchEnvironment(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "an environment's id does not change")
 		return
 	}
+	if id == tenant.Default {
+		a.patchDefault(w, r, b.Name, b.Config)
+		return
+	}
+	e, err := a.db.Get(r.Context(), id)
+	if err != nil {
+		envError(w, id, err)
+		return
+	}
 	if n := strings.TrimSpace(b.Name); n != "" {
 		e.Name = n
 	}
-	if b.Config != nil {
-		if err := validConfig(*b.Config); err != nil {
+	if len(b.Config) > 0 && string(b.Config) != "null" {
+		c, err := configPatch(b.Config, e.Config)
+		if err == nil {
+			err = validConfig(c)
+		}
+		if err != nil {
 			httputilx.Error(w, 400, err.Error())
 			return
 		}
-		e.Config = *b.Config
+		e.Config = c
 	}
 	if err := a.db.Update(r.Context(), e); err != nil {
 		envError(w, id, err)
@@ -224,6 +260,40 @@ func (a *app) patchEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 	pushed := a.pushCustomer(r.Context(), e)
 	httputilx.WriteJSON(w, 200, map[string]any{"environment": a.view(r.Context(), e, a.seenBy(r.Context()), true), "pushed": pushed})
+}
+
+// patchDefault sets the default environment's config: the lab's own
+// environment keeps its name and its vendor logins, and only what concerns
+// its platform (its poll) can be set.
+func (a *app) patchDefault(w http.ResponseWriter, r *http.Request, name string, raw json.RawMessage) {
+	if strings.TrimSpace(name) != "" {
+		httputilx.Error(w, 400, "the default environment's name does not change")
+		return
+	}
+	was, err := a.db.DefaultConfig(r.Context())
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	c := was
+	if len(raw) > 0 && string(raw) != "null" {
+		if c, err = configPatch(raw, was); err == nil {
+			err = validConfig(c)
+		}
+		if err != nil {
+			httputilx.Error(w, 400, err.Error())
+			return
+		}
+	}
+	if c.SettlementIdentifier != "" || len(c.WebhookHosts) > 0 || c.ACIWebhookURL != "" || c.B4BCallbackURL != "" {
+		httputilx.Error(w, 400, "the default environment's vendor settings are the lab's deployment (LAB_SET, LAB_WEBHOOK_ALLOW); only poll_url, poll_token and clock can be set here")
+		return
+	}
+	if err := a.db.SaveDefaultConfig(r.Context(), c); err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"environment": a.defaultView(r.Context(), a.seenBy(r.Context()))})
 }
 
 func (a *app) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -303,8 +373,12 @@ func envError(w http.ResponseWriter, id string, err error) {
 
 // --- views and status ------------------------------------------------
 
-func (a *app) defaultView(seen map[string]map[string]*time.Time) envView {
-	v := envView{ID: tenant.Default, Name: "Default", Default: true, Config: labdb.Config{},
+func (a *app) defaultView(ctx context.Context, seen map[string]map[string]*time.Time) envView {
+	cfg := labdb.Config{}
+	if a.db != nil {
+		cfg, _ = a.db.DefaultConfig(ctx)
+	}
+	v := envView{ID: tenant.Default, Name: "Default", Default: true, Config: masked(cfg),
 		Kit: "/v1/connect/env", Shared: []string{}}
 	v.Seen, v.LastSeen, v.State = summarise(seen[tenant.Default])
 	return v
@@ -312,7 +386,7 @@ func (a *app) defaultView(seen map[string]map[string]*time.Time) envView {
 
 func (a *app) view(ctx context.Context, e labdb.Environment, seen map[string]map[string]*time.Time, withToken bool) envView {
 	created := e.CreatedAt
-	v := envView{ID: e.ID, Name: e.Name, Config: e.Config, CreatedAt: &created,
+	v := envView{ID: e.ID, Name: e.Name, Config: masked(e.Config), CreatedAt: &created,
 		Kit: "/v1/connect/env?env=" + e.ID, Shared: a.sharedServices()}
 	if withToken {
 		v.Token = e.Token
@@ -700,7 +774,7 @@ func validConfig(c labdb.Config) error {
 			return fmt.Errorf("config.webhook_hosts are host names or host:port, not %q", h)
 		}
 	}
-	for _, u := range []string{c.ACIWebhookURL, c.B4BCallbackURL} {
+	for _, u := range []string{c.ACIWebhookURL, c.B4BCallbackURL, c.PollURL} {
 		if u != "" && !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 			return fmt.Errorf("a webhook or callback URL is http(s)://…, not %q", u)
 		}

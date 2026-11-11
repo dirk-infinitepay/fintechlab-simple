@@ -51,6 +51,11 @@ type settlementApp struct {
 
 	mu   sync.Mutex
 	runs []CycleRun
+	// byHand is the files a lab hook published (files.go), by the name
+	// Publish gave them, and handLumpSums the lump sums wired with them:
+	// not cycle runs, but a reset takes them back as it does a run's.
+	byHand       []string
+	handLumpSums int
 }
 
 // CycleRun records one execution of the settlement cycle, so an operator
@@ -252,9 +257,10 @@ func (s *settlementApp) record(run CycleRun) {
 	}
 }
 
-// clearRuns empties the run history, for a reset. It returns how many runs
-// and lump sums the history held, and the name of every file those runs
-// published.
+// clearRuns empties the run history, and the record of what the lab hooks
+// published, for a reset. It returns how many runs the history held, how
+// many lump sums went with them and with the hooks' files, and the name of
+// every file either published.
 func (s *settlementApp) clearRuns() (runs, lumpSums int, published map[string]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -265,8 +271,12 @@ func (s *settlementApp) clearRuns() (runs, lumpSums int, published map[string]bo
 			published[name] = true
 		}
 	}
+	for _, name := range s.byHand {
+		published[name] = true
+	}
+	lumpSums += s.handLumpSums
 	runs = len(s.runs)
-	s.runs = nil
+	s.runs, s.byHand, s.handLumpSums = nil, nil, 0
 	return runs, lumpSums, published
 }
 

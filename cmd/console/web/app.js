@@ -228,6 +228,7 @@ async function load() {
       state.data.overview = await api('GET', '/v1/lab');
       await loadActivity();
     }
+    if (state.view === 'platform' || state.view === 'dashboard') await loadEnvFiles();
     if (state.view === 'platform') {
       // Read live from the services that own the wiring, never remembered.
       try {
@@ -329,6 +330,103 @@ function sharedNote() {
   return `<div class="note warn">Showing <b>${esc(cur.name || cur.id)}</b>. Shared by every environment, so left out
     here: ${cur.shared.map((id) => `<span class="mono">${esc(id)}</span>`).join(', ')} — they hold only the default
     environment's records.</div>`;
+}
+
+/* --- the environment's platform card (design-system.md, Environment card) */
+
+/* The card's files share the plugin card's selection plumbing
+   (state.files / state.selected), under a key of their own. */
+function envKey() { return `env:${state.env || 'default'}`; }
+
+async function loadEnvFiles() {
+  try {
+    state.files[envKey()] = await api('GET', '/v1/settlement-files');
+  } catch (err) {
+    state.files[envKey()] = { error: err.message };
+  }
+}
+
+function envPlatformCard() {
+  const e = currentEnv() || { id: state.env || 'default', name: 'Default', default: true, state: 'never-seen', config: {} };
+  const key = envKey();
+  const d = state.files[key];
+  const seen = e.state === 'seen';
+  const seenBy = Object.entries(e.seen_by || {}).filter(([, t]) => t).map(([svc]) => svc);
+  const meta = seen ? `last seen ${esc(ago(e.last_seen))} ago${seenBy.length ? ' by ' + esc(seenBy.join(', ')) : ''}` : 'never seen';
+  const cfg = e.config || {};
+  let files = '';
+  if (!d) {
+    files = '<div class="empty">Loading…</div>';
+  } else if (d.error) {
+    files = `<div class="note bad">Its settlement files are unavailable — ${esc(d.error)}</div>`;
+  } else {
+    const list = d.files || [];
+    const runnable = (f) => !f.problem;
+    const picked = selectedFiles(key, list.filter(runnable));
+    const data = (f) => `data-id="${esc(key)}" data-name="${esc(f.name)}"`;
+    const rows = list.map((f) => `<tr>
+        <td class="actions">${runnable(f) ? `<input type="checkbox" data-select-file ${data(f)} data-currency="${esc(f.currency)}"
+          aria-label="Select ${esc(f.name)}"${picked.includes(f.name) ? ' checked' : ''}>` : ''}</td>
+        <td class="mono">${esc(f.name)}${f.problem ? `<div class="hint">${esc(f.problem)}</div>` : ''}</td>
+        <td class="mono">${esc(f.currency || '—')}</td>
+        <td class="mono">${esc(midList(f.mids || []))}</td>
+        <td class="mono num">${esc(f.total || '—')}</td>
+        <td><span class="pill">${esc(f.source)}${f.bytes != null ? ' · ' + esc(fmtBytes(f.bytes)) : ''}</span></td>
+        <td class="actions"><button class="ghost small" data-action="env-preview" data-name="${esc(f.name)}">Preview</button></td>
+        <td class="actions">${runnable(f) ? `<button class="btn small" data-action="env-publish" data-files="${esc(f.name)}">Run</button>` : ''}</td>
+        <td class="actions"><button class="danger small" data-action="env-delete-file" data-name="${esc(f.name)}">Delete</button></td>
+      </tr>`).join('');
+    files = list.length
+      ? `<div class="table-scroll"><table>
+          <thead><tr><th class="actions"></th><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th><th>Source</th>
+            <th class="actions"></th><th class="actions"></th><th class="actions"></th></tr></thead>
+          <tbody>${rows}</tbody></table></div>
+        ${picked.length
+          ? `<div class="form">
+              <button class="btn small" data-action="env-publish" data-files="${esc(picked.join('|'))}">Run ${picked.length} selected</button>
+              <button class="ghost small" data-action="env-clear-selection">Clear</button>
+            </div>
+            <p class="hint">${esc(picked.join(' + '))}: published together. One file per currency: ticking another file
+              of a currency swaps it for the one ticked now.</p>`
+          : '<p class="hint">Tick one file per currency and run them together, as two currencies arrive on a real morning.</p>'}`
+      : `<div class="note">No settlement files yet. Generate one from this environment's trading, or upload one.</div>`;
+  }
+  const poll = cfg.poll_url
+    ? `<div class="form">
+        <button class="ghost small" data-action="env-poll" data-type="ER">Poll now (ER)</button>
+        <button class="ghost small" data-action="env-poll" data-type="AR">Poll now (AR)</button>
+      </div>
+      <p class="hint">The platform's own Worldline poll, at <span class="mono">${esc(cfg.poll_url)}</span>: it picks up
+        what Worldline published and starts its settlement now, instead of at its next window.</p>`
+    : `<p class="hint">No poll set: the platform picks published files up at its next window. To poll from here, set
+        <span class="mono">poll_url</span> and <span class="mono">poll_token</span> in this environment's config
+        (<span class="mono">PATCH /v1/environments/${esc(e.id)}</span>).</p>`;
+  return `<div class="card is-open">
+    <div class="card-head">
+      <i class="dot ${seen ? 'up' : 'unknown'}"></i>
+      <div class="card-title">
+        <span class="name">${esc(e.default ? 'Default' : (e.name || e.id))} <span class="pill platform">platform card</span></span>
+        <span class="desc">This environment's settlement files, published at Worldline in its SFTP folder for its
+          platform's poll to pick up — the morning file, on demand.</span>
+      </div>
+      <div class="card-meta"><span>${meta}</span></div>
+    </div>
+    <div class="card-body">
+      ${files}
+      <div class="section-title">Run it now</div>
+      ${poll}
+      <div class="section-title">Generate or add a file</div>
+      <div class="form">
+        <div class="field"><label>Currency</label><select data-field="currency"><option>EUR</option><option>GBP</option></select></div>
+        <div class="field"><label>Trading day</label><input data-field="date" type="date"></div>
+        <button class="ghost small" data-action="env-generate">Generate</button>
+        <button class="ghost small" data-action="env-upload">Upload a file…</button>
+      </div>
+      <p class="hint"><b>Generate</b> keeps the file Worldline would cut from this environment's trading (blank day:
+        what its cycle would settle); nothing is published until you run it. <b>Upload</b> takes any file; one Worldline's
+        parser refuses is listed with why, and cannot run.</p>
+    </div>
+  </div>`;
 }
 
 /* --- environments ------------------------------------------------------ */
@@ -604,7 +702,9 @@ function fmtBytes(n) {
 /* The head of a file, in a wide modal: line numbers, the lines as they
    are, and how much of the file that is. */
 async function openPreview(id, name, lines) {
-  const r = await api('GET', `/v1/plugins/${encodeURIComponent(id)}/files/preview?name=${encodeURIComponent(name)}&lines=${lines}`);
+  const r = id.startsWith('env:')
+    ? await api('GET', `/v1/settlement-files/preview?name=${encodeURIComponent(name)}&lines=${lines}`)
+    : await api('GET', `/v1/plugins/${encodeURIComponent(id)}/files/preview?name=${encodeURIComponent(name)}&lines=${lines}`);
   const rows = r.lines || [];
   const width = String(rows.length).length;
   const other = lines >= 1000 ? 100 : 1000;
@@ -1730,10 +1830,16 @@ function widgetClock() {
 function widgetPlatform() {
   const p = platformPlugin();
   if (!p) {
+    // No runner's card: the environment's own (design-system.md,
+    // Environment card), green from its vendors' traffic.
+    const e = currentEnv() || { name: 'Default', default: true, state: 'never-seen' };
+    const d = state.files[envKey()];
+    const n = d && Array.isArray(d.files) ? d.files.length : null;
     return `<a class="widget" href="#platform">
         <span class="w-title">Platform under test</span>
-        <span class="w-value">none registered</span>
-        ${widgetLine('A platform puts its own card here by registering with the lab API — see <span class="mono">docs/plugins.md</span>.')}
+        <span class="w-value"><i class="dot ${e.state === 'seen' ? 'up' : 'unknown'}"></i> ${esc(e.default ? 'Default' : (e.name || e.id))}</span>
+        ${widgetLine(e.state === 'seen' ? `seen ${esc(ago(e.last_seen))} ago, by its vendors` : 'not seen by a vendor yet')}
+        ${n === null ? '' : widgetLine(`${n} settlement file${n === 1 ? '' : 's'} on its card`)}
         <span class="w-foot">Platform →</span>
       </a>`;
   }
@@ -2535,11 +2641,14 @@ function renderServices() {
     ? ' This lab was deployed without a lab clock, so there is no clock card either.'
     : '';
   const noPlatform = kind === 'platform' && !group.some((s) => s.plugin)
-    ? `<div class="note">No platform has registered. A platform under test puts its own card here by
-        posting a descriptor to the lab API's <span class="mono">/v1/plugins</span> and renewing it — see
-        <span class="mono">docs/plugins.md</span>. It then heads this list, with its buttons.${noClock}</div>`
+    ? `<div class="note">No runner has registered a card of its own. One that does — buddy's runner — adds its
+        buttons and its run log below this environment's card (<span class="mono">docs/plugins.md</span>).${noClock}</div>`
     : '';
-  return html + noPlatform + ordered.map(serviceCard).join('') + hiddenNote(hidden);
+  const envCard = kind === 'platform' ? envPlatformCard() : '';
+  // The stand-ins are the default environment's: another one never meets
+  // them, so its Platform view does not talk about them.
+  const standIns = state.env && state.env !== 'default' ? '' : hiddenNote(hidden);
+  return html + envCard + noPlatform + ordered.map(serviceCard).join('') + standIns;
 }
 
 function isHidden(s) { return !!(s.stand_in && !s.stand_in.shown); }
@@ -3318,6 +3427,58 @@ const ACTIONS = {
   'open-create-merchant': async () => { openMerchantModal(); },
 
   'open-create-env': async () => { openEnvModal(); },
+
+  'env-publish': async (d) => {
+    const files = d.files.split('|');
+    const r = await api('POST', '/v1/settlement-files/publish', { files, wire: true });
+    state.selected[envKey()] = new Set();
+    const lines = (r.results || []).map((x) => x.error ? `${x.name}: ${x.error}` : `${x.name} → ${x.published || 'published'}`);
+    toast(`Published ${r.published} of ${files.length} at Worldline`, `${lines.join('\n')}\n${r.note || ''}`, r.published === files.length ? 'good' : 'warn');
+  },
+
+  'env-clear-selection': async () => { state.selected[envKey()] = new Set(); },
+
+  'env-poll': async (d) => {
+    const r = await api('POST', '/v1/platform/poll', { fileType: d.type });
+    toast(`The platform polled (${d.type})`, typeof r === 'string' ? r : JSON.stringify(r, null, 1), 'good');
+  },
+
+  'env-generate': async (_d, btn) => {
+    const f = fieldsIn(btn.closest('.form'));
+    const body = { currency: f.currency || 'EUR' };
+    if (f.date) body.date = f.date;
+    const r = await api('POST', '/v1/settlement-files/generate', body);
+    const file = r.file || {};
+    toast('Settlement file generated', `${file.name}\n${file.currency} ${file.total} · ${(file.mids || []).length} MID(s)`, 'good');
+  },
+
+  'env-upload': async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      if (!file) return;
+      try {
+        const headers = {};
+        if (state.env && state.env !== 'default') headers['Lab-Environment'] = state.env;
+        const res = await fetch(`/v1/settlement-files?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers, body: file });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(out.error || `HTTP ${res.status}`);
+        toast('Uploaded', out.note || file.name, out.file && out.file.problem ? 'warn' : 'good');
+      } catch (err) {
+        toast('Upload failed', err.message, 'bad');
+      }
+      await load();
+    });
+    input.click();
+  },
+
+  'env-preview': async (d) => { await openPreview(envKey(), d.name, 100); },
+
+  'env-delete-file': async (d) => {
+    if (!confirm(`Delete ${d.name} from this environment's files? A file already published at Worldline stays there; only the lab's copy goes. There is no undo.`)) return;
+    await api('DELETE', `/v1/settlement-files?name=${encodeURIComponent(d.name)}`);
+  },
 
   'create-env': async (_d, btn) => {
     const f = fieldsIn(btn.closest('.modal'));

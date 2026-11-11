@@ -74,6 +74,7 @@ var apiGroups = []routeGroup{
 	{"merchants", "Merchants", "The lab's merchant registry, and putting its merchants on the vendors."},
 	{"banks", "Banks", "Accounts and payouts at the business bank and Banking Circle."},
 	{"actions", "Vendor actions", "Make a vendor do now what it would otherwise do on its schedule."},
+	{"card", "Platform card", "The environment's own card: its settlement files, publishing them at Worldline, and the platform's poll."},
 	{"plugins", "Plugins", "The platform under test: registration, its buttons and its settlement files."},
 	{"connect", "Connect", "What a platform needs to point at this lab: addresses, credentials, key files."},
 }
@@ -152,6 +153,13 @@ func (a *app) apiRoutes() []route {
 		{"POST", "/v1/actions/worldline-cycle", "/api/actions/worldline-cycle", "actions", "Cut and publish Worldline's settlement files now", "worldline POST /sim/settlement-cycle/run", a.runWorldlineCycle},
 		{"POST", "/v1/actions/settlement-pull", "/api/actions/settlement-pull", "actions", "Make the settlement stand-in pull Worldline's SFTP now", "settlement POST /sim/pull", a.settlementPull},
 
+		{"GET", "/v1/settlement-files", "", "card", "The environment's settlement files: generated or uploaded, read with Worldline's parser", "the lab API's own volume", a.listSettlementFiles},
+		{"POST", "/v1/settlement-files", "", "card", "Upload a settlement file to the environment's files", "the lab API's own volume", a.uploadSettlementFile},
+		{"POST", "/v1/settlement-files/generate", "", "card", "Keep the file Worldline would cut from the environment's trading", "worldline POST /sim/settlement-files/render", a.generateSettlementFile},
+		{"GET", "/v1/settlement-files/preview", "", "card", "The first lines of one of the environment's files", "the lab API's own volume", a.previewSettlementFile},
+		{"DELETE", "/v1/settlement-files", "", "card", "Delete one of the environment's files", "the lab API's own volume", a.deleteSettlementFile},
+		{"POST", "/v1/settlement-files/publish", "", "card", "Have Worldline publish files in the environment's SFTP folder, one per currency", "worldline POST /sim/settlement-files/publish, per file", a.publishSettlementFiles},
+		{"POST", "/v1/platform/poll", "", "card", "Run the platform's own Worldline poll now, at the poll_url its config names", "the environment's poll_url", a.platformPoll},
 		{"GET", "/v1/plugins", "/api/plugins", "plugins", "The registered platforms and how each registration stands", "nothing — the lab API's own state", a.listPlugins},
 		{"POST", "/v1/plugins", "/api/plugins", "plugins", "Register or renew a platform's card (docs/plugins.md)", "the lab API's own state; then health_path and stand-in wiring", a.registerPlugin},
 		{"DELETE", "/v1/plugins/{id}", "/api/plugins/{id}", "plugins", "Unregister a platform on a clean shutdown", "nothing — the lab API's own state", a.unregisterPlugin},

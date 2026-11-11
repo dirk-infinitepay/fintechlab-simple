@@ -4,13 +4,13 @@ package main
 // docs/api/services/worldline.md, Lab control).
 //
 // flow clears what a run makes: acquired transactions, the cycle-run
-// history and the lump sums in it, the settlement files the cycle
-// published, the reports the SFT channel archived on download, the armed
-// enrolment rejections (traps by another name) and the activity log. It
-// keeps what a platform set up once: enrolment receipts and the desk's
-// record of what it answered (the MIDs it issued), and the SFT channel's
-// configuration. all also forgets enrolment and puts the channel back to
-// its seed.
+// history and the lump sums in it, the settlement files the cycle and the
+// publish hook (files.go) published, the reports the SFT channel archived
+// on download, the armed enrolment rejections (traps by another name) and
+// the activity log. It keeps what a platform set up once: enrolment
+// receipts and the desk's record of what it answered (the MIDs it issued),
+// and the SFT channel's configuration. all also forgets enrolment and puts
+// the channel back to its seed.
 //
 // Every file a reset deletes is one this service wrote, recognised by its
 // name in the directory it writes it to. The SFTP root and ./sftp are
@@ -211,8 +211,8 @@ func (s *sim) clearEnv(e *envSim, scope string, cleared map[string]int) error {
 // removeSettlementFiles deletes the settlement files the cycle published,
 // from both download/ and to_WLNORDIC/: a name the cycle gives a file
 // (generated, or a fixture's own) with .pgp appended, or one the run
-// history says it published. The platform's enrolment batches beside them
-// in to_WLNORDIC/ never match.
+// history or the publish hook's record says was published. The platform's
+// enrolment batches beside them in to_WLNORDIC/ never match.
 func removeSettlementFiles(acq *settlementApp, published map[string]bool) (int, error) {
 	cut, err := acq.config().CutNames()
 	if err != nil {

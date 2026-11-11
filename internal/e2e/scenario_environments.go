@@ -340,3 +340,74 @@ func keys(m map[string]bool) []string {
 	}
 	return out
 }
+
+// EnvironmentCardPublishesAtWorldline proves the environment's platform
+// card (docs/lab-api/plan.md, phase 6) on a real lab: in a throwaway
+// environment it seeds a card payment, has Worldline render the morning
+// file into the environment's files, publishes it with its lump sum, and
+// finds it in the environment's own SFTP folder and the money on its own
+// safeguarding account. Its platform's poll is not set, so Poll now is the
+// lab's 409.
+func EnvironmentCardPublishesAtWorldline() Scenario {
+	return Scenario{
+		Name: "environment-card-publishes-at-worldline",
+		Run: func(ctx context.Context, env *Env, state *State) error {
+			e, err := newEnvironment(ctx, env, "e2e-card-"+strconv.FormatInt(time.Now().Unix(), 36))
+			if err != nil {
+				return err
+			}
+			defer e.drop(env)
+
+			day := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+			tx := map[string]any{"mid": "E2ECARD1", "currency": "EUR", "amount_cents": 12345, "date": day, "card_scheme_name": "Visa"}
+			if status, err := e.lab.Post(ctx, Sim("worldline", "transactions"), []any{tx}, nil); err != nil || status >= 300 {
+				return fmt.Errorf("seed a card payment in %s: %d %v", e.id, status, err)
+			}
+			var gen struct {
+				File struct {
+					Name, Currency, Total, Problem string
+				} `json:"file"`
+			}
+			if status, err := e.lab.Post(ctx, "/v1/settlement-files/generate", map[string]string{"currency": "EUR", "date": day}, &gen); err != nil || status != 201 {
+				return fmt.Errorf("generate %s's EUR file: %d %v", e.id, status, err)
+			}
+			if gen.File.Problem != "" || gen.File.Currency != "EUR" {
+				return fmt.Errorf("the generated file: %+v", gen.File)
+			}
+			var pub struct {
+				Published int              `json:"published"`
+				Results   []map[string]any `json:"results"`
+			}
+			if status, err := e.lab.Post(ctx, "/v1/settlement-files/publish", map[string]any{"files": []string{gen.File.Name}, "wire": true}, &pub); err != nil || status != 200 || pub.Published != 1 {
+				return fmt.Errorf("publish %s: %d %v %+v", gen.File.Name, status, err, pub.Results)
+			}
+			published, _ := pub.Results[0]["published"].(string)
+			published = lastPart(published)
+			seen, err := e.sftpFiles(env)
+			if err != nil || published == "" || !seen[published] {
+				return fmt.Errorf("%s's SFTP folder: %v, want %q (%v)", e.id, keys(seen), published, err)
+			}
+			if other, err := sftpFilesAs(env, "harness", env.WorldlineSFTPPassword); err == nil && other[published] {
+				return fmt.Errorf("the default's SFTP login sees %s's published file", e.id)
+			}
+			var accounts bcAccounts
+			if status, err := e.lab.Get(ctx, Sim("banking-circle", "accounts"), &accounts); err != nil || status != 200 {
+				return fmt.Errorf("%s's Banking Circle accounts: %d %v", e.id, status, err)
+			}
+			sga := e.kit["BC_SAFEGUARDING_ACCOUNT_ID_EUR"]
+			funded := false
+			for _, a := range accounts.Accounts {
+				if a.ID == sga && a.Balance != "0.00" && a.Balance != "" {
+					funded = true
+				}
+			}
+			if !funded {
+				return fmt.Errorf("the lump sum did not reach %s's safeguarding account %s: %+v", e.id, sga, accounts.Accounts)
+			}
+			if status, _ := e.lab.Post(ctx, "/v1/platform/poll", map[string]string{"fileType": "ER"}, nil); status != 409 {
+				return fmt.Errorf("poll with no poll_url: %d, want 409", status)
+			}
+			return nil
+		},
+	}
+}

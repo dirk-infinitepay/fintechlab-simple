@@ -59,3 +59,21 @@ func TestEnvironmentsAreKeptWithTheirTokenConfigKitAndRegistry(t *testing.T) {
 		t.Fatalf("List after delete = %+v", list)
 	}
 }
+
+func TestTheDefaultEnvironmentKeepsAConfigOfItsOwn(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if c, err := db.DefaultConfig(ctx); err != nil || c.PollURL != "" {
+		t.Fatalf("before anything is set: %+v %v", c, err)
+	}
+	if err := db.SaveDefaultConfig(ctx, Config{PollURL: "http://runner/poll", PollToken: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := db.DefaultConfig(ctx); c.PollURL != "http://runner/poll" || c.PollToken != "t" {
+		t.Fatalf("after: %+v", c)
+	}
+}

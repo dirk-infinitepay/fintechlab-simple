@@ -49,12 +49,15 @@ coverage.out
 /b4b
 /bank
 /bankingcircle
+/clock
 /console
 /e2e
+/labapi
 /notifier
 /paymentapi
 /receiver
 /settlement
+/verification
 /verify
 
 # Editor / OS

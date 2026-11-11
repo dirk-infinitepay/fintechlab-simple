@@ -651,6 +651,15 @@ runs with. *+ Create environment* asks for a name and the optional config
 and *Delete* ask first. Deleting makes every vendor forget the
 environment's records.
 
+Every environment has a **platform card**, at the top of the Platform view
+([lab-api/plan.md, phase 6](lab-api/plan.md#phase-6--the-platform-card-is-the-environments)).
+It holds the environment's settlement files: generated from its trading,
+or uploaded. Tick one per currency and *Run* them, and Worldline publishes
+them in the environment's SFTP folder for the platform's own poll to pick
+up. *Poll now* asks the platform to poll at once, at the `poll_url` its
+config names. A runner that registers its own card still adds its buttons
+below.
+
 With more than the default, the topbar has a **selector**: every view then
 shows that environment's merchants, payouts, files, traps and activity,
 and every download is its own. A vendor that does not keep environments
