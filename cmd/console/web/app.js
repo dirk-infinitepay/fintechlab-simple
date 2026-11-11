@@ -452,9 +452,8 @@ function databaseConfig(scope, cfg) {
   });
   if (Object.keys(dbs).length) out.databases = dbs;
   if (f.tunnel_host) {
-    const t = { host: f.tunnel_host, user: f.tunnel_user || '' };
-    if (f.tunnel_port) t.port = parseInt(f.tunnel_port, 10);
-    if (f.tunnel_host_key) t.host_key = f.tunnel_host_key;
+    // Port and pin always go: a change keeps what it leaves out, so blank must clear them.
+    const t = { host: f.tunnel_host, user: f.tunnel_user || '', port: f.tunnel_port ? parseInt(f.tunnel_port, 10) : 0, host_key: f.tunnel_host_key || '' };
     scope.querySelectorAll('[data-secret]').forEach((el) => {
       if (el.value !== '') t[el.dataset.secret.replace(/^tunnel_/, '')] = el.value;
     });
@@ -666,6 +665,7 @@ function envCard(e) {
       <div class="form">
         <a class="ghost small" href="${esc(e.kit)}" download>Download fintechlab-${esc(e.default ? 'env' : e.id)}.env</a>
         ${e.id === state.env ? '' : `<button class="ghost small" data-action="use-env" data-id="${esc(e.id)}">Use</button>`}
+        <button class="ghost small" data-action="open-databases" data-id="${esc(e.id)}">Databases and jump host…</button>
         ${e.default ? '' : `<button class="ghost small" data-action="rotate-env-token" data-id="${esc(e.id)}">Rotate token</button>
         <button class="ghost small" data-action="delete-env" data-id="${esc(e.id)}" data-name="${esc(e.name || e.id)}">Delete</button>`}
       </div>
@@ -3658,14 +3658,19 @@ const ACTIONS = {
 
   'open-databases': async (d) => {
     const e = (Array.isArray(state.envs) ? state.envs : []).find((x) => x.id === d.id) || currentEnv();
-    if (e) openDatabasesModal(e);
+    if (!e) return;
+    // The seeder names the databases the form asks for; the Platform view may not have asked it yet.
+    if (!state.platform || !state.platform.seeder) {
+      try { state.platform = await api('GET', '/v1/platform'); } catch (err) { state.platform = { error: err.message }; }
+    }
+    openDatabasesModal(e);
   },
 
   'save-databases': async (d, btn) => {
     const e = (Array.isArray(state.envs) ? state.envs : []).find((x) => x.id === d.id);
     if (!e) throw new Error(`no environment ${d.id} here`);
-    // A change sends the whole config: the view's, its secrets as "(set)", which keeps them.
-    const config = { ...(e.config || {}), ...databaseConfig(btn.closest('.modal'), e.config) };
+    // A change keeps what it leaves out: the databases and the jump host are all it sends.
+    const config = databaseConfig(btn.closest('.modal'), e.config);
     await api('PATCH', `/v1/environments/${encodeURIComponent(d.id)}`, { config }, { noEnv: true });
     closeModal();
     toast('Databases saved', `${d.id}: ${Object.keys(config.databases || {}).join(', ') || 'none'}${config.tunnel ? `, through ${config.tunnel.user}@${config.tunnel.host}` : ''}`, 'good');

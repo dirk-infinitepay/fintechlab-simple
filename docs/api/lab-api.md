@@ -442,9 +442,8 @@ An environment is shown as:
   PKCS#8), opened with `passphrase` when it is encrypted, and checked when
   the config is saved; `password` is tried with it, or alone; `host_key`
   pins the jump host's key as `ssh-keygen -lf` prints it (`SHA256:…`), and
-  empty accepts any. The three secrets are shown as `(set)`; a change that
-  leaves `tunnel` out keeps it, one that sends it keeps a secret it leaves
-  out or sends back as `(set)`, and `null` removes it). All optional.
+  empty accepts any. The three secrets are shown as `(set)`, and a change
+  keeps them as [`PATCH`](#patch-v1environmentsid) says). All optional.
 
 With a `tunnel`, every seeder call opens it for as long as the call takes:
 the lab connects to the jump host, forwards a port of its own on
@@ -512,13 +511,26 @@ otherwise).
 
 ### `PATCH /v1/environments/{id}`
 
-Rename an environment or replace its config. *Admin.*
+Rename an environment or change its config. *Admin.*
 
-**Body** — `{"name": "…", "config": {…}}`, either; `config` replaces the
-whole config, except that a `poll_token` it leaves out (or sends back as
-`(set)`) keeps the one there is. For `default`, only `config` can be set,
-and only its `poll_url`, `poll_token`, `databases` and `clock`: its vendor
-settings are the lab's deployment.
+**Body** — `{"name": "…", "config": {…}}`, either. `config` names only
+what changes: a setting it leaves out keeps its value, one it sends
+replaces it, and `""`, `[]` or `null` clears it. So registering an
+environment's databases and jump host is
+
+```json
+{"config": {"databases": {"platform": "postgres://…", "settle": "postgres://…"},
+            "tunnel": {"host": "34.240.176.175", "user": "jumpuser", "private_key": "-----BEGIN …"}}}
+```
+
+and leaves its settlement identifier, webhook hosts and poll alone. A
+secret sent back as the view shows it, `(set)`, keeps its value
+(`poll_token`, a database, the tunnel's `private_key`, `passphrase` and
+`password`); a database sent as `""` is removed and one left out is kept; a
+`tunnel` that is sent changes only the fields it names, and `null` removes
+it. For `default`, only `config` can be set, and only its `poll_url`,
+`poll_token`, `databases`, `tunnel` and `clock`: its vendor settings are the
+lab's deployment.
 
 **Answers** — `200 {"environment": {…}, "pushed": {…}}` (no `pushed` for
 `default`); `400` for a bad config, a rename of `default`, or a vendor

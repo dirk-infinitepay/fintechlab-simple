@@ -396,3 +396,56 @@ func TestARevokedEnvironmentTokenIsNeverTheAdminsEvenOnAnOpenLab(t *testing.T) {
 		t.Fatalf("the rotated-out token: %d, want 401", w.Code)
 	}
 }
+
+// A change names only what changes: what it leaves out keeps its value,
+// so a script can register an environment's databases and jump host
+// without restating, or dropping, the rest of its config.
+func TestAConfigChangeKeepsWhatItLeavesOut(t *testing.T) {
+	a, _ := newFilesApp(t)
+	createEnvOnly(t, a, `{"id": "sbx", "config": {"settlement_identifier": "Infinite_Payment", "webhook_hosts": ["alb.example"],
+		"poll_url": "http://alb.example/poll", "poll_token": "poll-secret"}}`)
+	key, _ := clientKey(t, "")
+	body, _ := json.Marshal(map[string]any{"config": map[string]any{
+		"databases": map[string]string{"platform": "postgres://p:db-secret@db:5432/platform", "settle": "postgres://p:db-secret@db:5432/settle"},
+		"tunnel":    map[string]any{"host": "bastion.example", "user": "jump", "private_key": key},
+	}})
+	if w := as(t, a, "admin-token", "PATCH", "/v1/environments/sbx", string(body)); w.Code != 200 {
+		t.Fatalf("set the databases alone: %d %s", w.Code, w.Body)
+	}
+	cfg := func() labdb.Config {
+		t.Helper()
+		e, err := a.db.Get(context.Background(), "sbx")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e.Config
+	}
+	c := cfg()
+	if c.SettlementIdentifier != "Infinite_Payment" || len(c.WebhookHosts) != 1 || c.PollURL != "http://alb.example/poll" ||
+		c.PollToken != "poll-secret" || len(c.Databases) != 2 || c.Tunnel == nil || c.Tunnel.PrivateKey != key {
+		t.Fatalf("after setting the databases alone: %+v", c)
+	}
+	// One database, the tunnel's port and pin: the rest stays.
+	if w := as(t, a, "admin-token", "PATCH", "/v1/environments/sbx",
+		`{"config": {"databases": {"settle": "postgres://p:other@db2:5432/settle"}, "tunnel": {"port": 2222, "host_key": "SHA256:`+strings.Repeat("A", 43)+`"}}}`); w.Code != 200 {
+		t.Fatalf("change one database and the tunnel's port: %d %s", w.Code, w.Body)
+	}
+	c = cfg()
+	if c.Databases["platform"] != "postgres://p:db-secret@db:5432/platform" || c.Databases["settle"] != "postgres://p:other@db2:5432/settle" ||
+		c.Tunnel.Host != "bastion.example" || c.Tunnel.Port != 2222 || c.Tunnel.PrivateKey != key || c.Tunnel.HostKey == "" {
+		t.Fatalf("after changing one database and the port: %+v %+v", c.Databases, *c.Tunnel)
+	}
+	// "" clears a setting and removes a database; null removes the tunnel.
+	if w := as(t, a, "admin-token", "PATCH", "/v1/environments/sbx",
+		`{"config": {"poll_url": "", "webhook_hosts": [], "databases": {"settle": ""}, "tunnel": {"host_key": ""}}}`); w.Code != 200 {
+		t.Fatalf("clear: %d %s", w.Code, w.Body)
+	}
+	c = cfg()
+	if c.PollURL != "" || len(c.WebhookHosts) != 0 || c.Databases["settle"] != "" || c.Databases["platform"] == "" ||
+		c.Tunnel.HostKey != "" || c.SettlementIdentifier != "Infinite_Payment" {
+		t.Fatalf("after clearing: %+v", c)
+	}
+	if w := as(t, a, "admin-token", "PATCH", "/v1/environments/sbx", `{"config": {"tunnel": null}}`); w.Code != 200 || cfg().Tunnel != nil {
+		t.Fatalf("remove the tunnel: %d %s", w.Code, w.Body)
+	}
+}

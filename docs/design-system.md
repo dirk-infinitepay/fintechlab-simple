@@ -636,7 +636,8 @@ One **Card** per environment, the default first and marked `lab's own`:
   card has them. The answer's token is shown in the toast, because the
   environment's card shows it again anyway.
 - Its `.kv` shows which databases are set and the jump host
-  (`user@host:port`, *key pinned* when it is), never a URL or a secret.
+  (`user@host:port`, *key pinned* when it is), never a URL or a secret;
+  *Databases and jump host…* opens the card's modal of that name for it.
 
 ### Environment card — the platform card every environment has
 
@@ -675,8 +676,8 @@ buttons when there is one.
   (`textarea`), its passphrase, a password, a host key to pin. A secret is
   never shown back: its field is empty, its placeholder says `(set)`, and
   blank keeps it; a blank jump host removes the one there was. The foot's
-  `.btn` saves the environment's whole config, as its view shows it, with
-  these laid over it. **Check databases** reaches each one (through the
+  `.btn` sends the databases and the jump host alone, since a change keeps
+  what it leaves out. **Check databases** reaches each one (through the
   jump host when there is one) and toasts what it found, the host key the
   jump host showed included, so it can be pinned.
 - **Upload a file…** opens a picker made on the spot, as the **File field**

@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"regexp"
 	"sort"
@@ -100,56 +101,49 @@ func masked(c labdb.Config) labdb.Config {
 	return c
 }
 
-// configPatch decodes a PATCH's config: a whole config, except that a
-// poll_token it leaves out (or sends back as "(set)") keeps the one there
-// is, so editing an environment's other settings never drops its token.
+// configPatch lays a PATCH's config over the one there is: a setting it
+// leaves out keeps its value, and one it sends replaces it ("", [] or null
+// clears it), so a script can set the databases alone without dropping the
+// rest. The secrets a view masks keep theirs when they come back as
+// "(set)": poll_token; each database ("" removes one, and a name left out
+// keeps its URL); and the tunnel's private_key, passphrase and password. A
+// tunnel that is sent changes only the fields it names; null removes it.
 func configPatch(raw json.RawMessage, was labdb.Config) (labdb.Config, error) {
-	var c labdb.Config
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return c, err
+	// Decoding over a copy keeps what the body leaves out: encoding/json
+	// sets only the fields it names, adds to a map it finds, and sets a
+	// pointer it is sent null to nil.
+	c := was
+	c.WebhookHosts = append([]string(nil), was.WebhookHosts...)
+	c.Databases = maps.Clone(was.Databases)
+	if was.Tunnel != nil {
+		t := *was.Tunnel
+		c.Tunnel = &t
 	}
-	var keys map[string]json.RawMessage
-	_ = json.Unmarshal(raw, &keys)
-	if _, sent := keys["poll_token"]; !sent || c.PollToken == tokenShown {
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return was, err
+	}
+	if c.PollToken == tokenShown {
 		c.PollToken = was.PollToken
 	}
-	// Databases the same way: left out keeps them all, and a name sent back
-	// as "(set)" keeps that one; "" removes one.
-	if _, sent := keys["databases"]; !sent {
-		c.Databases = was.Databases
-	} else {
-		for name, url := range c.Databases {
-			if url == tokenShown {
-				c.Databases[name] = was.Databases[name]
-			}
-			if c.Databases[name] == "" {
-				delete(c.Databases, name)
-			}
+	for name, url := range c.Databases {
+		if url == tokenShown {
+			c.Databases[name] = was.Databases[name]
+		}
+		if c.Databases[name] == "" {
+			delete(c.Databases, name)
 		}
 	}
-	// The tunnel too: left out keeps it, null removes it, and in one that
-	// is sent a secret left out (or sent back as "(set)") keeps the one
-	// there is, while "" removes it.
-	raw, sent := keys["tunnel"]
-	switch {
-	case !sent:
-		c.Tunnel = was.Tunnel
-	case string(raw) == "null":
-		c.Tunnel = nil
-	case c.Tunnel != nil:
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(raw, &fields)
+	if c.Tunnel != nil {
 		var old labdb.Tunnel
 		if was.Tunnel != nil {
 			old = *was.Tunnel
 		}
-		for key, secret := range map[string]struct{ now, was *string }{
-			"private_key": {&c.Tunnel.PrivateKey, &old.PrivateKey},
-			"passphrase":  {&c.Tunnel.Passphrase, &old.Passphrase},
-			"password":    {&c.Tunnel.Password, &old.Password},
-		} {
-			if _, given := fields[key]; !given || *secret.now == tokenShown {
-				*secret.now = *secret.was
+		for _, secret := range []struct {
+			now *string
+			was string
+		}{{&c.Tunnel.PrivateKey, old.PrivateKey}, {&c.Tunnel.Passphrase, old.Passphrase}, {&c.Tunnel.Password, old.Password}} {
+			if *secret.now == tokenShown {
+				*secret.now = secret.was
 			}
 		}
 	}
