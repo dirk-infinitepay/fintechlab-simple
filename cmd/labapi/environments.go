@@ -171,6 +171,13 @@ func (a *app) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 500, err.Error())
 		return
 	}
+	// Only once the id is known to be free: files an earlier environment of
+	// that id left on the volume are not this one's.
+	if n, err := a.removeEnvFiles(e.ID); err != nil {
+		log.Printf("lab-api: environment %s: an earlier one's files remain: %v", e.ID, err)
+	} else if n > 0 {
+		log.Printf("lab-api: environment %s: removed %d files an earlier one left", e.ID, n)
+	}
 	pushed := a.pushCustomer(r.Context(), e)
 	log.Printf("lab-api: environment %s created; customers pushed: %v", e.ID, pushed)
 	v := a.view(r.Context(), e, a.seenBy(r.Context()), true)
@@ -360,8 +367,17 @@ func (a *app) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 		envError(w, id, err)
 		return
 	}
-	log.Printf("lab-api: environment %s deleted: %v", id, removed)
-	httputilx.WriteJSON(w, 200, map[string]any{"deleted": id, "vendors": removed})
+	out := map[string]any{"deleted": id, "vendors": removed}
+	files, err := a.removeEnvFiles(id)
+	out["files_deleted"] = files
+	if err != nil {
+		// The environment is gone either way; creating one under this id
+		// tries again.
+		out["files_error"] = err.Error()
+		log.Printf("lab-api: environment %s deleted, but not its files: %v", id, err)
+	}
+	log.Printf("lab-api: environment %s deleted: %v, %d files", id, removed, files)
+	httputilx.WriteJSON(w, 200, out)
 }
 
 func (a *app) rotateEnvironmentToken(w http.ResponseWriter, r *http.Request) {

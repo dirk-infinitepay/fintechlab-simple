@@ -627,8 +627,9 @@ One **Card** per environment, the default first and marked `lab's own`:
 - The kit is a **Download** of its `.env`, named `fintechlab-<id>.env`.
 - *Use* switches the selector to it; *Rotate token* and *Delete* are
   `.ghost` and confirmed in the vendor's own words (contract 7): delete says
-  that every vendor forgets the environment's records and its token stops
-  working, and that the default is untouched.
+  that every vendor forgets the environment's records, its settlement files
+  on the card go, and its token stops working, and that the default is
+  untouched.
 - *+ Create environment* in the topbar opens a **Modal**: name, id (blank:
   made from the name), and the config fields, each with a `.hint`. The
   answer's token is shown in the toast, because the environment's card

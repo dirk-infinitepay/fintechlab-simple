@@ -475,9 +475,10 @@ defaults to the name made lower-case with dashes, `config` to `{}`.
 customer (one that is down gets it from the sync once it is back). `400`
 for an id that is not lower-case letters, digits and dashes, is `default`
 or `*`, or for a bad config; `409` for an id taken; `503` when the lab has
-no database.
+no database. A new environment starts with no settlement files: any an
+earlier environment of that id left on the lab's volume are removed.
 
-**Reaches** — the lab's database; each vendor's control
+**Reaches** — the lab's database and volume; each vendor's control
 `PUT /sim/customers/{env}`.
 
 ### `GET /v1/environments/{id}`
@@ -510,16 +511,18 @@ setting on `default`; `404`.
 ### `DELETE /v1/environments/{id}`
 
 Delete an environment: every vendor forgets its customer and everything
-it made, then its plugins, its merchant registry and its token go.
-*Admin.*
+it made, then its plugins, its merchant registry, its token and its
+settlement files on the lab's volume go. *Admin.*
 
 **Answers** — `200 {"deleted": "sbx", "vendors": {"banking-circle":
-"removed", …}}`; `502` with the same `vendors` when one could not be
-reached, and then nothing else was removed — call again. `400` for
-`default`; `404`.
+"removed", …}, "files_deleted": 3}`, with `files_error` when the files
+could not be removed (the environment is gone all the same, and creating
+one under that id removes them); `502` with the same `vendors` when one
+could not be reached, and then nothing else was removed — call again.
+`400` for `default`; `404`.
 
 **Reaches** — each vendor's control `DELETE /sim/customers/{env}`; the
-lab's database.
+lab's database and volume.
 
 ### `POST /v1/environments/{id}/token`
 

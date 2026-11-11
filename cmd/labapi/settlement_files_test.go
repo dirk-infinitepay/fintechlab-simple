@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -228,5 +230,60 @@ func TestTheDefaultEnvironmentsPollCanBeSet(t *testing.T) {
 	}
 	if w := as(t, a, "admin-token", "GET", "/v1/environments/default", ""); !strings.Contains(w.Body.String(), "runner:3109") {
 		t.Fatalf("the default's view: %s", w.Body)
+	}
+}
+
+func TestAnEnvironmentsFilesGoWithIt(t *testing.T) {
+	a, _ := newFilesApp(t)
+	_, token := createEnvOnly(t, a, `{"id": "sbx"}`)
+	if w := as(t, a, token, "POST", "/v1/settlement-files/cut", `{"currency": "EUR"}`); w.Code != 201 {
+		t.Fatalf("cut: %d %s", w.Code, w.Body)
+	}
+	if w := as(t, a, token, "POST", "/v1/settlement-files?name=mine_GBP.csv", string(bambora(t, "GBP", "M2"))); w.Code != 201 {
+		t.Fatalf("upload: %d %s", w.Code, w.Body)
+	}
+	if w := as(t, a, "admin-token", "POST", "/v1/settlement-files?name=lab_EUR.csv", string(bambora(t, "EUR", "M1"))); w.Code != 201 {
+		t.Fatalf("upload to default: %d %s", w.Code, w.Body)
+	}
+
+	w := as(t, a, "admin-token", "DELETE", "/v1/environments/sbx", "")
+	var del struct {
+		FilesDeleted int    `json:"files_deleted"`
+		FilesError   string `json:"files_error"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &del)
+	if w.Code != 200 || del.FilesDeleted != 2 || del.FilesError != "" {
+		t.Fatalf("delete: %d %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(filepath.Join(a.dataDir, "files", "sbx")); !os.IsNotExist(err) {
+		t.Fatalf("sbx's folder is still there: %v", err)
+	}
+	if w := as(t, a, "admin-token", "GET", "/v1/settlement-files", ""); !strings.Contains(w.Body.String(), "lab_EUR.csv") {
+		t.Fatalf("the default environment lost its file: %s", w.Body)
+	}
+
+	// Files a deleted environment left before deletes took them (or that a
+	// delete could not remove) are not a new environment's of the same id.
+	left := filepath.Join(a.dataDir, "files", "old", sourceUploaded)
+	if err := os.MkdirAll(left, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(left, "stale_EUR.csv"), bambora(t, "EUR", "M9"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, oldToken := createEnvOnly(t, a, `{"id": "old"}`)
+	if w := as(t, a, oldToken, "GET", "/v1/settlement-files", ""); strings.Contains(w.Body.String(), "stale_EUR") {
+		t.Fatalf("a new environment found an old one's file: %s", w.Body)
+	}
+
+	// Creating an environment that exists is refused and touches nothing.
+	if w := as(t, a, oldToken, "POST", "/v1/settlement-files?name=keep_GBP.csv", string(bambora(t, "GBP", "M3"))); w.Code != 201 {
+		t.Fatalf("upload: %d %s", w.Code, w.Body)
+	}
+	if w := as(t, a, "admin-token", "POST", "/v1/environments", `{"id": "old"}`); w.Code != 409 {
+		t.Fatalf("create again: %d, want 409", w.Code)
+	}
+	if w := as(t, a, oldToken, "GET", "/v1/settlement-files", ""); !strings.Contains(w.Body.String(), "keep_GBP.csv") {
+		t.Fatalf("a refused create took the environment's files: %s", w.Body)
 	}
 }

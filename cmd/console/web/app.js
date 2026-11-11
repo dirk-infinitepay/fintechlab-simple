@@ -3623,7 +3623,7 @@ const ACTIONS = {
   },
 
   'delete-env': async (d) => {
-    if (!confirm(`Delete ${d.name}? Every vendor forgets its records — payouts, accounts, files, merchants — and its token and logins stop working. The default environment and every other one are untouched. There is no undo.`)) return;
+    if (!confirm(`Delete ${d.name}? Every vendor forgets its records — payouts, accounts, files, merchants — its settlement files on the card go, and its token and logins stop working. The default environment and every other one are untouched. There is no undo.`)) return;
     const r = await api('DELETE', `/v1/environments/${encodeURIComponent(d.id)}`, undefined, { noEnv: true });
     if (state.env === d.id) setEnv('default', false);
     toast('Environment deleted', Object.entries(r.vendors || {}).map(([svc, how]) => `${svc}: ${how}`).join('\n') || d.id, 'good');

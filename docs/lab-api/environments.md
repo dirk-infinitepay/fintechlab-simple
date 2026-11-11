@@ -160,7 +160,9 @@ Other routes:
   environment token sees its own.
 - `GET`, `PATCH` and `DELETE /v1/environments/{id}`. Deleting clears the
   environment's records at every vendor, as an `all` reset would, removes
-  its customers, and drops its token.
+  its customers, drops its token, and removes its settlement files from the
+  lab's volume. An environment created under an id one had before starts
+  with none of the old one's files.
 - `POST /v1/environments/{id}/token`: rotate the token.
 
 ### Status: green from traffic, not from a heartbeat

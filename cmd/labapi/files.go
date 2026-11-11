@@ -69,6 +69,26 @@ func (a *app) filesDir(ctx context.Context, source string) string {
 	return filepath.Join(a.dataDir, "files", scopeOf(ctx), source)
 }
 
+// removeEnvFiles takes an environment's settlement files off the lab's
+// volume, every source at once, and says how many there were. A deleted
+// environment's files go with it, and an environment created under an id
+// one had before starts without them: they pay MIDs of a platform that is
+// no longer there. The default environment is never one of these.
+func (a *app) removeEnvFiles(id string) (int, error) {
+	if tenant.Valid(id) != nil {
+		return 0, nil
+	}
+	dir := filepath.Join(a.dataDir, "files", id)
+	n := 0
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err == nil && d.Type().IsRegular() {
+			n++
+		}
+		return nil
+	})
+	return n, os.RemoveAll(dir)
+}
+
 // findFile is where name is, in either folder.
 func (a *app) findFile(ctx context.Context, name string) (string, string, bool) {
 	for _, src := range sources {
