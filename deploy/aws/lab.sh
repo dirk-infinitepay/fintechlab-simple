@@ -20,9 +20,10 @@
 #   deploy/aws/lab.sh stop|start the host (state in memory goes with a stop)
 #   deploy/aws/lab.sh destroy    delete the stack and everything in it
 #
-# Configuration: deploy/aws/lab.env (copy lab.env.example), or the same
-# variables in the environment, which win. Nothing here touches anything the
-# stack did not create.
+# Configuration: deploy/aws/lab.env (copy lab.env.example), or the file
+# LAB_CONFIG names -- another lab, say LAB_CONFIG=deploy/aws/lab-sbx.env --
+# or the same variables in the environment, which win. Nothing here touches
+# anything the stack did not create.
 set -euo pipefail
 
 # Where you ran it from: lab.sh env saves there, not in the checkout.
@@ -301,7 +302,8 @@ cmd_deploy() {
   local id host ip bucket vol sans rev key url
   id="$(output InstanceId)" host="$(output PublicHost)" ip="$(output PublicIp)"
   bucket="$(output ReleaseBucket)" vol="$(output DataVolumeId)"
-  sans="IP:$ip"
+  # The Elastic IP, and any names LAB_SANS adds (DNS:<name>,IP:<address>).
+  sans="IP:$ip${LAB_SANS:+,$LAB_SANS}"
 
   # cloud (no lab clock) unless lab.env asks for local: a lab driven by a
   # runner that follows its clock (docs/deploy-cloud.md, A runner on your

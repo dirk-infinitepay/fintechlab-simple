@@ -146,7 +146,9 @@ make aws-token     # the lab API's token
 `lab.env` holds the account, the stack's name, who may reach the lab and
 the platform's webhook hosts — each variable is described in
 [lab.env.example](../deploy/aws/lab.env.example). Everything set in the
-environment wins over the file.
+environment wins over the file. A second lab, in another account or under
+another stack name, is a second file: `LAB_CONFIG=deploy/aws/lab-sbx.env
+deploy/aws/lab.sh deploy` (`lab-*.env` is gitignored too).
 
 `aws-deploy` builds `dist/fintechlab-cloud.tgz` (the images, the e2e
 suite's, the rendered manifest, `play.sh`, `e2e.sh`), uploads it, and runs
