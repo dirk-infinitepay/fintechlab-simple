@@ -394,6 +394,5 @@ e2e-docker:
 		-e CLIENT_KEY=/keys/certs/client-key.pem \
 		-e WORLDLINE_SFTP_HOST=worldline \
 		-e WORLDLINE_SFTP_PASSWORD=sim-sftp-dev-only \
-		-e WORLDLINE_PGP_PRIVATE_KEY_PATH=/keys/wlsftp-keys/worldline_private.asc \
 		-v "$(LAB_KEYS_DIR)":/keys:ro \
 		fintechlab-simple_e2e

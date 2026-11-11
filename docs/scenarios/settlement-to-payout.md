@@ -5,7 +5,7 @@ downstream settlement bank) half of the lab, by hand.
 
 Follow the money. Nothing here reads a shared directory: the platform side
 learns what it is owed the same way it would in production — by pulling a
-file off Worldline's SFTP server and decrypting it.
+file off Worldline's SFTP server.
 
 What only the lab can do — seed trading, fire a cycle now, land a wire,
 read what a vendor sent — goes through the lab API on `:8097`. When the lab
@@ -57,22 +57,15 @@ Two things come back, and both matter:
 
 ## 3. Read the file the way the platform does
 
-The file is PGP-encrypted on a real SSH/SFTP server on port `2222` — a
-genuine SSH server, not an HTTP facade:
+The file sits on a real SSH/SFTP server on port `2222` — a genuine SSH
+server, not an HTTP facade — plain, as Worldline leaves its settlement
+files:
 
 ```bash
 sftp -P 2222 infinitepay@127.0.0.1
 # password: sim-sftp-dev-only  (WORLDLINE_SFTP_PASSWORD)
 sftp> ls download
-sftp> get download/<the .pgp file>
-```
-
-Decrypting needs the private key (`keys/wlsftp-keys/worldline_private.asc`,
-generated on first run):
-
-```bash
-gpg --import keys/wlsftp-keys/worldline_private.asc
-gpg --decrypt <the .pgp file>
+sftp> get download/<the _ER_ file>
 ```
 
 A real deployment pins the server's host key. This lab writes the
@@ -210,10 +203,10 @@ redelivered — events that happened *while* it was down are not backfilled.
 
 ## 8. What you just proved
 
-The acquirer produced the settlement file, encrypted it, and put it
+The acquirer produced the settlement file and put it
 somewhere the platform could only reach over SSH. The lump sum that landed
 matched the file's own total, and the per-MID rows inside it added up to
-that lump sum. The platform pulled it, decrypted it, parsed it, split it
+that lump sum. The platform pulled it, parsed it, split it
 per outlet, and each payout waited for real funds, a passing sanctions
 status, and creditor details that agreed with the beneficiary — before B4B
 drove its own lifecycle and handed the payment to Banking Circle, which

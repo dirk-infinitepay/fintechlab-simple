@@ -153,7 +153,7 @@ func (s *sim) newEnv(env, root, ident string) *envSim {
 		sga[ccy] = tenant.SafeguardingAccount(env, ccy)
 	}
 	acq := &settlementApp{
-		env: env, store: worldline.NewStore(), cfg: cfg, root: root, keys: s.acq.keys,
+		env: env, store: worldline.NewStore(), cfg: cfg, root: root,
 		sgaURL: s.acq.sgaURL, sgaAccount: sga, httpClient: s.acq.httpClient, guard: guard,
 	}
 	desk := newEnrolmentDesk(root, s.desk.keys, s.desk.delay, s.desk.sweep)

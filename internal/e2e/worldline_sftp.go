@@ -3,16 +3,12 @@ package e2e
 import (
 	"fmt"
 
-	"github.com/ProtonMail/go-crypto/openpgp"
-
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 )
 
-// downloadWorldlineFile dials the acquirer's real SFTP+PGP channel,
-// downloads one file from its download/ directory, and decrypts it with
-// the PGP keypair worldline generated -- loaded, not regenerated, via the
-// shared keys/wlsftp-keys volume (LoadOrGenerateKeypair reads an existing
-// keypair back rather than creating a new one).
+// downloadWorldlineFile dials the acquirer's real SFTP channel and
+// downloads one file from its download/ directory, as it lies there:
+// Worldline leaves its settlement files unencrypted.
 //
 // This is the e2e suite's own second opinion. The platform pulls the same
 // file through the same channel; having the e2e suite do it independently is
@@ -34,14 +30,9 @@ func downloadWorldlineFile(env *Env, filename string) ([]byte, error) {
 	}
 	defer c.Close()
 
-	own, err := wlsftp.LoadOrGenerateKeypair(env.WorldlinePGPPublicKeyPath, env.WorldlinePGPPrivateKeyPath,
-		"harness", "fintechlab-simple", "harness@fintechlab-simple.local")
-	if err != nil {
-		return nil, fmt.Errorf("e2e: load worldline pgp keypair: %w", err)
-	}
-	plaintext, err := c.Download(filename, openpgp.EntityList{own})
+	body, err := c.Download(filename, nil)
 	if err != nil {
 		return nil, fmt.Errorf("e2e: %w", err)
 	}
-	return plaintext, nil
+	return body, nil
 }

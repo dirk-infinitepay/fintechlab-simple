@@ -222,10 +222,3 @@ func Decrypt(ciphertext []byte, keyring openpgp.EntityList) ([]byte, error) {
 	}
 	return plaintext, nil
 }
-
-// PGPFilename returns the on-disk filename for the PGP-encrypted form of
-// name, matching the real convention of appending a plain ".pgp" suffix to
-// the original settlement filename.
-func PGPFilename(name string) string {
-	return name + ".pgp"
-}

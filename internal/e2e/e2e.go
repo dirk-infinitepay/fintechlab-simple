@@ -62,11 +62,9 @@ type Env struct {
 	// already generated into (shared read-only via a bind-mounted volume)
 	// so the e2e suite can decrypt what it downloads without generating its
 	// own key.
-	WorldlineSFTPHost          string
-	WorldlineSFTPPort          string
-	WorldlineSFTPPassword      string
-	WorldlinePGPPublicKeyPath  string
-	WorldlinePGPPrivateKeyPath string
+	WorldlineSFTPHost     string
+	WorldlineSFTPPort     string
+	WorldlineSFTPPassword string
 }
 
 func EnvFromOS() (*Env, error) {
@@ -84,23 +82,21 @@ func EnvFromOS() (*Env, error) {
 		return nil, fmt.Errorf("e2e: tls client: %w", err)
 	}
 	return &Env{
-		Lab:                        newLab(env("LAB_API_URL", "http://127.0.0.1:8097"), os.Getenv("LAB_API_TOKEN"), caFile),
-		PaymentAPIURL:              env("PAYMENT_API_URL", "http://127.0.0.1:8080"),
-		BankURL:                    env("BANK_URL", "http://127.0.0.1:8081"),
-		NotifierURL:                env("NOTIFIER_URL", "http://127.0.0.1:8082"),
-		ReceiverURL:                env("RECEIVER_URL", "https://127.0.0.1:8443"),
-		ReceiverDeliveryURL:        env("RECEIVER_DELIVERY_URL", ""),
-		SettlementURL:              env("SETTLEMENT_URL", "http://127.0.0.1:8083"),
-		BankingCircleURL:           env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
-		B4BURL:                     env("B4B_URL", "http://127.0.0.1:8086"),
-		B4BJWTPrivateKeyPath:       env("B4B_JWT_PRIVATE_KEY_PATH", filepath.Join(keys, "b4b-keys/private.pem")),
-		B4BJWTKeyID:                env("B4B_JWT_KEY_ID", "b4b-mock-1"),
-		Client:                     client,
-		WorldlineSFTPHost:          env("WORLDLINE_SFTP_HOST", "127.0.0.1"),
-		WorldlineSFTPPort:          env("WORLDLINE_SFTP_PORT", "2222"),
-		WorldlineSFTPPassword:      env("WORLDLINE_SFTP_PASSWORD", "sim-sftp-dev-only"),
-		WorldlinePGPPublicKeyPath:  env("WORLDLINE_PGP_PUBLIC_KEY_PATH", filepath.Join(keys, "wlsftp-keys/worldline_public.asc")),
-		WorldlinePGPPrivateKeyPath: env("WORLDLINE_PGP_PRIVATE_KEY_PATH", filepath.Join(keys, "wlsftp-keys/worldline_private.asc")),
+		Lab:                   newLab(env("LAB_API_URL", "http://127.0.0.1:8097"), os.Getenv("LAB_API_TOKEN"), caFile),
+		PaymentAPIURL:         env("PAYMENT_API_URL", "http://127.0.0.1:8080"),
+		BankURL:               env("BANK_URL", "http://127.0.0.1:8081"),
+		NotifierURL:           env("NOTIFIER_URL", "http://127.0.0.1:8082"),
+		ReceiverURL:           env("RECEIVER_URL", "https://127.0.0.1:8443"),
+		ReceiverDeliveryURL:   env("RECEIVER_DELIVERY_URL", ""),
+		SettlementURL:         env("SETTLEMENT_URL", "http://127.0.0.1:8083"),
+		BankingCircleURL:      env("BANKING_CIRCLE_URL", "https://127.0.0.1:8085"),
+		B4BURL:                env("B4B_URL", "http://127.0.0.1:8086"),
+		B4BJWTPrivateKeyPath:  env("B4B_JWT_PRIVATE_KEY_PATH", filepath.Join(keys, "b4b-keys/private.pem")),
+		B4BJWTKeyID:           env("B4B_JWT_KEY_ID", "b4b-mock-1"),
+		Client:                client,
+		WorldlineSFTPHost:     env("WORLDLINE_SFTP_HOST", "127.0.0.1"),
+		WorldlineSFTPPort:     env("WORLDLINE_SFTP_PORT", "2222"),
+		WorldlineSFTPPassword: env("WORLDLINE_SFTP_PASSWORD", "sim-sftp-dev-only"),
 	}, nil
 }
 

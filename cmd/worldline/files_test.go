@@ -79,16 +79,6 @@ func names(t *testing.T, root, dir string) []string {
 	return out
 }
 
-// opened decrypts a published file with the lab's PGP keys.
-func opened(t *testing.T, w *sim, sealed []byte) string {
-	t.Helper()
-	plain, err := wlsftp.Decrypt(sealed, w.acq.keys.Keyring())
-	if err != nil {
-		t.Fatalf("decrypt: %v", err)
-	}
-	return string(plain)
-}
-
 // Render is the file the cycle would cut from the environment's own
 // trading, named with its own identifier, and nothing more: nothing is
 // published, wired or recorded. The cycle run afterwards cuts the same
@@ -174,11 +164,11 @@ func TestRenderIsTheFileTheCycleWouldCut(t *testing.T) {
 		if !strings.Contains(name, "_EUR.csv") {
 			continue
 		}
-		sealed, err := os.ReadFile(filepath.Join(jail, wlsftp.DirDownload, name))
+		raw, err := os.ReadFile(filepath.Join(jail, wlsftp.DirDownload, name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := opened(t, w, sealed); got != sbx.Content {
+		if got := string(raw); got != sbx.Content {
 			t.Errorf("the cycle cut\n%s\nrender answered\n%s", got, sbx.Content)
 		}
 	}
@@ -213,8 +203,8 @@ func TestRenderRefusals(t *testing.T) {
 }
 
 // Publish delivers a file exactly as the cycle delivers one it cut: in the
-// environment's download/ and to_WLNORDIC/, encrypted and signed, as
-// {name}.pgp, collected over the environment's SFTP login; with wire=true
+// environment's download/ and to_WLNORDIC/, plain, under its name,
+// collected over the environment's SFTP login; with wire=true
 // the lump sum goes to the environment's own safeguarding account. It is
 // recorded in the environment's activity, not as a cycle run, and the
 // reset takes it back whatever its name.
@@ -235,7 +225,7 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 	}
 	var out publishedFile
 	decode(t, r, &out)
-	if out.Published != f.Name+".pgp" || out.Name != f.Name || out.Currency != "EUR" || out.Total != "100.00" ||
+	if out.Published != f.Name || out.Name != f.Name || out.Currency != "EUR" || out.Total != "100.00" ||
 		strings.Join(out.MIDs, ",") != "MID-SBX-A,MID-SBX-B" {
 		t.Errorf("publish answered %+v", out)
 	}
@@ -252,12 +242,12 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 
 	// In sbx's folders, as the cycle puts its own, and nowhere else.
 	for _, d := range []string{wlsftp.DirDownload, wlsftp.DirToWLNordic} {
-		sealed, err := os.ReadFile(filepath.Join(jail, d, out.Published))
+		raw, err := os.ReadFile(filepath.Join(jail, d, out.Published))
 		if err != nil {
 			t.Fatalf("sbx's %s: %v", d, err)
 		}
-		if got := opened(t, w, sealed); got != f.Content {
-			t.Errorf("sbx's %s/%s decrypts to something else", d, out.Published)
+		if got := string(raw); got != f.Content {
+			t.Errorf("sbx's %s/%s is something else", d, out.Published)
 		}
 		if got := names(t, w.acq.root, d); len(got) != 0 {
 			t.Errorf("the default's %s holds %v", d, got)
@@ -275,12 +265,12 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := io.ReadAll(rf)
+	raw, err := io.ReadAll(rf)
 	rf.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opened(t, w, sealed) != f.Content {
+	if string(raw) != f.Content {
 		t.Error("the file collected over SFTP is not the one published")
 	}
 
@@ -321,7 +311,7 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 	if r.Code != 201 || !strings.Contains(r.Body.String(), `"lump_sum":null`) {
 		t.Fatalf("publish in the default, unwired: %d %s", r.Code, r.Body)
 	}
-	if !exists(filepath.Join(w.acq.root, wlsftp.DirDownload, def.Name+".pgp")) || exists(filepath.Join(jail, wlsftp.DirDownload, def.Name+".pgp")) {
+	if !exists(filepath.Join(w.acq.root, wlsftp.DirDownload, def.Name)) || exists(filepath.Join(jail, wlsftp.DirDownload, def.Name)) {
 		t.Error("the default's file is not in the default's download/ alone")
 	}
 
@@ -337,7 +327,7 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 	}
 
 	// Any name, not only the cycle's: the reset takes it back all the same.
-	if r := serve(t, h, "POST", publishQuery("sbx", "hand-made.csv", ""), f.Content); r.Code != 201 || !strings.Contains(r.Body.String(), `"published":"hand-made.csv.pgp"`) {
+	if r := serve(t, h, "POST", publishQuery("sbx", "hand-made.csv", ""), f.Content); r.Code != 201 || !strings.Contains(r.Body.String(), `"published":"hand-made.csv"`) {
 		t.Fatalf("publish hand-made.csv: %d %s", r.Code, r.Body)
 	}
 	res, err := w.reset(context.Background(), simctl.ResetRequest{Scope: simctl.ScopeFlow, Env: "sbx"})
@@ -350,7 +340,7 @@ func TestPublishIsTheCyclesDelivery(t *testing.T) {
 			t.Errorf("sbx's reset left %v in %s", got, d)
 		}
 	}
-	if !exists(filepath.Join(w.acq.root, wlsftp.DirDownload, def.Name+".pgp")) {
+	if !exists(filepath.Join(w.acq.root, wlsftp.DirDownload, def.Name)) {
 		t.Error("sbx's reset took the default's file")
 	}
 	if strings.Contains(serve(t, h, "GET", "/sim/activity?env=sbx", "").Body.String(), opPublished) {
@@ -381,7 +371,7 @@ func TestPublishRefusals(t *testing.T) {
 		{"a backslash", publishQuery("sbx", `a\b.csv`, ""), f.Content, 400, "no path separator"},
 		{"dot dot", publishQuery("sbx", "..", ""), f.Content, 400, "no path separator"},
 		{"a control character", publishQuery("sbx", "a\x00b.csv", ""), f.Content, 400, "control character"},
-		{"a long name", publishQuery("sbx", strings.Repeat("x", 251), ""), f.Content, 400, "at most 250"},
+		{"a long name", publishQuery("sbx", strings.Repeat("x", 256), ""), f.Content, 400, "at most 255"},
 		{"a bad wire", publishQuery("sbx", f.Name, "maybe"), f.Content, 400, "want true or false"},
 		{"every environment", publishQuery("*", f.Name, ""), f.Content, 400, "name one environment"},
 		{"an unknown environment", publishQuery("nope", f.Name, ""), f.Content, 404, "no environment nope"},
@@ -463,12 +453,23 @@ func TestAPublishAResetLandsInIsDropped(t *testing.T) {
 	}
 }
 
-func TestAWorldlineNamedFileIsPublishedUnderTheMomentsTimestamp(t *testing.T) {
+// A file named as Worldline names its files is delivered as Worldline
+// delivers one: under the environment's identifier, at the moment it is
+// published. A platform takes only its own identifier's files of its own day.
+func TestAWorldlineNamedFileIsDeliveredUnderTheEnvironmentsIdentifierAndTheMoment(t *testing.T) {
 	at := time.Date(2026, 11, 11, 8, 30, 0, 0, time.UTC) // 09:30 in Paris
-	if got := restamp("20261110233849_Infinite_Payment_ER_EUR.csv", at); got != "20261111093000_Infinite_Payment_ER_EUR.csv" {
-		t.Fatalf("restamp = %s", got)
-	}
-	if got := restamp("my-own-file.csv", at); got != "my-own-file.csv" {
-		t.Fatalf("another name was changed: %s", got)
+	for _, c := range []struct{ name, identifier, want string }{
+		{"20261110233849_Infinite_Payment_ER_EUR.csv", "Infinite_Payment", "20261111093000_Infinite_Payment_ER_EUR.csv"},
+		{"20261111203021_payfac_ER_EUR.csv", "Infinite_Payment", "20261111093000_Infinite_Payment_ER_EUR.csv"},
+		{"20261110233849_payfac_AR_GBP.csv", "Worldline_Settlement", "20261111093000_Worldline_Settlement_AR_GBP.csv"},
+		// Stamped as Worldline stamps, but not its shape: only the stamp moves.
+		{"20261110233849_payfac_EUR_AA.csv", "Infinite_Payment", "20261111093000_payfac_EUR_AA.csv"},
+		// No identifier to give it: the stamp moves.
+		{"20261110233849_payfac_ER_EUR.csv", "", "20261111093000_payfac_ER_EUR.csv"},
+		{"my-own-file.csv", "Infinite_Payment", "my-own-file.csv"},
+	} {
+		if got := delivered(c.name, c.identifier, at); got != c.want {
+			t.Errorf("delivered(%q, %q) = %q, want %q", c.name, c.identifier, got, c.want)
+		}
 	}
 }

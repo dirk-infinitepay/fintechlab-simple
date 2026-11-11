@@ -436,7 +436,6 @@ func (s *sim) startWorldlineSFTP() string {
 			Source:            source,
 		},
 		root:   root,
-		keys:   keys,
 		sgaURL: env("BC_INTERNAL_URL", ""),
 		sgaAccount: map[string]string{
 			"EUR": env("BC_SAFEGUARDING_ACCOUNT_ID_EUR", ""),

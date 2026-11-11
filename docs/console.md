@@ -629,10 +629,10 @@ before the console existed to notice.
    a `pass`.
 3. *Seed 5 card payments / outlet*.
 4. **Services** → Worldline → *Run morning cycle (ER)*. One file per
-   currency, covering every MID that traded, PGP-encrypted onto Worldline's
-   SFTP root, with the lump sum credited to the safeguarding account.
+   currency, covering every MID that traded, plain onto Worldline's
+   SFTP root as Worldline leaves them, with the lump sum credited to the safeguarding account.
 5. **Services** → Settlement → *Pull from Worldline now*. It dials SFTP,
-   authenticates, downloads, decrypts, parses, splits per MID and pays each
+   authenticates, downloads, parses, splits per MID and pays each
    outlet through B4B.
 6. **Banks** → Banking Circle — the safeguarding balance moved.
 

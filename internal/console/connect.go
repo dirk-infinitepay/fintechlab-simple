@@ -193,7 +193,7 @@ func (b kitBuilder) worldline() Kit {
 	}
 	return Kit{
 		Service: "worldline", Title: "Worldline",
-		Note: "Real SFTP with PGP-encrypted, signed settlement files. The lab has no separate platform keypair: it encrypts to its own key, so the private key that decrypts the files is Worldline's.",
+		Note: "Real SFTP. Settlement files arrive plain, as Worldline leaves them; the enrolment exchange is PGP-encrypted and signed. The lab has no separate platform keypair: it encrypts receipts to its own key, so the private key that decrypts them is Worldline's.",
 		Vars: []KitVar{
 			{Key: "WORLDLINE_SFTP_HOST", Value: b.host},
 			{Key: "WORLDLINE_SFTP_PORT", Value: b.port("worldline", "ssh")},
@@ -205,13 +205,13 @@ func (b kitBuilder) worldline() Kit {
 			{Key: "WORLDLINE_SFTP_DISPUTES_DIR", Value: wlsftp.DirDisputesDownload},
 			{Key: "WORLDLINE_SFTP_UPLOAD_DIR", Value: wlsftp.DirToWLNordic},
 			{Key: "WORLDLINE_SETTLEMENT_IDENTIFIER", Value: kitSettlementID},
-			b.inline("WORLDLINE_PGP_PUBLIC_KEY", "wlsftp-keys/worldline_public.asc", "Verifies the files' signatures.", nil),
-			b.inline("INFINITE_PGP_PRIVATE_KEY", "wlsftp-keys/worldline_private.asc", "Decrypts the settlement files.", nil),
+			b.inline("WORLDLINE_PGP_PUBLIC_KEY", "wlsftp-keys/worldline_public.asc", "Verifies the enrolment receipts' signatures.", nil),
+			b.inline("INFINITE_PGP_PRIVATE_KEY", "wlsftp-keys/worldline_private.asc", "Decrypts the enrolment receipts.", nil),
 			{Key: "WORLDLINE_PGP_VERIFY_DOWNLOAD_SIGNATURES", Value: "true"},
 		},
 		Files: []KitFile{
 			b.file("worldline-pgp-public.asc", "wlsftp-keys/worldline_public.asc", "Worldline's PGP public key: verifies what it signs."),
-			b.file("worldline-pgp-private.asc", "wlsftp-keys/worldline_private.asc", "The PGP private key that decrypts the settlement files."),
+			b.file("worldline-pgp-private.asc", "wlsftp-keys/worldline_private.asc", "The PGP private key that decrypts the enrolment receipts."),
 			b.file("worldline-sftp-host-key.pub", "wlsftp-keys/host_key.pub", "The SFTP server's host key, to pin (known_hosts)."),
 		},
 	}

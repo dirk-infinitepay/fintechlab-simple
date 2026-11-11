@@ -57,7 +57,6 @@ func newTestSim(t *testing.T, bankingCircle string) *sim {
 		store:      worldline.NewStore(),
 		cfg:        worldline.CycleConfig{Identifier: "Worldline_Settlement", Source: worldline.FileSourceGenerate},
 		root:       root,
-		keys:       keys,
 		sgaURL:     bankingCircle,
 		sgaAccount: map[string]string{"EUR": "sga-eur", "GBP": "sga-gbp"},
 		httpClient: &http.Client{Timeout: 5 * time.Second},

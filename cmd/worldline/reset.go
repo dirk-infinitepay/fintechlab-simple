@@ -210,9 +210,10 @@ func (s *sim) clearEnv(e *envSim, scope string, cleared map[string]int) error {
 
 // removeSettlementFiles deletes the settlement files the cycle published,
 // from both download/ and to_WLNORDIC/: a name the cycle gives a file
-// (generated, or a fixture's own) with .pgp appended, or one the run
-// history or the publish hook's record says was published. The platform's
-// enrolment batches beside them in to_WLNORDIC/ never match.
+// (generated, or a fixture's own), or one the run history or the publish
+// hook's record says was published -- also with the .pgp a lab before plain
+// files appended to it. The platform's enrolment batches beside them in
+// to_WLNORDIC/ never match.
 func removeSettlementFiles(acq *settlementApp, published map[string]bool) (int, error) {
 	cut, err := acq.config().CutNames()
 	if err != nil {
@@ -222,8 +223,7 @@ func removeSettlementFiles(acq *settlementApp, published map[string]bool) (int, 
 		if published[name] {
 			return true
 		}
-		base, ok := strings.CutSuffix(name, ".pgp")
-		return ok && cut(base)
+		return cut(strings.TrimSuffix(name, ".pgp"))
 	}
 	var total int
 	errs := []error{err}

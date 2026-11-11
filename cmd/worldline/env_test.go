@@ -323,7 +323,7 @@ func TestEnvironmentsAreSettledApart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		plain, err := wlsftp.Decrypt(sealed, w.acq.keys.Keyring())
+		plain, err := wlsftp.Decrypt(sealed, w.desk.keys.Keyring())
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -2,7 +2,7 @@
 
 The acquirer: card transactions acquired per submerchant (MID), cut into
 the real Bambora settlement-file format twice a day, delivered
-PGP-encrypted over a real SSH/SFTP server, plus the matching lump sum
+plain (as Worldline leaves them) over a real SSH/SFTP server, plus the matching lump sum
 wired to the safeguarding account. Unlike banking-circle and b4b,
 **"worldline" is not one binary** — its protocol has a producer half and a
 consumer half, and they live in two different `cmd/` binaries. See
@@ -41,7 +41,7 @@ configured by `settlement:`'s own `WORLDLINE_SFTP_HOST=worldline` +
 One file, not a directory: `worldlinePuller` polls the acquirer's SFTP
 server on a timer (`pullOnce`), `claim`s each filename under one lock
 before downloading it (so a slow download can't let a second poll pay the
-same file out twice), decrypts and parses it, and turns each MID's total
+same file out twice), parses it, and turns each MID's total
 into a settlement report + B4B payout (`process`, `reportFromFile`). This
 is the code path a real-host swap actually exercises — point
 `WORLDLINE_SFTP_HOST` at real Worldline and the same code runs. It lives
@@ -65,8 +65,8 @@ downloading its own output.
 | --- | --- | --- |
 | `server.go` | `cmd/worldline` only | `ListenAndServe`/`Serve` — real SSH server + `github.com/pkg/sftp` subsystem, key+password auth |
 | `client.go` | `cmd/settlement` only | `Dial`/`List`/`Download` — real SSH/SFTP client, host-key pinning |
-| `pgp.go` | both | `GenerateEntity`/`LoadOrGenerateKeypair`/`Encrypt`/`Decrypt`/`EncryptAndSign` — real OpenPGP; worldline encrypts+signs, settlement decrypts+verifies |
-| `publish.go` | `cmd/worldline` only | `Publish()` — writes a file PGP-encrypted into both real path conventions under the server's own root |
+| `pgp.go` | both | `GenerateEntity`/`LoadOrGenerateKeypair`/`Encrypt`/`Decrypt`/`EncryptAndSign` — real OpenPGP, for the enrolment exchange; worldline encrypts+signs its receipts, and `Download` decrypts a `.pgp` file |
+| `publish.go` | `cmd/worldline` only | `Publish()` — writes a settlement file, plain, into both real path conventions under the server's own root |
 | `hostkey.go` | `cmd/worldline` only | `LoadOrGenerateHostKey` — the SSH host identity |
 
 ## `internal/sftpgateway/` — the separate HTTP-simulated SFT channel
@@ -116,12 +116,11 @@ graph LR
 Transactions get seeded via `/sim/transactions` (or accrue however a
 fuller scenario models acquiring) → `schedule()` fires the morning slot →
 `Cut` groups them by MID and currency → `GenerateSettlementFile`/`WriteCSV`
-renders the real multi-section CSV → `EncryptAndSign` PGP-encrypts and
-signs it → `Publish` writes it under both real path conventions in the
+renders the real multi-section CSV → `Publish` writes it, plain, under both real path conventions in the
 SFTP root → `wireLumpSum` credits banking-circle's SGA for the settlement
 total. Independently, `settlement`'s `worldlinePuller` is polling the same
 SFTP root on its own timer → downloads whatever's new, `claim`s the
-filename before touching it, decrypts, `ParseBamboraCSV` + `PayoutsByMID`
+filename before touching it, `ParseBamboraCSV` + `PayoutsByMID`
 recover each MID's total → paid out per MID through B4B. Hours later the
 *afternoon* slot publishes the same content again as a confirmation (`AR`
 instead of `ER`) — the puller downloads and archives it too, but only a

@@ -127,8 +127,8 @@ func (p *worldlinePuller) reset(identifier string, now time.Time) (pulled, archi
 		if recorded[name] {
 			return true
 		}
-		base, ok := strings.CutSuffix(name, ".pgp")
-		return ok && worldline.IsCutFilename(identifier, base)
+		// Plain, as Worldline delivers them; .pgp from a lab before that.
+		return worldline.IsCutFilename(identifier, strings.TrimSuffix(name, ".pgp"))
 	})
 	return pulled, archived, err
 }

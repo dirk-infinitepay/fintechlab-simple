@@ -151,18 +151,19 @@ func WorldlineSettlementToSFTP() Scenario {
 
 			// 3. The e2e suite dials the acquirer's SFTP server itself and
 			// re-parses the file. This is the independent check: it proves
-			// the bytes are really out there, really encrypted, and really
-			// say what the cycle claimed.
-			published := cut.Filename + ".pgp"
-			var decrypted []byte
+			// the bytes are really out there, plain under the cycle's own
+			// name as Worldline delivers them, and really say what the
+			// cycle claimed.
+			published := cut.Filename
+			var body []byte
 			if err := PollUntil(ctx, 15*time.Second, 500*time.Millisecond, func() (bool, error) {
 				var derr error
-				decrypted, derr = downloadWorldlineFile(env, published)
+				body, derr = downloadWorldlineFile(env, published)
 				return derr == nil, derr
 			}); err != nil {
-				return fmt.Errorf("download+decrypt %s over real sftp+pgp: %w", published, err)
+				return fmt.Errorf("download %s over real sftp: %w", published, err)
 			}
-			parsed, err := worldline.ParseBamboraCSV(strings.NewReader(string(decrypted)))
+			parsed, err := worldline.ParseBamboraCSV(strings.NewReader(string(body)))
 			if err != nil {
 				return fmt.Errorf("parse %s: %w", published, err)
 			}

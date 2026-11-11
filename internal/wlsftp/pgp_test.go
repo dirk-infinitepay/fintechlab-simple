@@ -126,17 +126,3 @@ func TestEncryptAndSignConfiguredRecipientRoundTrips(t *testing.T) {
 		t.Fatal("expected mock-Worldline's own key to be unable to decrypt a message encrypted to the configured recipient")
 	}
 }
-
-func TestPGPFilenameAppendsSuffix(t *testing.T) {
-	cases := map[string]string{
-		"GB00SIM0000000000003_2026-09-03_EUR_WX.csv": "GB00SIM0000000000003_2026-09-03_EUR_WX.csv.pgp",
-		"a":  "a.pgp",
-		"":   ".pgp",
-		"a.": "a..pgp",
-	}
-	for in, want := range cases {
-		if got := PGPFilename(in); got != want {
-			t.Fatalf("PGPFilename(%q) = %q, want %q", in, got, want)
-		}
-	}
-}

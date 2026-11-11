@@ -41,9 +41,8 @@ import (
 // file is well under a megabyte; this is room, not a target.
 const maxSettlementFileBytes = 64 << 20
 
-// maxPublishName leaves room for the ".pgp" Publish appends within the
-// 255 bytes a filename may have.
-const maxPublishName = 250
+// maxPublishName is the 255 bytes a filename may have.
+const maxPublishName = 255
 
 // keptByHand is how many published names an environment remembers for its
 // reset, as the run history keeps its last 100 runs.
@@ -233,7 +232,7 @@ func (s *sim) publishSettlementFile(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	name = restamp(name, labclock.Now())
+	name = delivered(name, e.acq.config().Identifier, labclock.Now())
 	out, err := s.publishFile(e, started, name, body, parsed, wire)
 	switch {
 	case errors.Is(err, errReset):
@@ -251,7 +250,7 @@ func (s *sim) publishSettlementFile(w http.ResponseWriter, r *http.Request) {
 func checkPublishName(name string) error {
 	switch {
 	case name == "":
-		return errors.New("name is required: the file's name, as the cycle names its own ({YYYYMMDDHHMMSS}_{identifier}_{ER|AR}_{CCY}.csv); .pgp is added")
+		return errors.New("name is required: the file's name, as the cycle names its own ({YYYYMMDDHHMMSS}_{identifier}_{ER|AR}_{CCY}.csv)")
 	case strings.ContainsAny(name, `/\`) || strings.Contains(name, ".."):
 		return fmt.Errorf("name %q: a file name, with no path separator and no ..", name)
 	case len(name) > maxPublishName:
@@ -263,8 +262,8 @@ func checkPublishName(name string) error {
 }
 
 // publishFile puts f, whose bytes are body, in e's download/ and
-// to_WLNORDIC/ under name, encrypted and signed as the cycle publishes a
-// file it cut, and with wire wires its total to e's safeguarding account
+// to_WLNORDIC/ under name, plain, as the cycle publishes a file it cut,
+// and with wire wires its total to e's safeguarding account
 // as the morning cycle does: only a file that is not an afternoon (AR)
 // confirmation, and only a positive total. Each effect lands only if no
 // reset came since started; the first that would land after one ends it
@@ -277,7 +276,7 @@ func (s *sim) publishFile(e *envSim, started uint64, name string, body []byte, f
 
 	var err error
 	if !e.guard.apply(started, func() {
-		out.Published, err = wlsftp.Publish(e.acq.root, name, body, e.acq.keys)
+		out.Published, err = wlsftp.Publish(e.acq.root, name, body)
 		if err != nil {
 			return
 		}
@@ -367,11 +366,19 @@ func (s *sim) recordPublished(env string, out publishedFile) {
 // (worldline.BamboraFilename).
 var worldlineStamp = regexp.MustCompile(`^[0-9]{14}_`)
 
-// restamp gives a file named as Worldline names its files the moment it
-// is published: Worldline names a file when it drops it, and a platform's
-// poll takes only the files of its own day, so a file rendered yesterday
-// and published today must read as today's. Any other name is kept.
-func restamp(name string, at time.Time) string {
+// worldlineName is a whole name in Worldline's shape: its slot and currency.
+var worldlineName = regexp.MustCompile(`^[0-9]{14}_.+_(ER|AR)_([A-Z]{3})\.csv$`)
+
+// delivered names a file as Worldline names the files it drops: under the
+// environment's identifier, at the moment it is published. A platform
+// takes only its own identifier's files, and only those of its own day, so
+// a file rendered yesterday, or named for another customer, must read as
+// this customer's file of today. A name stamped as Worldline stamps its
+// files but otherwise its own keeps the rest of it; any other name is kept.
+func delivered(name, identifier string, at time.Time) string {
+	if m := worldlineName.FindStringSubmatch(name); m != nil && identifier != "" {
+		return worldline.BamboraFilename(identifier, at, m[1], m[2])
+	}
 	if !worldlineStamp.MatchString(name) {
 		return name
 	}

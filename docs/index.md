@@ -17,8 +17,8 @@ Use it to:
 - Practice the *shape* of B4B-style `POST /payments` + `Idempotency-Key` without a vendor contract.
 - See why webhook retries exist, and why 2xx is the only success.
 - See why destinations are allowlisted in code, not in a comment.
-- See a daily settlement file cut by the acquirer, delivered PGP-encrypted
-  over real SFTP, and turned into a per-outlet payout — three vendors, one
+- See a daily settlement file cut by the acquirer, delivered over real
+  SFTP, and turned into a per-outlet payout — three vendors, one
   connected path, no vendor contract for any of them.
 - See why a confirmation file must not be reprocessed, why webhook
   notifications arrive batched, and what happens when a subscriber stops

@@ -34,7 +34,6 @@ type settlementApp struct {
 	store *worldline.Store
 	cfg   worldline.CycleConfig // its Identifier under mu: a customer put again changes it
 	root  string
-	keys  *wlsftp.PGPKeys
 
 	// sgaURL is Banking Circle's internal listener. Worldline does not
 	// talk to Banking Circle in real life -- the lump sum simply appears
@@ -119,7 +118,7 @@ func (s *settlementApp) run(slot string, at time.Time, fromDate, toDate string) 
 	for _, f := range files {
 		var name string
 		var err error
-		if !s.guard.apply(started, func() { name, err = wlsftp.Publish(s.root, f.Filename, f.Bytes, s.keys) }) {
+		if !s.guard.apply(started, func() { name, err = wlsftp.Publish(s.root, f.Filename, f.Bytes) }) {
 			return dropped(run)
 		}
 		if err != nil {

@@ -5,7 +5,7 @@ payment facilitator settles through, so a platform can be built and tested
 against them without a vendor contract:
 
 1. **Worldline** (acquirer) cuts the daily settlement file from the card
-   transactions it acquired, drops it PGP-encrypted on a real SFTP server
+   transactions it acquired, drops it on a real SFTP server, plain as Worldline does,
    in two slots (morning + afternoon confirmation), and wires the matching
    lump sum to the safeguarding account.
 2. **B4B Payments Oversight** takes the per-outlet payouts, runs its
@@ -66,8 +66,8 @@ That matters: a health ping is not a connected system. The e2e suite fails
 loudly if any hop is disconnected, and it asserts things a status code
 cannot tell you:
 
-- A settlement file must be **cut by the acquirer**, PGP-encrypted on its
-  own SFTP root, and reachable only over the wire. The e2e suite dials the
+- A settlement file must be **cut by the acquirer**, left on its own SFTP
+  root, and reachable only over the wire. The e2e suite dials the
   same server itself and re-parses the same bytes.
 - The per-MID totals inside it must **add up to the lump sum** that landed.
 - An **afternoon confirmation file must not be paid out again** — that

@@ -4,12 +4,12 @@ Worldline is the acquirer, on the vendor side of the line
 ([catalogue](../../catalogue.md)). It holds the card transactions it
 acquired per submerchant (MID), cuts the daily Bambora settlement file from
 them in a morning (`ER`) and an afternoon (`AR`) slot, publishes each file
-PGP-encrypted on a real SSH/SFTP server, wires the morning slot's total to
+plain on a real SSH/SFTP server, wires the morning slot's total to
 the platform's safeguarding account at Banking Circle, and answers
 submerchant enrolment batches with receipts. Real-protocol-accurate: the
 Bambora multi-section CSV, the filename pattern and its two slots, SSH/SFTP
 with password or key auth and a pinnable host key, and OpenPGP
-encrypt-and-sign. It serves several platforms at once, one per
+encrypt-and-sign on the enrolment exchange. It serves several platforms at once, one per
 [environment](#environments), each with its own SFTP user, folder, files
 and lump sums. Simplified: no Acquiring REST API, no chargebacks (the
 `CB` section is always empty), any SFTP username that is not an
@@ -95,8 +95,11 @@ same content. The server never deletes from either, except on a lab reset
 (`POST /sim/reset`), so a client keeps track of what it has already taken.
 
 **Settlement files.** Named
-`{YYYYMMDDHHMMSS}_{identifier}_{ER|AR}_{CCY}.csv.pgp`, for example
-`20260925083412_Worldline_Settlement_ER_EUR.csv.pgp`. The timestamp is the
+`{YYYYMMDDHHMMSS}_{identifier}_{ER|AR}_{CCY}.csv`, for example
+`20260925083412_Worldline_Settlement_ER_EUR.csv`, and left unencrypted, as
+Worldline leaves them: PGP is for the enrolment exchange only. (A lab before
+that published them encrypted as `{name}.pgp`; a reset still takes back such
+a file of its own.) The timestamp is the
 delivery time on the lab clock, in UTC. `ER` is the morning file a platform
 processes; `AR` is the afternoon confirmation of the same settlement. There
 is one file per currency, covering every MID that traded on the coverage
@@ -108,11 +111,12 @@ row followed by its `TXER` rows; then a `CB` header with no rows. Each
 section carries its own header line. Amounts are major units with two
 decimals. The merchant key of a `TXER` row is `ADDITIONAL_REF_2`, not
 `BAMBORA_MID` or `SUBMERCHANT_ID`. In `fixture` mode the fixture's own name
-is kept and `.pgp` appended.
+is kept.
 
-**PGP.** Binary (not armored) OpenPGP. Every file and receipt is encrypted
-to `INFINITE_PGP_PUBLIC_KEY_PATH` when it is set, otherwise to Worldline's
-own public key, and always signed with Worldline's own private key. In
+**PGP.** Binary (not armored) OpenPGP, on enrolment receipts. Every receipt
+is encrypted to `INFINITE_PGP_PUBLIC_KEY_PATH` when it is set, otherwise to
+Worldline's own public key, and always signed with Worldline's own private
+key. In
 compose nothing is set, so the platform decrypts with Worldline's private
 key (`worldline_private.asc`, handed out as `INFINITE_PGP_PRIVATE_KEY`).
 Generated key files are written mode 0644: lab material only.
@@ -317,7 +321,7 @@ The `sftp` activity log described under *At a glance*. A reset clears it.
 - Query: `limit` (default 100; the ring keeps 256 per environment);
   `env`, whose events (the default's when none, every environment's for
   `*`). An event of another environment's carries `"env": "sbx"`.
-- Answers `200` `{"logs": [{"name": "sftp", "title": "File exchange", "note": "…", "total": 9, "kept": 9, "last": {…}, "events": [{"seq": 9, "at": "2026-09-25T09:00:04Z", "op": "sftp.download", "peer": "10.89.0.7", "summary": "infinitepay collected 20260925083412_Worldline_Settlement_ER_EUR.csv.pgp", "status": "ok", "detail": {"user": "infinitepay", "path": "/download/20260925083412_Worldline_Settlement_ER_EUR.csv.pgp"}}]}]}`.
+- Answers `200` `{"logs": [{"name": "sftp", "title": "File exchange", "note": "…", "total": 9, "kept": 9, "last": {…}, "events": [{"seq": 9, "at": "2026-09-25T09:00:04Z", "op": "sftp.download", "peer": "10.89.0.7", "summary": "infinitepay collected 20260925083412_Worldline_Settlement_ER_EUR.csv", "status": "ok", "detail": {"user": "infinitepay", "path": "/download/20260925083412_Worldline_Settlement_ER_EUR.csv.pgp"}}]}]}`.
 
 ### `GET /sim/info`
 
@@ -386,9 +390,10 @@ else:
 
 - `download/` and `to_WLNORDIC/` in the environment's jail
   (`{WORLDLINE_SFTP_ROOT}` for the default):
-  `{14 digits}_{identifier}_{ER|AR}_{CCY}.csv.pgp`, with the environment's
-  identifier as it stands; in `fixture` mode also `{fixture name}.pgp` for
-  each fixture the cycle serves; and any name the environment's run
+  `{14 digits}_{identifier}_{ER|AR}_{CCY}.csv`, with the environment's
+  identifier as it stands; in `fixture` mode also `{fixture name}` for
+  each fixture the cycle serves; either with the `.pgp` a lab before plain
+  files appended; and any name the environment's run
   history says was published, or `POST /sim/settlement-files/publish`
   published (its last 100).
 - `{SFTP_BASE_DIR}/archive/{YYYY}/{MM}/`:
@@ -473,7 +478,7 @@ Runs one slot now, exactly as the schedule would, for one environment.
               "from_date": "2026-09-24", "to_date": "2026-09-24"}],
    "lump_sums": [{"currency": "EUR", "amount_cents": 15000, "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24",
                   "account_id": "00000000-0000-4000-8000-000000000978", "status": "credited"}],
-   "published": ["20260925090000_Worldline_Settlement_ER_EUR.csv.pgp"]}
+   "published": ["20260925090000_Worldline_Settlement_ER_EUR.csv"]}
   ```
 
   `files`, `lump_sums` and `published` are `null` when empty; with no
@@ -532,8 +537,8 @@ no run is recorded. The lab API keeps what it answers as a file
    "slot": "ER", "from_date": "2026-09-24", "to_date": "2026-09-24"}
   ```
 
-  `name` is exactly the name the cycle would publish the file under now,
-  before `.pgp`: the lab clock's time, the environment's
+  `name` is exactly the name the cycle would publish the file under now:
+  the lab clock's time, the environment's
   `settlement_identifier`, the slot and the currency. `content` is the
   file byte for byte as the cycle would cut it, `total` its
   `SETTLEMENT_AMOUNT` in major units, `mids` every MID it settles
@@ -551,23 +556,26 @@ Publishes a settlement file the lab hands over, in an environment's SFTP
 folder, exactly as the cycle publishes one it cut, so the platform's next
 poll takes it as it takes the cycle's.
 
-A file named as Worldline names its own (`<14-digit timestamp>_…`) is
-published under the moment's timestamp, as Worldline names a file when it
-drops it: a platform's poll takes only its own day's files, so a file
-rendered yesterday reads as today's. Any other name is kept.
+A file named as Worldline names its own
+(`{14 digits}_{identifier}_{ER|AR}_{CCY}.csv`) is published under the
+environment's `settlement_identifier` and the moment's timestamp, as
+Worldline names a file when it drops it: a platform takes only its own
+identifier's files, and only its own day's, so a file rendered yesterday,
+or named for another customer, reads as this customer's file of today. A
+name that only starts with the timestamp gets the moment's; any other name
+is kept.
 
-- Query: `name`, required: the file's name, to which `.pgp` is added, as
-  the cycle names its own; no `/`, `\`, `..` or control character, at
-  most 250 bytes. `wire`, `true` or `false` (default `false`). `env`, whose
+- Query: `name`, required: the file's name, as the cycle names its own;
+  no `/`, `\`, `..` or control character, at most 255 bytes. `wire`, `true` or `false` (default `false`). `env`, whose
   folder (the default's when none; `*` is `400`).
 - Body: the file, plain text, at most 64 MiB (`413` beyond).
 - The body is read with Worldline's own parser
   (`worldline.ParseSettlementFile`): `400` with the parser's reason when
   it is not a settlement file, such as `{"error": "worldline: not a
   settlement file: it has no \"Settlement\" row"}` or an amount with
-  three decimals. Then it is encrypted and signed as the cycle's files
-  are, and written as `{name}.pgp` into `download/` and `to_WLNORDIC/` of
-  the environment's jail, replacing a file of that name.
+  three decimals. Then it is written, plain as the cycle's files are,
+  into `download/` and `to_WLNORDIC/` of the environment's jail under the
+  name it is published under, replacing a file of that name.
 - With `wire=true`, the file's total (its `SETTLEMENT_AMOUNT`) is wired as
   the morning slot wires its lump sum: to the environment's safeguarding
   account over Banking Circle's bridge, referenced `WORLDLINE SETTLEMENT
@@ -578,14 +586,15 @@ rendered yesterday reads as today's. Any other name is kept.
 - Answers `201`:
 
   ```json
-  {"published": "20260925090000_Infinite_Payment_ER_EUR.csv.pgp",
+  {"published": "20260925090000_Infinite_Payment_ER_EUR.csv",
    "name": "20260925090000_Infinite_Payment_ER_EUR.csv",
    "currency": "EUR", "total": "100.00", "mids": ["MID-A", "MID-B"],
    "lump_sum": {"currency": "EUR", "amount_cents": 10000, "reference": "WORLDLINE SETTLEMENT EUR 2026-09-24",
                 "account_id": "…", "status": "credited"}}
   ```
 
-  `published` is the name in the folder, as a cycle run lists it.
+  `published` is the name in the folder, as a cycle run lists it; `name`
+  is the same name.
   `lump_sum` is as in a cycle run (`credited`, `not configured` or
   `error: …`; a failed wire never stops the file), and `null` when
   nothing was wired. `409` when a reset of the environment landed while it
@@ -695,8 +704,8 @@ and refusals, and the same file written.
 
 - **The settlement stand-in** (`cmd/settlement`): SFTP as `infinitepay`,
   listing and downloading `download/` every `WORLDLINE_PULL_INTERVAL`
-  (10 s) and on its own `POST /worldline/pull`, pinning the host key and
-  decrypting with `worldline_private.asc`. It also writes WX reports into
+  (10 s) and on its own `POST /worldline/pull`, pinning the host key. It
+  also writes WX reports into
   `./sftp/outbound/{merchant}/daily/` over a shared bind mount, which
   `GET /outbound/{merchant_id}/daily` and the download route serve; that is
   a file, not a call.
@@ -725,8 +734,8 @@ and refusals, and the same file written.
   (`internal/e2e/scenario_worldline.go`) seeds two transactions with
   `POST /sim/transactions`, runs
   `POST /sim/settlement-cycle/run?slot=morning&date=…`, then logs in over
-  SFTP as `harness`, downloads the file from `download/` and decrypts and
-  parses it itself. `worldline-confirmation-file` runs
+  SFTP as `harness`, downloads the file from `download/` and parses it
+  itself. `worldline-confirmation-file` runs
   `POST /sim/settlement-cycle/run?slot=afternoon&date=…` and checks the
   confirmation is taken without a second payout.
 - **Nobody in the repo** calls the inbound, outbound-list, download or

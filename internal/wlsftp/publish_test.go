@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
@@ -26,45 +25,31 @@ func testKeys(t *testing.T) (*PGPKeys, openpgp.EntityList) {
 	return &PGPKeys{Own: e, Recipient: e}, openpgp.EntityList{e}
 }
 
-func TestPublishWritesEncryptedToBothPathConventions(t *testing.T) {
+func TestPublishWritesPlainToBothPathConventions(t *testing.T) {
 	root := t.TempDir()
 	if err := EnsureLayout(root); err != nil {
 		t.Fatalf("EnsureLayout: %v", err)
 	}
-	keys, keyring := testKeys(t)
-	plaintext := []byte(`"VERSION_NUMBER","RECORD_TYPE"` + "\n" + `"1","ST"` + "\n")
+	body := []byte(`"VERSION_NUMBER","RECORD_TYPE"` + "\n" + `"1","ST"` + "\n")
+	const want = "20260904084200_Worldline_Settlement_ER_EUR.csv"
 
-	name, err := Publish(root, "20260904084200_Worldline_Settlement_ER_EUR.csv", plaintext, keys)
+	// Worldline leaves its settlement files on the channel unencrypted:
+	// the name is the file's own and the bytes are the file.
+	name, err := Publish(root, want, body)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if !strings.HasSuffix(name, ".pgp") {
-		t.Fatalf("published name %q does not carry the .pgp suffix", name)
+	if name != want {
+		t.Fatalf("published name = %q, want %q", name, want)
 	}
-
 	for _, dir := range []string{DirDownload, DirToWLNordic} {
 		raw, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(dir), name))
 		if err != nil {
 			t.Fatalf("read %s/%s: %v", dir, name, err)
 		}
-		// The bytes on disk must actually be encrypted -- a file that
-		// still contains its own header text was never protected.
-		if strings.Contains(string(raw), "VERSION_NUMBER") {
-			t.Fatalf("%s/%s is not encrypted: the plaintext header is still readable", dir, name)
+		if string(raw) != string(body) {
+			t.Fatalf("%s/%s = %q, want %q", dir, name, raw, body)
 		}
-		got, err := Decrypt(raw, keyring)
-		if err != nil {
-			t.Fatalf("decrypt %s/%s: %v", dir, name, err)
-		}
-		if string(got) != string(plaintext) {
-			t.Fatalf("%s/%s decrypted to %q, want %q", dir, name, got, plaintext)
-		}
-	}
-}
-
-func TestPublishWithoutKeysIsAnError(t *testing.T) {
-	if _, err := Publish(t.TempDir(), "f.csv", []byte("x"), nil); err == nil {
-		t.Fatal("Publish with no keys succeeded, want an error")
 	}
 }
 
@@ -95,16 +80,26 @@ func splitAddr(t *testing.T, addr string) (host, port string) {
 	return host, port
 }
 
-func TestClientListsAndDecryptsWhatPublishWrote(t *testing.T) {
+func TestClientListsAndDownloadsWhatPublishWrote(t *testing.T) {
 	root := t.TempDir()
 	if err := EnsureLayout(root); err != nil {
 		t.Fatalf("EnsureLayout: %v", err)
 	}
-	keys, keyring := testKeys(t)
 	plaintext := []byte("settlement file body\n")
-	name, err := Publish(root, "20260904084200_Worldline_Settlement_ER_EUR.csv", plaintext, keys)
+	name, err := Publish(root, "20260904084200_Worldline_Settlement_ER_EUR.csv", plaintext)
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
+	}
+	// Beside it, a file someone left encrypted: the client still decrypts
+	// a .pgp name, as it does the enrolment receipts.
+	keys, keyring := testKeys(t)
+	sealed, err := keys.EncryptAndSign(plaintext)
+	if err != nil {
+		t.Fatalf("EncryptAndSign: %v", err)
+	}
+	const sealedName = "20260904084300_Worldline_Settlement_ER_GBP.csv.pgp"
+	if err := os.WriteFile(filepath.Join(root, DirDownload, sealedName), sealed, 0o644); err != nil {
+		t.Fatalf("write %s: %v", sealedName, err)
 	}
 
 	addr, hostSigner := serveTestSFTP(t, root, "sim-sftp-dev-only", "")
@@ -130,16 +125,18 @@ func TestClientListsAndDecryptsWhatPublishWrote(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(files) != 1 || files[0].Name != name {
-		t.Fatalf("List = %v, want just %q", files, name)
+	if len(files) != 2 || files[0].Name != name || files[1].Name != sealedName {
+		t.Fatalf("List = %v, want %q and %q", files, name, sealedName)
 	}
 
-	got, err := c.Download(name, keyring)
-	if err != nil {
-		t.Fatalf("Download: %v", err)
-	}
-	if string(got) != string(plaintext) {
-		t.Fatalf("Download returned %q, want %q", got, plaintext)
+	for _, n := range []string{name, sealedName} {
+		got, err := c.Download(n, keyring)
+		if err != nil {
+			t.Fatalf("Download %s: %v", n, err)
+		}
+		if string(got) != string(plaintext) {
+			t.Fatalf("Download %s returned %q, want %q", n, got, plaintext)
+		}
 	}
 }
 

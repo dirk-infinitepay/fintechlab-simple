@@ -8,7 +8,10 @@ import (
 )
 
 // Publish writes one settlement file into the SFTP server's own
-// directories, PGP-encrypted and signed, under filename+".pgp".
+// directories under filename, plain, and returns the name it has there.
+// Worldline leaves its settlement files on the SFT channel unencrypted (it
+// said so late on, and the platform's acquirer-fts reads them as they
+// come); PGP is for the enrolment exchange only.
 //
 // This replaces the previous arrangement, where the platform wrote plain
 // files into a bind mount shared with the SFTP server and a background
@@ -20,25 +23,17 @@ import (
 // The file lands in both real path conventions (download/ and
 // to_WLNORDIC/): the same content is reachable under either, which is what
 // a real Worldline SFT account exposes.
-func Publish(root, filename string, plaintext []byte, keys *PGPKeys) (string, error) {
-	if keys == nil {
-		return "", fmt.Errorf("wlsftp: publish %s: no PGP keys configured", filename)
-	}
-	encrypted, err := keys.EncryptAndSign(plaintext)
-	if err != nil {
-		return "", fmt.Errorf("wlsftp: encrypt %s: %w", filename, err)
-	}
-	outName := PGPFilename(filename)
+func Publish(root, filename string, body []byte) (string, error) {
 	for _, d := range []string{DirDownload, DirToWLNordic} {
 		dir := filepath.Join(root, filepath.FromSlash(d))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return "", fmt.Errorf("wlsftp: create %s: %w", dir, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, outName), encrypted, 0o644); err != nil {
-			return "", fmt.Errorf("wlsftp: write %s: %w", filepath.Join(dir, outName), err)
+		if err := os.WriteFile(filepath.Join(dir, filename), body, 0o644); err != nil {
+			return "", fmt.Errorf("wlsftp: write %s: %w", filepath.Join(dir, filename), err)
 		}
 	}
-	return outName, nil
+	return filename, nil
 }
 
 // RemoveFiles deletes the regular files directly in root/dir whose name

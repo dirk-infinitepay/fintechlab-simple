@@ -636,7 +636,7 @@ Delete one file, `?name=`.
 ### `POST /v1/settlement-files/publish`
 
 Have Worldline publish files in the environment's SFTP download folder,
-encrypted and signed as its own, under its own naming. The platform's next
+plain as its own, under its own naming. The platform's next
 poll picks them up, or `POST /v1/platform/poll` asks it now.
 
 **Body** — `{"files": ["…EUR…", "…GBP…"], "wire": true}`: at most one
@@ -647,8 +647,9 @@ environment's safeguarding account, as Worldline's morning does.
 **Answers** — `200 {"env", "published": 2, "results": [{…Worldline's
 answer…, "file"}, …], "note"}`: each result is Worldline's answer (its
 `name` and `published` path: a file named as Worldline names its own is
-published under the moment's timestamp, since a platform's poll takes only
-its own day's files) with `file`, the lab's copy; a result with `error` for
+published under the environment's settlement identifier and the moment's
+timestamp, since a platform's poll takes only its own identifier's files of
+its own day) with `file`, the lab's copy; a result with `error` for
 a file that did not publish; `502` when none did; `400` for a file the parser refuses;
 `404` for one the environment does not have; `409` for two of one
 currency.
@@ -1578,7 +1579,7 @@ empty one (the same money landing as Worldline's wire on the bridge).
 ### `POST /v1/actions/worldline-cycle`
 
 Make Worldline cut and publish its settlement files now rather than at its
-slot: one PGP-encrypted file per currency onto its SFTP root and, on the
+slot: one plain file per currency onto its SFTP root and, on the
 morning slot only, the matching lump sum wired to the safeguarding
 account.
 

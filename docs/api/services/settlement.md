@@ -1,7 +1,7 @@
 # Settlement (platform stand-in) — API
 
 Scaffolding for the platform's settle pipeline. It pulls Worldline's
-settlement file over real SFTP+PGP, decrypts and parses it, splits it per
+settlement file over real SFTP, parses it, splits it per
 submerchant (MID), and pays each outlet out through B4B, gated on the
 safeguarding-account balance at Banking Circle, a merchant-verification
 check and the beneficiary's sanctions status. Beside that it keeps the
@@ -39,9 +39,9 @@ Configuration in full (default, then compose where it differs):
 | `WORLDLINE_SFTP_PRIVATE_KEY_PATH` | empty | a client key, offered before the password |
 | `WORLDLINE_SFTP_KNOWN_HOST_PATH` | empty; compose `/keys/wlsftp-keys/host_key.pub` | pins Worldline's host key |
 | `WORLDLINE_SFTP_DIR` | `download` | the remote directory listed |
-| `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `_PUBLIC_KEY_PATH` | `/keys/wlsftp-keys/worldline_private.asc`, `…_public.asc` | the keypair that decrypts the files; waited for 30 s, after which it generates a pair of its own, which decrypts nothing Worldline sent |
+| `WORLDLINE_PGP_PRIVATE_KEY_PATH`, `_PUBLIC_KEY_PATH` | `/keys/wlsftp-keys/worldline_private.asc`, `…_public.asc` | the keypair that decrypts a file named `.pgp`; Worldline's settlement files arrive plain, so it is for one a lab before plain files left. Waited for 30 s, after which it generates a pair of its own, which decrypts nothing Worldline sent |
 | `WORLDLINE_PULL_INTERVAL` | `10s` | the background pull's period |
-| `WORLDLINE_ARCHIVE_DIR` | `/data/worldline` | where each decrypted file is kept; a name already there is never pulled again, across restarts. A reset empties it of what the stand-in archived (`POST /sim/reset`) |
+| `WORLDLINE_ARCHIVE_DIR` | `/data/worldline` | where each file pulled is kept; a name already there is never pulled again, across restarts. A reset empties it of what the stand-in archived (`POST /sim/reset`) |
 | `CUTOFF_TIME` | `00:00` | `HH:MM`, UTC on the lab clock: the daily internal-report batch for yesterday. Unparseable disables it |
 | `B4B_URL` | `http://b4b:8086` | the payout rail |
 | `B4B_JWT_PRIVATE_KEY_PATH` | `/keys/b4b-keys/private.pem` | signs the B4B JWT; waited for 30 s, then the service exits |
@@ -367,8 +367,8 @@ else:
 - `{SFTP_OUTBOUND_DIR}/{merchant_id}/daily/{merchant_id}_{YYYY-MM-DD}_{CCY}_WX.{csv|xml|json}`;
   a report Worldline already archived on download is Worldline's to
   delete.
-- `{WORLDLINE_ARCHIVE_DIR}/{14 digits}_{WORLDLINE_SETTLEMENT_IDENTIFIER}_{ER|AR}_{CCY}.csv.pgp`,
-  and any other name the pull history says was archived there (a fixture
+- `{WORLDLINE_ARCHIVE_DIR}/{14 digits}_{WORLDLINE_SETTLEMENT_IDENTIFIER}_{ER|AR}_{CCY}.csv`
+  (or with the `.pgp` a lab before plain files appended), and any other name the pull history says was archived there (a fixture
   file's name). A fixture archived before the last restart is left.
 
 A report whose name does not follow the pattern (a `generate` with a date
@@ -448,20 +448,20 @@ Answers `200`:
 
 ```json
 {"count": 1, "files": [
-  {"name": "20260925083000_Worldline_Settlement_ER_EUR.csv.pgp", "slot": "ER",
+  {"name": "20260925083000_Worldline_Settlement_ER_EUR.csv", "slot": "ER",
    "pulled_at": "2026-09-25T08:30:04Z", "bytes": 2210,
-   "archived_at": "/data/worldline/20260925083000_Worldline_Settlement_ER_EUR.csv.pgp",
+   "archived_at": "/data/worldline/20260925083000_Worldline_Settlement_ER_EUR.csv",
    "processed": true, "settlement_ids": ["set_9c1e0a7b42d3", "set_04ad1f9e7c20"], "payouts_by_mid": 2}]}
 ```
 
 - `slot` is `ER` (the morning file, which is processed and pays), `AR`
   (the afternoon confirmation, archived and never processed) or `""` (not
   recognised, archived only).
-- `archived_at` is the archive path of the decrypted bytes, not a time;
+- `archived_at` is the archive path of the file's bytes, not a time;
   empty if archiving failed.
 - `processed` is true only for a morning file that parsed.
   `settlement_ids` and `payouts_by_mid` are omitted when empty; `error`
-  says why a download, decryption or parse failed.
+  says why a download or parse failed.
 - The history is in memory: empty after a restart, although archived files
   are still never pulled again. A reset empties it too.
 
@@ -473,7 +473,7 @@ only when `WORLDLINE_SFTP_HOST` is set. Works while disconnected.
 Answers `200`, once the pull and every payout it triggers are done:
 
 ```json
-{"pulled": 1, "files": [{"name": "20260925083000_Worldline_Settlement_ER_EUR.csv.pgp", "…": "…"}]}
+{"pulled": 1, "files": [{"name": "20260925083000_Worldline_Settlement_ER_EUR.csv", "…": "…"}]}
 ```
 
 `pulled` counts files taken this time; `files` is the whole history, as
@@ -485,8 +485,7 @@ a `200`, with that file's `error`.
 
 Side effects: one pull runs at a time, so this waits for a background
 pull in progress, and each file is claimed before it is downloaded, so no
-file is processed twice. Each new file is downloaded, decrypted and
-archived. For a morning file, each MID with a positive total becomes a
+file is processed twice. Each new file is downloaded and archived. For a morning file, each MID with a positive total becomes a
 record (`transactions_date` the file's value date, `settlement_date` the
 day after; report counts the MID's rows and its total as sale and net
 amount, fees zero), driven to `Settled`, then the payout path above runs
