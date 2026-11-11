@@ -658,9 +658,13 @@ buttons when there is one.
 - **Poll now (ER)** and **Poll now (AR)** call the platform's own poll and
   toast its answer verbatim. Without a `poll_url` in the environment's
   config there are no buttons, and a `.hint` says where to set one.
-- **Generate** is a `.form` row: currency, trading date (blank: what the
-  cycle would settle), and the button. It keeps the file Worldline would
-  cut from the environment's trading, without publishing it.
+- **Seed merchants…** and **Create settlement file…** open a **Modal**
+  each, the forms buddy's runner had: merchants, what to do with the
+  generated merchants already there and with their files, a seed; and
+  transactions, currency, a seed. They run the platform's seeder against
+  the environment's databases. Without a seeder the card says so and offers
+  **Cut from the lab's trading** instead (currency, trading day), and
+  without the databases it says which to set.
 - **Upload a file…** opens a picker made on the spot, as the **File field**
   does, and streams the file to the environment's files.
 

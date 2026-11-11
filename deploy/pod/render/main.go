@@ -50,6 +50,7 @@ func main() {
 	flag.Var(&set, "set", "container.KEY=value, repeatable")
 	flag.StringVar(&o.ImagePrefix, "image-prefix", "", "registry/path the images are under (default localhost/fintechlab)")
 	flag.StringVar(&o.Version, "version", "", "image tag (default v1)")
+	flag.StringVar(&o.SeederImage, "seeder-image", "", "the platform's seeder image, added to the pod as its seeder (empty: none)")
 	flag.Parse()
 
 	o.ExtraSANs, o.WebhookAllow, o.Set = csv(*sans), csv(*allow), set

@@ -56,7 +56,18 @@ type Options struct {
 	// localhost/fintechlab/<service>:v1. Empty keeps that part.
 	ImagePrefix string
 	Version     string
+	// SeederImage, when set, adds the platform's seeder to the pod
+	// (docs/lab-api/plan.md, phase 6.1): a container from the platform's
+	// own image, on the lab API's data volume at the same path, which the
+	// lab API reaches at LAB_SEEDER_URL. Empty: a lab without one.
+	SeederImage string
 }
+
+// imageRef is a container image reference: registry/path:tag or @digest.
+var imageRef = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:@-]*$`)
+
+// seederPort is where the seeder listens, inside the pod.
+const seederPort = "8098"
 
 // Container names Render needs to find. Everything else it changes, it
 // finds by the variable: the clock and public-host settings go to whichever
@@ -120,6 +131,11 @@ func Render(src []byte, o Options) ([]byte, error) {
 		}
 	}
 	m.images(o.ImagePrefix, o.Version)
+	if o.SeederImage != "" {
+		if err := m.seeder(o.SeederImage); err != nil {
+			return nil, err
+		}
+	}
 
 	profile := o.Profile
 	if profile == "" {
@@ -150,6 +166,51 @@ func Render(src []byte, o Options) ([]byte, error) {
 type manifest struct {
 	root, spec *yaml.Node
 	containers []*yaml.Node // init containers first, then the rest
+}
+
+// seeder adds the platform's seeder: its container, its name among the
+// pod's host aliases, and its address on the lab API.
+func (m *manifest) seeder(image string) error {
+	api := m.find("lab-api")
+	if api == nil {
+		return fmt.Errorf("manifest: no lab-api container for the seeder to serve")
+	}
+	var mount string
+	for _, vm := range items(get(api, "volumeMounts")) {
+		if scalar(get(vm, "name")) == "console-data" {
+			mount = scalar(get(vm, "mountPath"))
+		}
+	}
+	if mount == "" {
+		return fmt.Errorf("manifest: lab-api mounts no console-data volume for the seeder to share")
+	}
+	if !imageRef.MatchString(image) {
+		return fmt.Errorf("seeder image %q: want a container image reference", image)
+	}
+	var c yaml.Node
+	// LAB_SEEDER_STATE_DIR on the shared volume: the seeder remembers the
+	// highest MID it handed out there, so a restart never hands one out
+	// again.
+	src := "name: seeder\nimage: " + image + "\nenv:\n  - name: PORT\n    value: \"" + seederPort + "\"\n" +
+		"  - name: LAB_SEEDER_STATE_DIR\n    value: " + mount + "/seeder\n" +
+		"volumeMounts:\n  - name: console-data\n    mountPath: " + mount + "\n"
+	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
+		return err
+	}
+	containers := get(m.spec, "containers")
+	if containers == nil {
+		return fmt.Errorf("manifest: no containers")
+	}
+	containers.Content = append(containers.Content, c.Content[0])
+	m.containers = append(m.containers, c.Content[0])
+	for _, alias := range items(get(m.spec, "hostAliases")) {
+		if names := get(alias, "hostnames"); names != nil && scalar(get(alias, "ip")) == "127.0.0.1" {
+			names.Content = append(names.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "seeder"})
+			break
+		}
+	}
+	setEnv(api, "LAB_SEEDER_URL", "http://seeder:"+seederPort)
+	return nil
 }
 
 func (m *manifest) find(name string) *yaml.Node {

@@ -1,6 +1,7 @@
 package worldline
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -324,5 +325,34 @@ func TestFilenameTimestampComesFromDeliveryTimeNotCoverage(t *testing.T) {
 		if string(first[i].Bytes) != string(second[i].Bytes) {
 			t.Fatalf("the same coverage window produced different content across two deliveries")
 		}
+	}
+}
+
+func TestTheSummaryReadsWhatTheParserReadsWithoutHoldingTheRows(t *testing.T) {
+	f := GenerateSettlementFile([]Transaction{
+		{ID: "a", MID: "M2", Currency: "EUR", AmountCents: 1000, Date: "2026-11-09"},
+		{ID: "b", MID: "M1", Currency: "EUR", AmountCents: 2500, Date: "2026-11-09"},
+		{ID: "c", MID: "M2", Currency: "EUR", AmountCents: 700, Date: "2026-11-09"},
+	}, "EUR", "2026-11-09", "2026-11-09", BamboraOptions{})
+	var b bytes.Buffer
+	if err := f.WriteCSV(&b); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseSettlementFile(bytes.NewReader(b.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := SummarizeSettlementFile(bytes.NewReader(b.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Meta != parsed.Meta {
+		t.Fatalf("meta: summary %+v, parser %+v", s.Meta, parsed.Meta)
+	}
+	if strings.Join(s.MIDs, ",") != "M1,M2" || s.Transactions != 3 || s.Batches != len(parsed.Batches) {
+		t.Fatalf("summary %+v", s)
+	}
+	if _, err := SummarizeSettlementFile(strings.NewReader("just,some,text\n")); err == nil {
+		t.Fatal("text that is no settlement file was summarised")
 	}
 }

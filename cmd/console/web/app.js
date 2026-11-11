@@ -344,6 +344,103 @@ async function loadEnvFiles() {
   } catch (err) {
     state.files[envKey()] = { error: err.message };
   }
+  try {
+    state.platform = await api('GET', '/v1/platform');
+  } catch (err) {
+    state.platform = { error: err.message };
+  }
+}
+
+/* The platform's side of the card: its seeder, once the environment names
+   the databases it needs (docs/lab-api/plan.md, phase 6.1). */
+function seederBlock(e) {
+  const p = state.platform || {};
+  const seeder = p.seeder || {};
+  if (p.error) return `<div class="note bad">${esc(p.error)}</div>`;
+  if (!seeder.available) {
+    return `<p class="hint">This lab runs no seeder${seeder.error ? ` — ${esc(seeder.error)}` : ''}. Upload a settlement file, or cut
+        one from the lab's own trading below.</p>
+      <div class="form">
+        <div class="field"><label>Currency</label><select data-field="currency"><option>EUR</option><option>GBP</option></select></div>
+        <div class="field"><label>Trading day</label><input data-field="date" type="date"></div>
+        <button class="ghost small" data-action="env-cut">Cut from the lab's trading</button>
+      </div>`;
+  }
+  const missing = Object.entries(p.databases || {}).filter(([, v]) => v !== 'set').map(([k]) => k);
+  if (missing.length) {
+    return `<p class="hint">The seeder needs this environment's ${missing.map((m) => `<span class="mono">${esc(m)}</span>`).join(' and ')}
+      database${missing.length === 1 ? '' : 's'}: set <span class="mono">databases</span> in its config
+      (<span class="mono">PATCH /v1/environments/${esc(e.id)}</span>, <span class="mono">postgres://</span> URLs).</p>`;
+  }
+  return `<div class="form">
+      <button class="btn small" data-action="open-seed">Seed merchants…</button>
+      <button class="ghost small" data-action="open-create-file">Create settlement file…</button>
+    </div>
+    <p class="hint">Merchants are seeded into this environment's own platform and settle databases, boarded and priced as
+      boarding leaves them; a settlement file then pays every one of them. The seeder is the platform's own
+      (<span class="mono">${esc((seeder.info && seeder.info.service) || 'seeder')}</span>).</p>`;
+}
+
+function openSeedModal() {
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>Seed merchants</h2>
+      <p>Generated merchants, boarded and active, in this environment's platform and settle databases. The fixtures
+        (MIDs 1–10) are never touched.</p>
+    </div>
+    <div class="modal-body">
+      <div class="form">
+        <div class="field"><label>Merchants</label><input data-field="merchants" type="number" min="1" max="20000" value="50"></div>
+        <div class="field wide"><label>Generated merchants already there</label>
+          <select data-field="mode"><option value="add">Keep them, add these</option><option value="reseed">Replace them</option>
+            <option value="remove">Remove them, add none</option></select></div>
+        <div class="field"><label>Their settlement files</label>
+          <select data-field="files"><option value="delete">Delete them</option><option value="keep">Keep them</option></select></div>
+      </div>
+      <div class="form"><div class="field"><label>Seed</label><input data-field="seed" type="number" min="0" placeholder="new"></div></div>
+      <p class="hint"><b>Merchants</b> — 25% Ireland (EUR), 75% UK (GBP); 75% with one outlet, 20% with two, 5% with three to
+        ten. Every outlet is its own MID (7xxxxxxx), priced from its country's product offers.</p>
+      <p class="hint"><b>Generated merchants already there</b> — replacing removes every generated merchant first. Their MIDs are
+        never handed out again, so settle history booked against them stays where it is.</p>
+      <p class="hint"><b>Their settlement files</b> — when replacing or removing: the generated settlement files made so far pay
+        MIDs that will no longer exist. Ignored when adding — those files stay valid.</p>
+      <p class="hint"><b>Seed</b> — blank for a new population; the seed a run reports makes the same one again.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="seed">Seed merchants</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
+}
+
+function openCreateFileModal() {
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>Create settlement file</h2>
+      <p>A Worldline ER file per currency, every generated outlet in it: sales, refunds, chargebacks and their reversals. It
+        lands in this environment's settlement files, ready to Run.</p>
+    </div>
+    <div class="modal-body">
+      <div class="form">
+        <div class="field"><label>Transactions</label><input data-field="transactions" type="number" min="1" value="1000"></div>
+        <div class="field wide"><label>Currency</label>
+          <select data-field="currency"><option value="">Every currency — a file each</option><option>EUR</option><option>GBP</option></select></div>
+        <div class="field"><label>Seed</label><input data-field="seed" type="number" min="0" placeholder="new"></div>
+      </div>
+      <p class="hint"><b>Transactions</b> — shared between the currencies by outlet count, at least one per outlet. About 0.1%
+        become chargebacks (at least one), a quarter of those reversed (at least one). Millions are fine: the file is written
+        to disk as it is made.</p>
+      <p class="hint"><b>Seed</b> — blank for new transactions.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="create-file">Create settlement file</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
 }
 
 function envPlatformCard() {
@@ -415,16 +512,11 @@ function envPlatformCard() {
       ${files}
       <div class="section-title">Run it now</div>
       ${poll}
-      <div class="section-title">Generate or add a file</div>
-      <div class="form">
-        <div class="field"><label>Currency</label><select data-field="currency"><option>EUR</option><option>GBP</option></select></div>
-        <div class="field"><label>Trading day</label><input data-field="date" type="date"></div>
-        <button class="ghost small" data-action="env-generate">Generate</button>
-        <button class="ghost small" data-action="env-upload">Upload a file…</button>
-      </div>
-      <p class="hint"><b>Generate</b> keeps the file Worldline would cut from this environment's trading (blank day:
-        what its cycle would settle); nothing is published until you run it. <b>Upload</b> takes any file; one Worldline's
-        parser refuses is listed with why, and cannot run.</p>
+      <div class="section-title">Merchants and settlement files</div>
+      ${seederBlock(e)}
+      <div class="form"><button class="ghost small" data-action="env-upload">Upload a file…</button></div>
+      <p class="hint"><b>Upload</b> takes any file, of any size; one Worldline's parser refuses is listed with why, and cannot
+        run.</p>
     </div>
   </div>`;
 }
@@ -3443,13 +3535,39 @@ const ACTIONS = {
     toast(`The platform polled (${d.type})`, typeof r === 'string' ? r : JSON.stringify(r, null, 1), 'good');
   },
 
-  'env-generate': async (_d, btn) => {
+  'env-cut': async (_d, btn) => {
     const f = fieldsIn(btn.closest('.form'));
     const body = { currency: f.currency || 'EUR' };
     if (f.date) body.date = f.date;
-    const r = await api('POST', '/v1/settlement-files/generate', body);
+    const r = await api('POST', '/v1/settlement-files/cut', body);
     const file = r.file || {};
-    toast('Settlement file generated', `${file.name}\n${file.currency} ${file.total} · ${(file.mids || []).length} MID(s)`, 'good');
+    toast('Cut from the lab\'s trading', `${file.name}\n${file.currency} ${file.total} · ${(file.mids || []).length} MID(s)`, 'good');
+  },
+
+  'open-seed': async () => { openSeedModal(); },
+
+  'open-create-file': async () => { openCreateFileModal(); },
+
+  seed: async (_d, btn) => {
+    const f = fieldsIn(btn.closest('.modal'));
+    const body = { merchants: parseInt(f.merchants || '50', 10), mode: f.mode || 'add', files: f.files || 'delete' };
+    if (f.seed !== '') body.seed = parseInt(f.seed, 10);
+    btn.textContent = 'Seeding…';
+    const r = await api('POST', '/v1/platform/seed', body);
+    closeModal();
+    const res = r.result || {};
+    toast('Merchants seeded', `${JSON.stringify(res, null, 1).slice(0, 600)}${r.files_deleted ? `\n${r.files_deleted} settlement file(s) deleted` : ''}`, 'good');
+  },
+
+  'create-file': async (_d, btn) => {
+    const f = fieldsIn(btn.closest('.modal'));
+    const body = { transactions: parseInt(f.transactions || '1000', 10), currency: f.currency || '' };
+    if (f.seed !== '') body.seed = parseInt(f.seed, 10);
+    btn.textContent = 'Creating…';
+    const r = await api('POST', '/v1/settlement-files/generate', body);
+    closeModal();
+    const lines = (r.files || []).map((x) => `${x.name} · ${x.currency} ${x.total} · ${(x.mids || []).length} MID(s)`);
+    toast('Settlement file created', lines.join('\n') || 'No file was written.', lines.length ? 'good' : 'warn');
   },
 
   'env-upload': async () => {

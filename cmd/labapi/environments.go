@@ -79,6 +79,15 @@ func masked(c labdb.Config) labdb.Config {
 	if c.PollToken != "" {
 		c.PollToken = tokenShown
 	}
+	if len(c.Databases) > 0 {
+		dbs := make(map[string]string, len(c.Databases))
+		for name, url := range c.Databases {
+			if url != "" {
+				dbs[name] = tokenShown
+			}
+		}
+		c.Databases = dbs
+	}
 	return c
 }
 
@@ -94,6 +103,20 @@ func configPatch(raw json.RawMessage, was labdb.Config) (labdb.Config, error) {
 	_ = json.Unmarshal(raw, &keys)
 	if _, sent := keys["poll_token"]; !sent || c.PollToken == tokenShown {
 		c.PollToken = was.PollToken
+	}
+	// Databases the same way: left out keeps them all, and a name sent back
+	// as "(set)" keeps that one; "" removes one.
+	if _, sent := keys["databases"]; !sent {
+		c.Databases = was.Databases
+	} else {
+		for name, url := range c.Databases {
+			if url == tokenShown {
+				c.Databases[name] = was.Databases[name]
+			}
+			if c.Databases[name] == "" {
+				delete(c.Databases, name)
+			}
+		}
 	}
 	return c, nil
 }
@@ -286,7 +309,7 @@ func (a *app) patchDefault(w http.ResponseWriter, r *http.Request, name string, 
 		}
 	}
 	if c.SettlementIdentifier != "" || len(c.WebhookHosts) > 0 || c.ACIWebhookURL != "" || c.B4BCallbackURL != "" {
-		httputilx.Error(w, 400, "the default environment's vendor settings are the lab's deployment (LAB_SET, LAB_WEBHOOK_ALLOW); only poll_url, poll_token and clock can be set here")
+		httputilx.Error(w, 400, "the default environment's vendor settings are the lab's deployment (LAB_SET, LAB_WEBHOOK_ALLOW); only poll_url, poll_token, databases and clock can be set here")
 		return
 	}
 	if err := a.db.SaveDefaultConfig(r.Context(), c); err != nil {
@@ -768,6 +791,14 @@ func validConfig(c labdb.Config) error {
 	case "", string(console.ClockFollows), string(console.ClockWall):
 	default:
 		return fmt.Errorf(`config.clock is "follows" or "wall", not %q`, c.Clock)
+	}
+	for name, url := range c.Databases {
+		if !regexp.MustCompile(`^[a-z][a-z0-9_-]{0,30}$`).MatchString(name) {
+			return fmt.Errorf("config.databases names a database %q: lower-case letters, digits, - and _", name)
+		}
+		if url != "" && url != tokenShown && !strings.HasPrefix(url, "postgres://") && !strings.HasPrefix(url, "postgresql://") {
+			return fmt.Errorf("config.databases.%s is a postgres:// URL", name)
+		}
 	}
 	for _, h := range c.WebhookHosts {
 		if strings.TrimSpace(h) == "" || strings.ContainsAny(h, " /") {

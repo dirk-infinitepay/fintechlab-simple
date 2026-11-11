@@ -432,7 +432,10 @@ An environment is shown as:
   environment blocks moving the lab clock), `poll_url` and `poll_token`
   (the platform's own Worldline poll, which
   [`POST /v1/platform/poll`](#post-v1platformpoll) calls; the token is
-  shown as `(set)` and never handed back). All optional.
+  shown as `(set)` and never handed back), `databases` (the platform's own
+  databases by the names the lab's seeder asks for, `platform` and
+  `settle`: `postgres://` URLs, shown as `(set)`; a change that leaves
+  `databases` out keeps them, and `""` removes one). All optional.
 
 The lab API pushes each environment to every vendor that keeps them
 apart when it is created or changed, and checks every few seconds
@@ -494,8 +497,8 @@ Rename an environment or replace its config. *Admin.*
 **Body** — `{"name": "…", "config": {…}}`, either; `config` replaces the
 whole config, except that a `poll_token` it leaves out (or sends back as
 `(set)`) keeps the one there is. For `default`, only `config` can be set,
-and only its `poll_url`, `poll_token` and `clock`: its vendor settings are
-the lab's deployment.
+and only its `poll_url`, `poll_token`, `databases` and `clock`: its vendor
+settings are the lab's deployment.
 
 **Answers** — `200 {"environment": {…}, "pushed": {…}}` (no `pushed` for
 `default`); `400` for a bad config, a rename of `default`, or a vendor
@@ -546,8 +549,19 @@ A file is shown as:
  "total": "4394.87", "items": 30}
 ```
 
-`source` is `generated` or `uploaded`; a file Worldline's parser refuses
-has no currency and a `problem` instead, and cannot be published.
+`source` is `generated` (the platform's seeder made it for the
+environment's seeded merchants), `cut` (Worldline cut it from the lab's own
+trading) or `uploaded`. A file is read row by row for its summary, so a file
+of millions of transactions is listed without being held in memory. A file
+Worldline's parser refuses has no currency and a `problem` instead, and
+cannot be published.
+
+The platform's side of the card is its **seeder**: a container in the lab's
+pod, built from the platform's own repository (`LAB_SEEDER_URL`; none, and
+seeding is off). It seeds the environment's databases, which its config
+names, with generated merchants, and writes settlement files for them onto
+the lab's volume. The lab knows no platform: any seeder serving `GET /info`
+(`{"databases": [names]}`), `POST /seed` and `POST /settlement-files` fits.
 
 ### `GET /v1/settlement-files`
 
@@ -570,8 +584,26 @@ name of a generated file; `413` over the cap.
 
 ### `POST /v1/settlement-files/generate`
 
-Keep the file Worldline would cut from the environment's trading, without
-publishing it.
+Have the platform's seeder write settlement files for the environment's
+seeded merchants (`POST /v1/platform/seed`) straight into its files: a
+Worldline ER file per currency, every generated outlet in it. The seeder
+streams them to disk, so millions of transactions are fine.
+
+**Body** — `{"transactions": 1000, "currency": "EUR", "seed": null}`;
+`currency` empty for a file per currency, `seed` to replay.
+
+**Answers** — `201 {"env", "result": {…the seeder's answer…}, "files": [
+…as listed…]}`; `409` when the environment's config names no database the
+seeder needs; `503` when the lab runs no seeder; the seeder's own status
+and reason otherwise.
+
+**Reaches** — the seeder's `POST /settlement-files`.
+
+### `POST /v1/settlement-files/cut`
+
+Keep the file Worldline would cut from the environment's trading in the
+lab, without publishing it: for a platform with no seeder, or a file whose
+MIDs the platform need not know.
 
 **Body** — `{"currency": "EUR", "date": "YYYY-MM-DD", "slot": "ER"}`;
 `date` and `slot` default as the cycle does (T+1, the morning).
@@ -619,6 +651,36 @@ a file that did not publish; `502` when none did; `400` for a file the parser re
 currency.
 
 **Reaches** — worldline `POST /sim/settlement-files/publish`, per file.
+
+### `GET /v1/platform`
+
+What the environment's card can do on the platform's side.
+
+**Answers** — `200 {"env", "seeder": {"available": true, "info": {…}} or
+{"available": false, "error"}, "databases": {"platform": "set", "settle":
+"missing"}, "poll": true}`.
+
+**Reaches** — the seeder's `GET /info`; the lab's database.
+
+### `POST /v1/platform/seed`
+
+Seed the environment's databases with generated merchants, boarded and
+active, with their pricing, in the platform's database, and their accounts
+in the settle database: what buddy's runner's *Seed merchants* did, for any
+environment whose config names its databases.
+
+**Body** — `{"merchants": 50, "mode": "add", "files": "delete", "seed":
+null}`: `mode` is `add` (keep the generated merchants there), `reseed`
+(remove every generated merchant first) or `remove`; `files` says what
+happens to the environment's `generated` settlement files on a reseed or a
+removal, since they pay MIDs that no longer exist.
+
+**Answers** — `200 {"env", "result": {…the seeder's answer…},
+"files_deleted"}`; `409` when the config names no database the seeder
+needs; `503` when the lab runs no seeder; the seeder's own status and
+reason otherwise (`409` while it is busy with these databases).
+
+**Reaches** — the seeder's `POST /seed`.
 
 ### `POST /v1/platform/poll`
 

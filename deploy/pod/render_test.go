@@ -240,3 +240,24 @@ func TestTheRenderingSaysItIsGenerated(t *testing.T) {
 		t.Error("the source manifest's own header was carried into the rendering")
 	}
 }
+
+func TestASeederJoinsThePodOnTheLabAPIsVolume(t *testing.T) {
+	src, err := os.ReadFile("fintechlab.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(src, Options{SeederImage: "localhost/lightyear/lab-seeder:dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{"name: seeder", "image: localhost/lightyear/lab-seeder:dev", "- seeder", "LAB_SEEDER_URL", "http://seeder:8098"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("the rendered pod has no %q", want)
+		}
+	}
+	plain, _ := Render(src, Options{})
+	if strings.Contains(string(plain), "seeder") {
+		t.Fatal("a pod rendered without a seeder image has one")
+	}
+}

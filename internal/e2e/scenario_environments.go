@@ -343,7 +343,7 @@ func keys(m map[string]bool) []string {
 
 // EnvironmentCardPublishesAtWorldline proves the environment's platform
 // card (docs/lab-api/plan.md, phase 6) on a real lab: in a throwaway
-// environment it seeds a card payment, has Worldline render the morning
+// environment it seeds a card payment, has Worldline cut the morning
 // file into the environment's files, publishes it with its lump sum, and
 // finds it in the environment's own SFTP folder and the money on its own
 // safeguarding account. Its platform's poll is not set, so Poll now is the
@@ -368,11 +368,11 @@ func EnvironmentCardPublishesAtWorldline() Scenario {
 					Name, Currency, Total, Problem string
 				} `json:"file"`
 			}
-			if status, err := e.lab.Post(ctx, "/v1/settlement-files/generate", map[string]string{"currency": "EUR", "date": day}, &gen); err != nil || status != 201 {
-				return fmt.Errorf("generate %s's EUR file: %d %v", e.id, status, err)
+			if status, err := e.lab.Post(ctx, "/v1/settlement-files/cut", map[string]string{"currency": "EUR", "date": day}, &gen); err != nil || status != 201 {
+				return fmt.Errorf("cut %s's EUR file: %d %v", e.id, status, err)
 			}
 			if gen.File.Problem != "" || gen.File.Currency != "EUR" {
-				return fmt.Errorf("the generated file: %+v", gen.File)
+				return fmt.Errorf("the cut file: %+v", gen.File)
 			}
 			var pub struct {
 				Published int              `json:"published"`

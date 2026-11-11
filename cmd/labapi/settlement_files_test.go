@@ -114,11 +114,11 @@ func TestAnEnvironmentKeepsItsOwnSettlementFiles(t *testing.T) {
 	a, _ := newFilesApp(t)
 	_, token := createEnvOnly(t, a, `{"id": "sbx"}`)
 
-	w := as(t, a, token, "POST", "/v1/settlement-files/generate", `{"currency": "EUR"}`)
+	w := as(t, a, token, "POST", "/v1/settlement-files/cut", `{"currency": "EUR"}`)
 	if w.Code != 201 || !strings.Contains(w.Body.String(), `"currency":"EUR"`) || !strings.Contains(w.Body.String(), "MID-sbx") {
 		t.Fatalf("generate in sbx: %d %s", w.Code, w.Body)
 	}
-	if w := as(t, a, token, "POST", "/v1/settlement-files/generate", `{"currency": "USD"}`); w.Code != 404 {
+	if w := as(t, a, token, "POST", "/v1/settlement-files/cut", `{"currency": "USD"}`); w.Code != 404 {
 		t.Fatalf("nothing to settle: %d, want Worldline's 404", w.Code)
 	}
 	req := httptest.NewRequest("POST", "/v1/settlement-files?name=mine_GBP.csv", bytes.NewReader(bambora(t, "GBP", "M2")))
@@ -154,8 +154,8 @@ func TestAnEnvironmentKeepsItsOwnSettlementFiles(t *testing.T) {
 func TestPublishingTakesOneFilePerCurrencyAndNamesTheEnvironment(t *testing.T) {
 	a, wl := newFilesApp(t)
 	_, token := createEnvOnly(t, a, `{"id": "sbx"}`)
-	as(t, a, token, "POST", "/v1/settlement-files/generate", `{"currency": "EUR"}`)
-	as(t, a, token, "POST", "/v1/settlement-files/generate", `{"currency": "GBP"}`)
+	as(t, a, token, "POST", "/v1/settlement-files/cut", `{"currency": "EUR"}`)
+	as(t, a, token, "POST", "/v1/settlement-files/cut", `{"currency": "GBP"}`)
 	req := httptest.NewRequest("POST", "/v1/settlement-files?name=another_EUR.csv", bytes.NewReader(bambora(t, "EUR", "M9")))
 	req.Header.Set("Authorization", "Bearer "+token)
 	a.routes().ServeHTTP(httptest.NewRecorder(), req)

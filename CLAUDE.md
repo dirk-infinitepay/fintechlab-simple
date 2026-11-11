@@ -34,6 +34,14 @@ lab and the platform's runner up, the lab clock, running a settlement
 and the reconciliation sweep, the Banking Circle test hooks, and what looks
 broken but is not. Read it before driving the lab from a session.
 
+The lab seeds a platform's databases through the platform's own **seeder**,
+an image built in the platform's repository and run in the lab's pod
+(`LAB_SEEDER_IMAGE`; docs/lab-api/plan.md, phase 6.1). The lab speaks only
+the seeder's generic contract (`GET /info`, `POST /seed`,
+`POST /settlement-files`) and passes the databases an environment names;
+schema knowledge stays in the platform's seeder. Do not write a platform's
+schema into the lab.
+
 ## APIs
 
 There is one API over the lab: the **lab API** (`cmd/labapi`, `:8097`,

@@ -58,6 +58,9 @@ type app struct {
 	// environments in its GET /sim/info at the last sync.
 	envMu    sync.Mutex
 	envAware map[string]bool
+	// seederURL is the platform's seeder in the lab's pod (seeder.go):
+	// LAB_SEEDER_URL, empty when the lab runs none.
+	seederURL string
 	// dataDir is the lab API's own volume (beside registry.json and
 	// lab.db): the environments' settlement files live under files/.
 	dataDir string
@@ -76,13 +79,14 @@ func main() {
 
 	cat := console.DefaultCatalogue()
 	a := &app{
-		cat:      cat,
-		client:   plain,
-		bcCfg:    env("CONSOLE_BC_DELIVERY_CONFIG", "config/banking-circle.json"),
-		keysDir:  env("CONSOLE_KEYS_DIR", "keys"),
-		token:    os.Getenv("LAB_API_TOKEN"),
-		envAware: map[string]bool{},
-		regs:     map[string]*console.Registry{},
+		cat:       cat,
+		client:    plain,
+		bcCfg:     env("CONSOLE_BC_DELIVERY_CONFIG", "config/banking-circle.json"),
+		keysDir:   env("CONSOLE_KEYS_DIR", "keys"),
+		token:     os.Getenv("LAB_API_TOKEN"),
+		envAware:  map[string]bool{},
+		seederURL: strings.TrimRight(os.Getenv("LAB_SEEDER_URL"), "/"),
+		regs:      map[string]*console.Registry{},
 	}
 	// Every call to a control port names the environment the request is
 	// in (auth.go): the sims keep each environment's records apart.

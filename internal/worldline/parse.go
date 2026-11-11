@@ -1,9 +1,12 @@
 package worldline
 
 import (
+	"bufio"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -387,4 +390,72 @@ func FilenameSlot(name string) string {
 		return slot
 	}
 	return ""
+}
+
+// SettlementSummary is what a settlement file says about itself, read
+// without holding its rows: its Settlement row, the MIDs it pays, and how
+// many batches, transactions and chargebacks it carries.
+type SettlementSummary struct {
+	Meta         BamboraMeta
+	MIDs         []string
+	Batches      int
+	Transactions int
+	Chargebacks  int
+}
+
+// SummarizeSettlementFile reads a settlement file row by row and keeps only
+// its summary, so a file of millions of transactions costs a pass over the
+// disk, not its size in memory. It refuses what ParseSettlementFile refuses.
+func SummarizeSettlementFile(r io.Reader) (SettlementSummary, error) {
+	cr := csv.NewReader(bufio.NewReaderSize(r, 1<<16))
+	cr.FieldsPerRecord = -1 // sections have different widths
+	cr.ReuseRecord = true
+	amounts := majorUnitAmounts
+	var s SettlementSummary
+	seen := map[string]struct{}{}
+	settlement := false
+	for i := 1; ; i++ {
+		row, err := cr.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return s, fmt.Errorf("worldline: read settlement csv: %w", err)
+		}
+		// The legacy format's own Settlement row says its amounts are minor
+		// units, as ParseBamboraCSV decides from it.
+		if len(row) > 1 && row[1] == legacyBamboraRecordTypeSettlement {
+			amounts = minorUnitAmounts
+		}
+		switch recordTypeOf(row) {
+		case bamboraRecordTypeSettlement:
+			m, err := parseMetaRow(row, amounts)
+			if err != nil {
+				return s, fmt.Errorf("worldline: settlement row %d: %w", i, err)
+			}
+			s.Meta, settlement = m, true
+		case bamboraRecordTypeBatch:
+			s.Batches++
+		case bamboraRecordTypeTXER:
+			t, err := parseTXERRow(row, amounts)
+			if err != nil {
+				return s, fmt.Errorf("worldline: TXER row %d: %w", i, err)
+			}
+			s.Transactions++
+			if _, ok := seen[t.AdditionalRef2]; !ok {
+				seen[t.AdditionalRef2] = struct{}{}
+				s.MIDs = append(s.MIDs, t.AdditionalRef2)
+			}
+		case bamboraRecordTypeCB:
+			s.Chargebacks++
+		}
+	}
+	if !settlement {
+		return s, errors.New("worldline: no Settlement row: not a Worldline settlement file")
+	}
+	if s.Meta.SettlementCurrency == "" {
+		return s, errors.New("worldline: the Settlement row names no currency")
+	}
+	sort.Strings(s.MIDs)
+	return s, nil
 }

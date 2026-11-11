@@ -309,7 +309,7 @@ cmd_deploy() {
   say "building the ${LAB_PROFILE:-cloud} bundle for $host"
   make --no-print-directory cloud-bundle LAB_PROFILE="${LAB_PROFILE:-cloud}" \
     LAB_PUBLIC_HOST="$host" LAB_SANS="$sans" \
-    LAB_WEBHOOK_ALLOW="${LAB_WEBHOOK_ALLOW:-}" LAB_SET="${LAB_SET:-}"
+    LAB_WEBHOOK_ALLOW="${LAB_WEBHOOK_ALLOW:-}" LAB_SET="${LAB_SET:-}" LAB_SEEDER_IMAGE="${LAB_SEEDER_IMAGE:-}"
   rev="$(head -1 dist/cloud/REVISION | cut -d' ' -f1)"
   key="bundles/$(date -u +%Y%m%dT%H%M%SZ)-$rev.tgz"
 

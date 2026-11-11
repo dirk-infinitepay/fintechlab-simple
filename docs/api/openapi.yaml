@@ -821,6 +821,11 @@ paths:
                     clock:
                       description: 'follows or wall: a seen wall environment blocks moving the lab clock'
                       type: string
+                    databases:
+                      additionalProperties:
+                        type: string
+                      description: 'the platform''s databases by the seeder''s names (platform, settle): postgres:// URLs, shown as (set)'
+                      type: object
                     poll_token:
                       description: sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out
                       type: string
@@ -944,6 +949,11 @@ paths:
                     clock:
                       description: 'follows or wall: a seen wall environment blocks moving the lab clock'
                       type: string
+                    databases:
+                      additionalProperties:
+                        type: string
+                      description: 'the platform''s databases by the seeder''s names (platform, settle): postgres:// URLs, shown as (set)'
+                      type: object
                     poll_token:
                       description: sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out
                       type: string
@@ -1723,6 +1733,28 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#post-v1partners
+  /v1/platform:
+    get:
+      operationId: getPlatform
+      summary: 'What the environment''s card can do on the platform''s side: seed, generate, poll'
+      description: 'Reaches: the seeder''s GET /info; the lab''s database.'
+      tags:
+        - card
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1platform
   /v1/platform/poll:
     post:
       operationId: postPlatformPoll
@@ -1757,6 +1789,48 @@ paths:
               schema: {}
       externalDocs:
         url: docs/api/lab-api.md#post-v1platformpoll
+  /v1/platform/seed:
+    post:
+      operationId: postPlatformSeed
+      summary: Seed the environment's databases with generated merchants, through the platform's seeder
+      description: 'Reaches: the seeder''s POST /seed.'
+      tags:
+        - card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                files:
+                  description: 'delete (default) or keep: the generated settlement files, on reseed or remove'
+                  type: string
+                merchants:
+                  description: how many to add, 1 to 20000
+                  type: integer
+                mode:
+                  description: add (default), reseed (remove every generated merchant first) or remove
+                  type: string
+                seed:
+                  description: replays a population; null for a new one
+                  type: integer
+              type: object
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1platformseed
   /v1/plugins:
     get:
       operationId: getPlugins
@@ -2594,9 +2668,9 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#post-v1settlement-files
-  /v1/settlement-files/generate:
+  /v1/settlement-files/cut:
     post:
-      operationId: postSettlementFilesGenerate
+      operationId: postSettlementFilesCut
       summary: Keep the file Worldline would cut from the environment's trading
       description: 'Reaches: worldline POST /sim/settlement-files/render.'
       tags:
@@ -2619,6 +2693,47 @@ paths:
                   type: string
               required:
                 - currency
+              type: object
+      responses:
+        "201":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1settlement-filescut
+  /v1/settlement-files/generate:
+    post:
+      operationId: postSettlementFilesGenerate
+      summary: Have the platform's seeder write settlement files for the environment's seeded merchants
+      description: 'Reaches: the seeder''s POST /settlement-files.'
+      tags:
+        - card
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              additionalProperties: false
+              properties:
+                currency:
+                  description: EUR or GBP; empty for a file per currency
+                  type: string
+                seed:
+                  description: replays the transactions; null for new ones
+                  type: integer
+                transactions:
+                  description: shared between the currencies by outlet count, at least one per outlet
+                  type: integer
+              required:
+                - transactions
               type: object
       responses:
         "201":

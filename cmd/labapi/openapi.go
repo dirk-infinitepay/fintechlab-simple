@@ -119,6 +119,7 @@ var envConfigSchema = obj(map[string]any{
 	"aci_webhook_url":       str("where ACI delivers this environment's webhooks"),
 	"poll_url":              str("the platform's Worldline poll, which POST /v1/platform/poll calls"),
 	"poll_token":            str("sent to poll_url as a bearer; shown as (set), and kept when a change leaves it out"),
+	"databases":             map[string]any{"type": "object", "additionalProperties": map[string]any{"type": "string"}, "description": "the platform's databases by the seeder's names (platform, settle): postgres:// URLs, shown as (set)"},
 	"b4b_callback_url":      str("where B4B calls back a record that names no callback_url"),
 	"clock":                 str("follows or wall: a seen wall environment blocks moving the lab clock"),
 })
@@ -150,10 +151,21 @@ var opSpecs = map[string]opSpec{
 	"POST /v1/settlement-files": {BodyRequired: true, Status: 201, BodyMedia: "application/octet-stream",
 		Query: []param{{Name: "name", About: "what to keep it as", Required: true}}},
 	"POST /v1/settlement-files/generate": {BodyRequired: true, Status: 201, Body: obj(map[string]any{
+		"transactions": integer("shared between the currencies by outlet count, at least one per outlet"),
+		"currency":     str("EUR or GBP; empty for a file per currency"),
+		"seed":         integer("replays the transactions; null for new ones"),
+	}, "transactions")},
+	"POST /v1/settlement-files/cut": {BodyRequired: true, Status: 201, Body: obj(map[string]any{
 		"currency": str("EUR or GBP"),
 		"date":     str("YYYY-MM-DD, the trading day; default what the cycle would settle"),
 		"slot":     str("ER (the morning file, default) or AR"),
 	}, "currency")},
+	"POST /v1/platform/seed": {BodyRequired: true, Body: obj(map[string]any{
+		"merchants": integer("how many to add, 1 to 20000"),
+		"mode":      str("add (default), reseed (remove every generated merchant first) or remove"),
+		"files":     str("delete (default) or keep: the generated settlement files, on reseed or remove"),
+		"seed":      integer("replays a population; null for a new one"),
+	})},
 	"GET /v1/settlement-files/preview": {Query: []param{{Name: "name", About: "the file's name", Required: true}, {Name: "lines", Type: "integer", About: "1 to 1000, default 100"}}},
 	"DELETE /v1/settlement-files":      {Bodyless: true, Query: []param{{Name: "name", About: "the file's name", Required: true}}},
 	"POST /v1/settlement-files/publish": {BodyRequired: true, Body: obj(map[string]any{

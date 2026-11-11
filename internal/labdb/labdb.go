@@ -50,6 +50,11 @@ type Config struct {
 	// as a bearer, when the card's *Poll now* is pressed.
 	PollURL   string `json:"poll_url,omitempty"`
 	PollToken string `json:"poll_token,omitempty"`
+	// Databases are the platform's own databases, by the names the lab's
+	// seeder asks for ("platform", "settle"): the lab seeds them
+	// (plan.md, phase 6.1). Connection URLs with their credentials, so a
+	// view never shows them back.
+	Databases map[string]string `json:"databases,omitempty"`
 }
 
 // Kit is an environment's credentials at each vendor, made when it is

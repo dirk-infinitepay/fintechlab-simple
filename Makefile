@@ -250,8 +250,13 @@ IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
 POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification lab-api console
+# The platform's seeder, an image built in the platform's own repository
+# (lightyear: pnpm nx run lab-seeder:container:podman makes
+# localhost/lightyear/lab-seeder:dev), added to the pod when
+# named (docs/lab-api/plan.md, phase 6.1). Empty: a lab without one.
+LAB_SEEDER_IMAGE ?=
 # [a-z0-9-]: b4b has a digit in its name, and [a-z-]* left it on localhost.
-POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z0-9-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
+POD_RENDER = $(if $(LAB_SEEDER_IMAGE),go run ./deploy/pod/render -profile local -seeder-image '$(LAB_SEEDER_IMAGE)' -image-prefix '$(IMAGE_PREFIX)' -version '$(LAB_VERSION)',sed -e 's|localhost/fintechlab/\([a-z0-9-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST))
 
 # POD_IMAGES narrows the build: cloud-bundle builds no clock.
 POD_IMAGES ?= $(POD_SERVICES)
@@ -341,7 +346,7 @@ CLOUD_SERVICES := $(filter-out clock,$(POD_SERVICES))
 # the pod after a deploy (lab.sh e2e).
 BUNDLE_SERVICES = $(if $(filter cloud,$(LAB_PROFILE)),$(CLOUD_SERVICES),$(POD_SERVICES)) e2e
 CLOUD_RENDER = go run ./deploy/pod/render -profile '$(LAB_PROFILE)' -public-host '$(LAB_PUBLIC_HOST)' \
-	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)')
+	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)') -seeder-image '$(LAB_SEEDER_IMAGE)'
 
 cloud-manifest:
 	@$(CLOUD_RENDER)
@@ -352,7 +357,7 @@ cloud-bundle:
 	@$(MAKE) --no-print-directory pod-images POD_IMAGES="$(BUNDLE_SERVICES)" IMAGE_PREFIX=localhost/fintechlab LAB_VERSION=v1
 	@rm -rf dist/cloud && mkdir -p dist/cloud
 	@$(CLOUD_RENDER) > dist/cloud/fintechlab.yaml
-	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1)
+	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1) $(LAB_SEEDER_IMAGE)
 	@cp deploy/pod/regenerate-keys.yaml deploy/host/play.sh deploy/host/e2e.sh dist/cloud/
 	@echo "$$(git describe --always --dirty 2>/dev/null || echo unknown) $(LAB_PROFILE) built $$(date -u +%FT%TZ) by $$(git config user.name 2>/dev/null || whoami)" > dist/cloud/REVISION
 	@tar -czf dist/fintechlab-cloud.tgz -C dist/cloud .

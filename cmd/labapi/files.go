@@ -35,9 +35,17 @@ import (
 //	<data>/files/<env>/uploaded/   brought from anywhere
 
 const (
+	// sourceGenerated files the platform's seeder made from its seeded
+	// merchants (POST /v1/settlement-files/generate).
 	sourceGenerated = "generated"
-	sourceUploaded  = "uploaded"
+	// sourceCut files Worldline cut from the lab's own trading
+	// (POST /v1/settlement-files/cut).
+	sourceCut      = "cut"
+	sourceUploaded = "uploaded"
 )
+
+// sources are the folders a file can be in, in listing order.
+var sources = []string{sourceGenerated, sourceCut, sourceUploaded}
 
 var fileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$`)
 
@@ -63,7 +71,7 @@ func (a *app) filesDir(ctx context.Context, source string) string {
 
 // findFile is where name is, in either folder.
 func (a *app) findFile(ctx context.Context, name string) (string, string, bool) {
-	for _, src := range []string{sourceGenerated, sourceUploaded} {
+	for _, src := range sources {
 		p := filepath.Join(a.filesDir(ctx, src), name)
 		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
 			return p, src, true
@@ -89,19 +97,17 @@ func describe(path, source string, st os.FileInfo) settlementFile {
 		return f
 	}
 	defer r.Close()
-	// Worldline's own check: what it would refuse to publish.
-	parsed, err := worldline.ParseSettlementFile(bufio.NewReader(r))
+	// Worldline's own check, read row by row: a file may be millions of
+	// transactions, and only its summary is kept.
+	sum, err := worldline.SummarizeSettlementFile(r)
 	if err != nil {
 		f.Problem = "not a Worldline settlement file: " + err.Error()
 		return f
 	}
-	f.Currency = parsed.Meta.SettlementCurrency
-	f.Total = money.Format(parsed.Meta.SettlementAmount)
-	f.Items = parsed.Meta.NumberOfItems
-	for mid := range parsed.PayoutsByMID() {
-		f.MIDs = append(f.MIDs, mid)
-	}
-	sort.Strings(f.MIDs)
+	f.Currency = sum.Meta.SettlementCurrency
+	f.Total = money.Format(sum.Meta.SettlementAmount)
+	f.Items = sum.Meta.NumberOfItems
+	f.MIDs = sum.MIDs
 	if f.Currency == "" {
 		// The parser is lenient: text that is not a settlement file parses
 		// to nothing, and nothing names no currency.
@@ -113,7 +119,7 @@ func describe(path, source string, st os.FileInfo) settlementFile {
 
 func (a *app) listSettlementFiles(w http.ResponseWriter, r *http.Request) {
 	out := []settlementFile{}
-	for _, src := range []string{sourceGenerated, sourceUploaded} {
+	for _, src := range sources {
 		dir := a.filesDir(r.Context(), src)
 		entries, err := os.ReadDir(dir)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -137,8 +143,8 @@ func (a *app) uploadSettlementFile(w http.ResponseWriter, r *http.Request) {
 	if !validName(w, name) {
 		return
 	}
-	if _, src, ok := a.findFile(r.Context(), name); ok && src == sourceGenerated {
-		httputilx.Error(w, 409, name+" is a generated file of this environment's; upload it under another name")
+	if _, src, ok := a.findFile(r.Context(), name); ok && src != sourceUploaded {
+		httputilx.Error(w, 409, name+" is a "+src+" file of this environment's; upload it under another name")
 		return
 	}
 	dir := a.filesDir(r.Context(), sourceUploaded)
@@ -182,7 +188,10 @@ func (a *app) uploadSettlementFile(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 201, map[string]any{"file": f, "note": note})
 }
 
-func (a *app) generateSettlementFile(w http.ResponseWriter, r *http.Request) {
+// cutSettlementFile keeps the file Worldline would cut from the
+// environment's trading in the lab: for a platform with no seeder of its
+// own, or a file whose MIDs the platform need not know.
+func (a *app) cutSettlementFile(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Currency string `json:"currency"`
 		Date     string `json:"date"`
@@ -215,7 +224,7 @@ func (a *app) generateSettlementFile(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 502, "worldline named the file "+strconv.Quote(rendered.Name))
 		return
 	}
-	dir := a.filesDir(r.Context(), sourceGenerated)
+	dir := a.filesDir(r.Context(), sourceCut)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		httputilx.Error(w, 500, err.Error())
 		return
@@ -226,7 +235,7 @@ func (a *app) generateSettlementFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	st, _ := os.Stat(path)
-	httputilx.WriteJSON(w, 201, map[string]any{"file": describe(path, sourceGenerated, st)})
+	httputilx.WriteJSON(w, 201, map[string]any{"file": describe(path, sourceCut, st)})
 }
 
 func (a *app) previewSettlementFile(w http.ResponseWriter, r *http.Request) {

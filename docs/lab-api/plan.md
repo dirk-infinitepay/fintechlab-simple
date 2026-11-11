@@ -358,3 +358,45 @@ On the cloud lab, with `sbx` selected, an operator ticks an EUR and a GBP
 file, presses *Run* and *Poll now*, and sbx's settle-processing starts a
 run for each, seen in sbx's logs and in the vendors' arrows on the
 Dashboard. The same works from `curl` with sbx's token.
+
+### 6.1 Seeding the platform, from the lab
+
+**[DECIDED 2026-11-11, the owner]**: the lab seeds an environment's
+platform itself, with what buddy's runner did locally, so a lab in the
+cloud, a CI run and a laptop all seed the same way and the local runner
+stays lean. The seeding code stays the platform's own, kept in step with
+its schemas, and runs as a container in the lab's pod.
+
+- **What seeding is** (lightyear `infinite-local-runner`, now
+  `libs/lab-seeders`): generated merchants into the platform database,
+  boarded and active, with company details, outlets and MIDs (`7xxxxxxx`),
+  B4B beneficiaries and bank details, and per outlet the service products
+  from its country's offer, each with its pricing contract (the fees);
+  the base seed first when missing; and a master account per outlet in the
+  settle database. Then a Worldline ER file per currency paying every
+  generated outlet. Everything generated is marked (`SIM…` accounts), so a
+  reseed replaces only that.
+- **The seeder** is an image built in lightyear (`apps/lab-seeder`),
+  added to the pod with `LAB_SEEDER_IMAGE` (`make pod-up`, `lab.sh
+  deploy`). Its contract is generic, so the lab still knows no platform:
+  `GET /info` names the databases it needs, `POST /seed` and
+  `POST /settlement-files` take them with the form's fields. It mounts the
+  lab API's volume at the same path and streams files straight into the
+  environment's folder, so a file of millions of transactions never passes
+  through the lab.
+- **The environment's config** names its databases (`databases`, by the
+  seeder's names), never shown back. Uat and sit are not seeded: their
+  merchants board the normal way.
+- **The card** gains *Seed merchants…* and *Create settlement file…*, the
+  runner's forms; without a seeder it keeps *Cut from the lab's trading*.
+- **In step with the schemas**: lightyear's agent notes say a schema change
+  means running the seeder's integration test, which migrates scratch
+  databases, seeds and generates, and is meant for CI.
+
+Routes: `GET /v1/platform`, `POST /v1/platform/seed`,
+`POST /v1/settlement-files/generate` (the seeder's file),
+`POST /v1/settlement-files/cut` (Worldline's, from the lab's trading).
+
+**Still open (6.2): files of millions of transactions end to end.** They
+are made and listed without being held in memory, but Worldline's publish
+still reads a file whole (64 MiB); it should stream from the lab's volume.
