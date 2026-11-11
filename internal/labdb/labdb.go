@@ -55,6 +55,31 @@ type Config struct {
 	// (plan.md, phase 6.1). Connection URLs with their credentials, so a
 	// view never shows them back.
 	Databases map[string]string `json:"databases,omitempty"`
+	// Tunnel is the SSH jump host the lab reaches those databases through
+	// when they are not reachable from the lab itself: nil connects to the
+	// URLs as they are.
+	Tunnel *Tunnel `json:"tunnel,omitempty"`
+}
+
+// Tunnel is an SSH jump host. For each seeder call the lab connects to it
+// and forwards a port of its own to every database the call hands over,
+// so the seeder is given the database's URL with the forward's address in
+// it. The private key, its passphrase and the password are secrets: a view
+// never shows them back.
+type Tunnel struct {
+	Host string `json:"host"`
+	// Port is 22 when left out.
+	Port int    `json:"port,omitempty"`
+	User string `json:"user"`
+	// PrivateKey is a PEM private key (OpenSSH, PKCS#1 or PKCS#8);
+	// Passphrase decrypts it when it is encrypted.
+	PrivateKey string `json:"private_key,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"`
+	// Password is tried as well as the key, or alone.
+	Password string `json:"password,omitempty"`
+	// HostKey pins the jump host's key, as ssh-keygen -lf shows it
+	// (SHA256:…). Empty accepts any key, and the lab reports the one it met.
+	HostKey string `json:"host_key,omitempty"`
 }
 
 // Kit is an environment's credentials at each vendor, made when it is

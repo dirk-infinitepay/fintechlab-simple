@@ -387,13 +387,21 @@ its schemas, and runs as a container in the lab's pod.
 - **The environment's config** names its databases (`databases`, by the
   seeder's names), never shown back. Uat and sit are not seeded: their
   merchants board the normal way.
+- **Private databases** are reached through the environment's jump host
+  (`tunnel`: host, user, PEM key and/or password, an optional host-key
+  pin), registered with its databases and never shown back. The lab opens
+  it for each seeder call and hands the seeder each database's URL at a
+  forward on the lab API's `127.0.0.1`, so the seeder needs no SSH and its
+  contract does not change; `POST /v1/platform/check` says whether the lab
+  reaches each one. A cloud lab's address must be allowed on the jump
+  host.
 - **The card** gains *Seed merchants…* and *Create settlement file…*, the
   runner's forms; without a seeder it keeps *Cut from the lab's trading*.
 - **In step with the schemas**: lightyear's agent notes say a schema change
   means running the seeder's integration test, which migrates scratch
   databases, seeds and generates, and is meant for CI.
 
-Routes: `GET /v1/platform`, `POST /v1/platform/seed`,
+Routes: `GET /v1/platform`, `POST /v1/platform/check`, `POST /v1/platform/seed`,
 `POST /v1/settlement-files/generate` (the seeder's file),
 `POST /v1/settlement-files/cut` (Worldline's, from the lab's trading).
 

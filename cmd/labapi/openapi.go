@@ -176,6 +176,7 @@ var opSpecs = map[string]opSpec{
 		"fileType": str("ER (the morning file) or AR (the afternoon's)"),
 	}, "fileType")},
 	"POST /v1/environments/{id}/token": {Bodyless: true},
+	"POST /v1/platform/check":          {Bodyless: true},
 	"GET /v1/services/{id}/logs":       {Query: logQuery, Verbatim: true},
 	"POST /v1/services/{id}/reset":     {Body: scopeBody, Verbatim: true},
 	"ANY /v1/services/{id}/sim/{path...}": {Verbatim: true,

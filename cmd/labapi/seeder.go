@@ -104,21 +104,26 @@ func (a *app) platformState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	var tunnel any
+	if t := cfg.Tunnel; t != nil {
+		tunnel = map[string]any{"host": tunnelAddr(*t), "user": t.User, "host_key": t.HostKey}
+	}
 	httputilx.WriteJSON(w, 200, map[string]any{
-		"env": scopeOf(r.Context()), "seeder": seeder, "databases": dbs, "poll": cfg.PollURL != "",
+		"env": scopeOf(r.Context()), "seeder": seeder, "databases": dbs, "tunnel": tunnel, "poll": cfg.PollURL != "",
 	})
 }
 
-// seederDatabases are the environment's databases for the seeder, or a
-// reason it cannot be asked.
-func (a *app) seederDatabases(ctx context.Context) (map[string]string, int, string) {
+// seederDatabases are the environment's databases as the seeder reaches
+// them -- through its jump host when it names one (tunnel.go), until
+// release -- or a reason it cannot be asked.
+func (a *app) seederDatabases(ctx context.Context) (map[string]string, func(), int, string) {
 	info, err := a.seederInfo(ctx)
 	if err != nil {
-		return nil, 503, err.Error()
+		return nil, nil, 503, err.Error()
 	}
 	cfg, err := a.envConfig(ctx)
 	if err != nil {
-		return nil, 500, err.Error()
+		return nil, nil, 500, err.Error()
 	}
 	out := map[string]string{}
 	var missing []string
@@ -130,10 +135,14 @@ func (a *app) seederDatabases(ctx context.Context) (map[string]string, int, stri
 		out[name] = cfg.Databases[name]
 	}
 	if len(missing) > 0 {
-		return nil, 409, fmt.Sprintf("this environment's config names no %s database: PATCH /v1/environments/%s {\"config\": {\"databases\": {…}}}",
+		return nil, nil, 409, fmt.Sprintf("this environment's config names no %s database: PATCH /v1/environments/%s {\"config\": {\"databases\": {…}}}",
 			strings.Join(missing, ", "), scopeOf(ctx))
 	}
-	return out, 0, ""
+	reached, release, err := reachDatabases(ctx, cfg.Tunnel, out)
+	if err != nil {
+		return nil, nil, 502, err.Error()
+	}
+	return reached, release, 0, ""
 }
 
 // callSeeder POSTs to the seeder and relays its answer.
@@ -188,11 +197,12 @@ func (a *app) seedPlatform(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, `files is "delete" or "keep"`)
 		return
 	}
-	dbs, status, msg := a.seederDatabases(r.Context())
+	dbs, release, status, msg := a.seederDatabases(r.Context())
 	if status != 0 {
 		httputilx.Error(w, status, msg)
 		return
 	}
+	defer release()
 	_, out, ok := a.callSeeder(w, r, "/seed", map[string]any{
 		"databases": dbs, "merchants": b.Merchants, "mode": b.Mode, "seed": b.Seed,
 	})
@@ -232,11 +242,12 @@ func (a *app) generateSettlementFile(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, "transactions is a whole number from 1")
 		return
 	}
-	dbs, status, msg := a.seederDatabases(r.Context())
+	dbs, release, status, msg := a.seederDatabases(r.Context())
 	if status != 0 {
 		httputilx.Error(w, status, msg)
 		return
 	}
+	defer release()
 	dir := a.filesDir(r.Context(), sourceGenerated)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		httputilx.Error(w, 500, err.Error())

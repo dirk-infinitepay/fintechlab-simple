@@ -1755,6 +1755,28 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#get-v1platform
+  /v1/platform/check:
+    post:
+      operationId: postPlatformCheck
+      summary: Check the lab reaches each database the environment names, through its jump host when it has one
+      description: 'Reaches: the environment''s jump host and databases (TCP only).'
+      tags:
+        - card
+      responses:
+        "200":
+          description: done
+          content:
+            application/json:
+              schema:
+                type: object
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#post-v1platformcheck
   /v1/platform/poll:
     post:
       operationId: postPlatformPoll

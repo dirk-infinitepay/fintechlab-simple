@@ -88,6 +88,15 @@ func masked(c labdb.Config) labdb.Config {
 		}
 		c.Databases = dbs
 	}
+	if c.Tunnel != nil {
+		t := *c.Tunnel
+		for _, s := range []*string{&t.PrivateKey, &t.Passphrase, &t.Password} {
+			if *s != "" {
+				*s = tokenShown
+			}
+		}
+		c.Tunnel = &t
+	}
 	return c
 }
 
@@ -115,6 +124,32 @@ func configPatch(raw json.RawMessage, was labdb.Config) (labdb.Config, error) {
 			}
 			if c.Databases[name] == "" {
 				delete(c.Databases, name)
+			}
+		}
+	}
+	// The tunnel too: left out keeps it, null removes it, and in one that
+	// is sent a secret left out (or sent back as "(set)") keeps the one
+	// there is, while "" removes it.
+	raw, sent := keys["tunnel"]
+	switch {
+	case !sent:
+		c.Tunnel = was.Tunnel
+	case string(raw) == "null":
+		c.Tunnel = nil
+	case c.Tunnel != nil:
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &fields)
+		var old labdb.Tunnel
+		if was.Tunnel != nil {
+			old = *was.Tunnel
+		}
+		for key, secret := range map[string]struct{ now, was *string }{
+			"private_key": {&c.Tunnel.PrivateKey, &old.PrivateKey},
+			"passphrase":  {&c.Tunnel.Passphrase, &old.Passphrase},
+			"password":    {&c.Tunnel.Password, &old.Password},
+		} {
+			if _, given := fields[key]; !given || *secret.now == tokenShown {
+				*secret.now = *secret.was
 			}
 		}
 	}
@@ -316,7 +351,7 @@ func (a *app) patchDefault(w http.ResponseWriter, r *http.Request, name string, 
 		}
 	}
 	if c.SettlementIdentifier != "" || len(c.WebhookHosts) > 0 || c.ACIWebhookURL != "" || c.B4BCallbackURL != "" {
-		httputilx.Error(w, 400, "the default environment's vendor settings are the lab's deployment (LAB_SET, LAB_WEBHOOK_ALLOW); only poll_url, poll_token, databases and clock can be set here")
+		httputilx.Error(w, 400, "the default environment's vendor settings are the lab's deployment (LAB_SET, LAB_WEBHOOK_ALLOW); only poll_url, poll_token, databases, tunnel and clock can be set here")
 		return
 	}
 	if err := a.db.SaveDefaultConfig(r.Context(), c); err != nil {
@@ -831,6 +866,11 @@ func validConfig(c labdb.Config) error {
 		}
 		if url != "" && url != tokenShown && !strings.HasPrefix(url, "postgres://") && !strings.HasPrefix(url, "postgresql://") {
 			return fmt.Errorf("config.databases.%s is a postgres:// URL", name)
+		}
+	}
+	if c.Tunnel != nil {
+		if err := validTunnel(*c.Tunnel); err != nil {
+			return err
 		}
 	}
 	for _, h := range c.WebhookHosts {

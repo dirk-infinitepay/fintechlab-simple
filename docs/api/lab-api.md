@@ -435,7 +435,22 @@ An environment is shown as:
   shown as `(set)` and never handed back), `databases` (the platform's own
   databases by the names the lab's seeder asks for, `platform` and
   `settle`: `postgres://` URLs, shown as `(set)`; a change that leaves
-  `databases` out keeps them, and `""` removes one). All optional.
+  `databases` out keeps them, and `""` removes one), `tunnel` (the SSH
+  jump host those databases are reached through, when the lab cannot reach
+  them itself: `{"host", "port" (22), "user", "private_key", "passphrase",
+  "password", "host_key"}`. `private_key` is a PEM key (OpenSSH, PKCS#1 or
+  PKCS#8), opened with `passphrase` when it is encrypted, and checked when
+  the config is saved; `password` is tried with it, or alone; `host_key`
+  pins the jump host's key as `ssh-keygen -lf` prints it (`SHA256:…`), and
+  empty accepts any. The three secrets are shown as `(set)`; a change that
+  leaves `tunnel` out keeps it, one that sends it keeps a secret it leaves
+  out or sends back as `(set)`, and `null` removes it). All optional.
+
+With a `tunnel`, every seeder call opens it for as long as the call takes:
+the lab connects to the jump host, forwards a port of its own on
+`127.0.0.1` to each database the call hands over, and gives the seeder
+each database's own URL with the forward's address in it (the seeder runs
+in the lab's pod). Without one, the URLs go to the seeder as they are.
 
 The lab API pushes each environment to every vendor that keeps them
 apart when it is created or changed, and checks every few seconds
@@ -601,8 +616,9 @@ streams them to disk, so millions of transactions are fine.
 
 **Answers** — `201 {"env", "result": {…the seeder's answer…}, "files": [
 …as listed…]}`; `409` when the environment's config names no database the
-seeder needs; `503` when the lab runs no seeder; the seeder's own status
-and reason otherwise.
+seeder needs; `502` when its `tunnel` cannot be opened or does not reach a
+database; `503` when the lab runs no seeder; the seeder's own status and
+reason otherwise.
 
 **Reaches** — the seeder's `POST /settlement-files`.
 
@@ -666,9 +682,27 @@ What the environment's card can do on the platform's side.
 
 **Answers** — `200 {"env", "seeder": {"available": true, "info": {…}} or
 {"available": false, "error"}, "databases": {"platform": "set", "settle":
-"missing"}, "poll": true}`.
+"missing"}, "tunnel": {"host": "bastion.example:22", "user", "host_key"}
+or null, "poll": true}`.
 
 **Reaches** — the seeder's `GET /info`; the lab's database.
+
+### `POST /v1/platform/check`
+
+Check the lab reaches each database the environment names, through its
+jump host when it has one: what registering an environment's databases
+wants to know before a seed. It connects to the jump host, then opens a
+connection to each database through it (or straight to it, without a
+tunnel) and closes it again; it never logs in to a database, whose
+credentials are the seeder's to try. Needs no seeder.
+
+**Answers** — `200 {"env", "tunnel": {"host", "user", "host_key": "SHA256:…
+(the key it met)", "status": "ok" or why not} or null, "databases":
+{"platform": "reachable", "settle": "…:5432 does not answer: …"}}`; every
+database is `not checked` when the jump host is not reached. `409` when
+the config names no database.
+
+**Reaches** — the environment's jump host and databases (TCP only).
 
 ### `POST /v1/platform/seed`
 
@@ -685,8 +719,10 @@ removal, since they pay MIDs that no longer exist.
 
 **Answers** — `200 {"env", "result": {…the seeder's answer…},
 "files_deleted"}`; `409` when the config names no database the seeder
-needs; `503` when the lab runs no seeder; the seeder's own status and
-reason otherwise (`409` while it is busy with these databases).
+needs; `502` when its `tunnel` cannot be opened or does not reach a
+database, with the reason; `503` when the lab runs no seeder; the seeder's
+own status and reason otherwise (`409` while it is busy with these
+databases).
 
 **Reaches** — the seeder's `POST /seed`.
 

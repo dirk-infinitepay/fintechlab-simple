@@ -161,6 +161,7 @@ func (a *app) apiRoutes() []route {
 		{"DELETE", "/v1/settlement-files", "", "card", "Delete one of the environment's files", "the lab API's own volume", a.deleteSettlementFile},
 		{"POST", "/v1/settlement-files/publish", "", "card", "Have Worldline publish files in the environment's SFTP folder, one per currency", "worldline POST /sim/settlement-files/publish, per file", a.publishSettlementFiles},
 		{"GET", "/v1/platform", "", "card", "What the environment's card can do on the platform's side: seed, generate, poll", "the seeder's GET /info; the lab's database", a.platformState},
+		{"POST", "/v1/platform/check", "", "card", "Check the lab reaches each database the environment names, through its jump host when it has one", "the environment's jump host and databases (TCP only)", a.checkDatabases},
 		{"POST", "/v1/platform/seed", "", "card", "Seed the environment's databases with generated merchants, through the platform's seeder", "the seeder's POST /seed", a.seedPlatform},
 		{"POST", "/v1/platform/poll", "", "card", "Run the platform's own Worldline poll now, at the poll_url its config names", "the environment's poll_url", a.platformPoll},
 		{"GET", "/v1/plugins", "/api/plugins", "plugins", "The registered platforms and how each registration stands", "nothing — the lab API's own state", a.listPlugins},

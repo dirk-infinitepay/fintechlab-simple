@@ -367,18 +367,119 @@ function seederBlock(e) {
       </div>`;
   }
   const missing = Object.entries(p.databases || {}).filter(([, v]) => v !== 'set').map(([k]) => k);
+  const t = p.tunnel;
+  const route = t ? `through the jump host <span class="mono">${esc(t.user)}@${esc(t.host)}</span>` : 'directly, with no jump host';
   if (missing.length) {
     return `<p class="hint">The seeder needs this environment's ${missing.map((m) => `<span class="mono">${esc(m)}</span>`).join(' and ')}
-      database${missing.length === 1 ? '' : 's'}: set <span class="mono">databases</span> in its config
-      (<span class="mono">PATCH /v1/environments/${esc(e.id)}</span>, <span class="mono">postgres://</span> URLs).</p>`;
+      database${missing.length === 1 ? '' : 's'}, and the jump host they are reached through when the lab cannot reach them
+      itself.</p>
+      <div class="form"><button class="ghost small" data-action="open-databases" data-id="${esc(e.id)}">Databases and jump host…</button></div>`;
   }
   return `<div class="form">
       <button class="btn small" data-action="open-seed">Seed merchants…</button>
       <button class="ghost small" data-action="open-create-file">Create settlement file…</button>
+      <button class="ghost small" data-action="open-databases" data-id="${esc(e.id)}">Databases and jump host…</button>
+      <button class="ghost small" data-action="check-databases">Check databases</button>
     </div>
     <p class="hint">Merchants are seeded into this environment's own platform and settle databases, boarded and priced as
       boarding leaves them; a settlement file then pays every one of them. The seeder is the platform's own
-      (<span class="mono">${esc((seeder.info && seeder.info.service) || 'seeder')}</span>).</p>`;
+      (<span class="mono">${esc((seeder.info && seeder.info.service) || 'seeder')}</span>), and the lab reaches the
+      databases ${route}.</p>`;
+}
+
+/* An environment's databases and the jump host they are reached through
+   (lab-api.md, config.databases and config.tunnel), for Create environment
+   and the card's Databases and jump host…: one URL per database the seeder
+   asks for, and the jump host. A secret is never shown back: blank keeps
+   the one there is. */
+function databaseNames(cfg) {
+  const info = (((state.platform || {}).seeder) || {}).info || {};
+  const asked = Array.isArray(info.databases) ? info.databases : [];
+  return [...new Set([...asked, ...Object.keys((cfg || {}).databases || {})])];
+}
+
+function databaseFields(cfg) {
+  cfg = cfg || {};
+  const dbs = cfg.databases || {};
+  const t = cfg.tunnel || {};
+  const names = databaseNames(cfg);
+  if (!names.length) {
+    const why = ((state.platform || {}).seeder || {}).error;
+    return `<p class="hint"><b>Databases</b> — no seeder has said which it needs${why ? ` (${esc(why)})` : ''}: they are set
+      on the environment's card once the lab runs one.</p>`;
+  }
+  const kept = (set, none) => (set ? '(set) — blank keeps it' : none);
+  return `
+      <div class="form">${names.map((n) => `
+        <div class="field wide"><label>${esc(n)} database</label><input data-field="db_${esc(n)}" autocomplete="off"
+          placeholder="${esc(kept(dbs[n], 'postgres://user:password@host:5432/database'))}"></div>`).join('')}
+      </div>
+      <div class="form">
+        <div class="field wide"><label>Jump host</label><input data-field="tunnel_host" value="${esc(t.host || '')}" placeholder="none"></div>
+        <div class="field"><label>Port</label><input data-field="tunnel_port" type="number" min="1" max="65535" value="${esc(t.port || '')}" placeholder="22"></div>
+        <div class="field"><label>User</label><input data-field="tunnel_user" value="${esc(t.user || '')}" autocomplete="off"></div>
+      </div>
+      <div class="form">
+        <div class="field wide"><label>Private key</label><textarea data-secret="tunnel_private_key" spellcheck="false"
+          placeholder="${esc(kept(t.private_key, '-----BEGIN OPENSSH PRIVATE KEY-----'))}"></textarea></div>
+      </div>
+      <div class="form">
+        <div class="field"><label>Key passphrase</label><input data-secret="tunnel_passphrase" type="password" autocomplete="off" placeholder="${esc(kept(t.passphrase, 'none'))}"></div>
+        <div class="field"><label>Password</label><input data-secret="tunnel_password" type="password" autocomplete="off" placeholder="${esc(kept(t.password, 'none'))}"></div>
+        <div class="field wide"><label>Host key</label><input data-field="tunnel_host_key" value="${esc(t.host_key || '')}" placeholder="SHA256:… — blank accepts any"></div>
+      </div>
+      <p class="hint"><b>Databases</b> — <span class="mono">postgres://</span> URLs with their credentials, as the database
+        itself names its host: the seeder logs in with them. Never shown back.</p>
+      <p class="hint"><b>Jump host</b> — for databases the lab cannot reach itself: for each seed or file the lab logs in to
+        it over SSH and forwards a port to each database. Blank reaches them directly${t.host ? ', and removes the one set' : ''}.
+        A cloud lab's address must be allowed to reach it.</p>
+      <p class="hint"><b>Private key</b>, <b>Password</b> — either or both; the key is checked when it is saved, opened with
+        its passphrase when it is encrypted. <b>Host key</b> — the jump host's key as
+        <span class="mono">ssh-keygen -lf</span> prints it; <i>Check databases</i> shows the one it met.</p>`;
+}
+
+/* The config parts databaseFields' answers make, over cfg (the view's):
+   a database left blank keeps its URL, a secret left blank keeps its own,
+   and a blank jump host removes the one there was. */
+function databaseConfig(scope, cfg) {
+  cfg = cfg || {};
+  const f = fieldsIn(scope);
+  const out = {};
+  const dbs = {};
+  databaseNames(cfg).forEach((n) => {
+    if (f[`db_${n}`]) dbs[n] = f[`db_${n}`];
+    else if ((cfg.databases || {})[n]) dbs[n] = '(set)';
+  });
+  if (Object.keys(dbs).length) out.databases = dbs;
+  if (f.tunnel_host) {
+    const t = { host: f.tunnel_host, user: f.tunnel_user || '' };
+    if (f.tunnel_port) t.port = parseInt(f.tunnel_port, 10);
+    if (f.tunnel_host_key) t.host_key = f.tunnel_host_key;
+    scope.querySelectorAll('[data-secret]').forEach((el) => {
+      if (el.value !== '') t[el.dataset.secret.replace(/^tunnel_/, '')] = el.value;
+    });
+    out.tunnel = t;
+  } else if (cfg.tunnel) {
+    out.tunnel = null;
+  }
+  return out;
+}
+
+function openDatabasesModal(e) {
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>Databases and jump host</h2>
+      <p><b>${esc(e.name || e.id)}</b>'s own databases, which its seeder seeds and makes settlement files from, and the
+        jump host the lab reaches them through.</p>
+    </div>
+    <div class="modal-body">${databaseFields(e.config)}</div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="save-databases" data-id="${esc(e.id)}">Save databases and jump host</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
 }
 
 function openSeedModal() {
@@ -547,6 +648,8 @@ function envCard(e) {
       ['ACI webhook URL', cfg.aci_webhook_url],
       ['B4B callback URL', cfg.b4b_callback_url],
       ['Clock', cfg.clock],
+      ['Databases', Object.keys(cfg.databases || {}).join(', ')],
+      ['Jump host', cfg.tunnel ? `${cfg.tunnel.user}@${cfg.tunnel.host}:${cfg.tunnel.port || 22}${cfg.tunnel.host_key ? ' (key pinned)' : ''}` : ''],
     ].filter(([, v]) => v);
     const seenBy = Object.entries(e.seen_by || {}).filter(([, t]) => t);
     body = `<div class="card-body">
@@ -613,6 +716,7 @@ function openEnvModal() {
         callbacks may reach them.</p>
       <p class="hint"><b>Clock</b> — wall for a deployed platform that cannot follow the lab clock: once its platform is
         seen, the lab clock cannot be moved.</p>
+      ${databaseFields({})}
     </div>
     <div class="modal-foot">
       <button class="ghost" id="modal-cancel">Cancel</button>
@@ -3518,7 +3622,13 @@ const ACTIONS = {
 
   'open-create-merchant': async () => { openMerchantModal(); },
 
-  'open-create-env': async () => { openEnvModal(); },
+  'open-create-env': async () => {
+    // The seeder names the databases the form asks for; the Platform view may not have asked it yet.
+    if (!state.platform || !state.platform.seeder) {
+      try { state.platform = await api('GET', '/v1/platform'); } catch (err) { state.platform = { error: err.message }; }
+    }
+    openEnvModal();
+  },
 
   'env-publish': async (d) => {
     const files = d.files.split('|');
@@ -3545,6 +3655,30 @@ const ACTIONS = {
   },
 
   'open-seed': async () => { openSeedModal(); },
+
+  'open-databases': async (d) => {
+    const e = (Array.isArray(state.envs) ? state.envs : []).find((x) => x.id === d.id) || currentEnv();
+    if (e) openDatabasesModal(e);
+  },
+
+  'save-databases': async (d, btn) => {
+    const e = (Array.isArray(state.envs) ? state.envs : []).find((x) => x.id === d.id);
+    if (!e) throw new Error(`no environment ${d.id} here`);
+    // A change sends the whole config: the view's, its secrets as "(set)", which keeps them.
+    const config = { ...(e.config || {}), ...databaseConfig(btn.closest('.modal'), e.config) };
+    await api('PATCH', `/v1/environments/${encodeURIComponent(d.id)}`, { config }, { noEnv: true });
+    closeModal();
+    toast('Databases saved', `${d.id}: ${Object.keys(config.databases || {}).join(', ') || 'none'}${config.tunnel ? `, through ${config.tunnel.user}@${config.tunnel.host}` : ''}`, 'good');
+  },
+
+  'check-databases': async () => {
+    const r = await api('POST', '/v1/platform/check');
+    const lines = [];
+    if (r.tunnel) lines.push(`jump host ${r.tunnel.host}: ${r.tunnel.status}${r.tunnel.host_key ? `\nits key: ${r.tunnel.host_key}` : ''}`);
+    Object.entries(r.databases || {}).forEach(([n, how]) => lines.push(`${n}: ${how}`));
+    const ok = (!r.tunnel || r.tunnel.status === 'ok') && Object.values(r.databases || {}).every((how) => how === 'reachable');
+    toast(ok ? 'Databases reachable' : 'Databases not all reachable', lines.join('\n'), ok ? 'good' : 'bad');
+  },
 
   'open-create-file': async () => { openCreateFileModal(); },
 
@@ -3607,6 +3741,7 @@ const ACTIONS = {
     if (f.b4b_callback_url) config.b4b_callback_url = f.b4b_callback_url;
     const hosts = (f.webhook_hosts || '').split(',').map((h) => h.trim()).filter(Boolean);
     if (hosts.length) config.webhook_hosts = hosts;
+    Object.assign(config, databaseConfig(btn.closest('.modal'), {}));
     const r = await api('POST', '/v1/environments', { name: f.name, id: f.id || '', config }, { noEnv: true });
     closeModal();
     state.open.add(`environments:env-${r.environment.id}`);

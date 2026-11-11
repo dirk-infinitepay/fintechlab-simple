@@ -631,9 +631,12 @@ One **Card** per environment, the default first and marked `lab's own`:
   on the card go, and its token stops working, and that the default is
   untouched.
 - *+ Create environment* in the topbar opens a **Modal**: name, id (blank:
-  made from the name), and the config fields, each with a `.hint`. The
-  answer's token is shown in the toast, because the environment's card
-  shows it again anyway.
+  made from the name), and the config fields, each with a `.hint` — its
+  databases and jump host among them, as *Databases and jump host…* on its
+  card has them. The answer's token is shown in the toast, because the
+  environment's card shows it again anyway.
+- Its `.kv` shows which databases are set and the jump host
+  (`user@host:port`, *key pinned* when it is), never a URL or a secret.
 
 ### Environment card — the platform card every environment has
 
@@ -665,7 +668,17 @@ buttons when there is one.
   transactions, currency, a seed. They run the platform's seeder against
   the environment's databases. Without a seeder the card says so and offers
   **Cut from the lab's trading** instead (currency, trading day), and
-  without the databases it says which to set.
+  without the databases it says which it needs and offers only
+  **Databases and jump host…**.
+- **Databases and jump host…** opens a **Modal**: a URL per database the
+  seeder names, then the jump host — host, port, user, a private key
+  (`textarea`), its passphrase, a password, a host key to pin. A secret is
+  never shown back: its field is empty, its placeholder says `(set)`, and
+  blank keeps it; a blank jump host removes the one there was. The foot's
+  `.btn` saves the environment's whole config, as its view shows it, with
+  these laid over it. **Check databases** reaches each one (through the
+  jump host when there is one) and toasts what it found, the host key the
+  jump host showed included, so it can be pinned.
 - **Upload a file…** opens a picker made on the spot, as the **File field**
   does, and streams the file to the environment's files.
 
