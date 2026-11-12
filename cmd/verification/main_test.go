@@ -118,6 +118,15 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 	if score < threshold {
 		t.Errorf("a PASS scored %v against a threshold of %v", score, threshold)
 	}
+	attributes := nested(out, "data", "attributes")
+	if attributes["address_verified"] != true {
+		t.Errorf("idu address_verified = %v, want true", attributes["address_verified"])
+	}
+	for _, flag := range []string{"sanction", "pep", "insolvency", "ccj", "death_ddri", "death_gro", "death_halo"} {
+		if attributes[flag] != false {
+			t.Errorf("idu %s = %v, want false", flag, attributes[flag])
+		}
+	}
 }
 
 // TestOutcomesAreFlippable: the unhappy paths have to be reachable, or this

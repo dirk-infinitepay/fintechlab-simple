@@ -725,7 +725,17 @@ func (a *app) lexisIDU(w http.ResponseWriter, r *http.Request) {
 			"status":     result,
 			"assessment": map[string]any{"result": result, "score": score},
 			"context":    map[string]any{"pass_threshold": 700},
-			"attributes": map[string]any{"dob_count": 1},
+			"attributes": map[string]any{
+				"dob_count":        1,
+				"address_verified": true,
+				"sanction":         false,
+				"pep":              false,
+				"insolvency":       false,
+				"ccj":              false,
+				"death_ddri":       false,
+				"death_gro":        false,
+				"death_halo":       false,
+			},
 		},
 	})
 }
