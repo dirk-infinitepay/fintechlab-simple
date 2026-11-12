@@ -109,17 +109,34 @@ func (s *Store) Intercept(w http.ResponseWriter, r *http.Request, env string) bo
 		c.applied("close")
 		panic(http.ErrAbortHandler)
 	default:
-		d, _ := parseDuration(effect.Delay)
-		timer := time.NewTimer(d)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-			c.applied("delay " + effect.Delay)
-		case <-r.Context().Done():
-		case <-c.t.ctx.Done():
-		}
+		c.delay(r, effect.Delay)
 		return false
 	}
+}
+
+// delay holds the request for d, as a pending step, so that disarming the
+// trap or resetting the sim lets it through at once.
+func (c *Caught) delay(r *http.Request, d string) {
+	s := c.store
+	wait, _ := parseDuration(d)
+	due := s.Wall().Add(wait)
+	pending := Pending{TrapID: c.TrapID, Subject: c.Subject, Step: Step{To: "delay " + d}, Due: &due,
+		key: fmt.Sprintf("%d/delay", c.idx)}
+	s.mu.Lock()
+	c.t.PendingSteps = append(c.t.PendingSteps, pending)
+	s.mu.Unlock()
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		c.applied("delay " + d)
+	case <-r.Context().Done():
+	case <-c.t.ctx.Done():
+	}
+	s.mu.Lock()
+	c.t.PendingSteps = removePending(c.t.PendingSteps, pending.key)
+	s.mu.Unlock()
 }
 
 func (c *Caught) applied(what string) {
