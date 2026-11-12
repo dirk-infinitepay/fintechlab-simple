@@ -275,7 +275,7 @@ func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
 	}
 
 	cleared, kept := resetVia(t, a, "flow")
-	if len(cleared) != 1 || cleared["outcomes"] != 2 {
+	if len(cleared) != 2 || cleared["outcomes"] != 2 {
 		t.Errorf("cleared = %v, want two outcomes back to their defaults", cleared)
 	}
 	if strings.Join(kept, ",") != "tokens,portfolios" {

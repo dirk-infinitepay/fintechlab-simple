@@ -394,6 +394,29 @@ does. `400` for an unknown check or outcome, which changes nothing:
 `400` `an outcome is set in one environment, not in all of them` for
 `env=*`; `404` for an environment this service was never given.
 
+### `GET /sim/activity`
+
+The request journal, newest first: every request the platform made to a
+vendor on `:8089`, and the status it was answered with. Query: `limit`
+(positive integer, default 100); `env` (the default when left out, `*` for
+every environment's). A request is its credentials' environment; a login
+sent in the body (`/creditsafe/authenticate`, `/lexisnexis/oauth/token`,
+IVI) is the default's.
+
+Answers `200`:
+
+```json
+{"logs": [{"name": "requests", "title": "Vendor requests",
+           "note": "Every request the platform made to Creditsafe, iban.com, KYC6 and LexisNexis, and the status it was answered with.",
+           "total": 1, "kept": 1,
+           "last": {"seq": 1, "at": "2026-11-12T09:40:00Z", "op": "iban.com", "peer": "10.89.0.7",
+                    "summary": "POST /iban/verify", "status": "ok", "detail": {"status": "OK"}},
+           "events": [{"seq": 1, "…": "as last"}]}]}
+```
+
+`op` is the vendor: `creditsafe`, `iban.com`, `kyc6` or `lexisnexis`. A
+`4xx` answer is `warn` and carries the vendor's error in the summary.
+
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
@@ -417,19 +440,20 @@ token is something the platform obtained once and caches, so `flow` keeps
 it.
 
 - **`flow` clears**: the outcomes, back to the defaults in the table under
-  [Vendor surface](#vendor-surface).
+  [Vendor surface](#vendor-surface), and the request journal.
 - **`flow` keeps**: every bearer token issued, so a platform holding one
   is not refused mid-session; and the Creditsafe portfolio id counter.
 - **`all`** is first start: the outcomes, every token issued in the
   environment (a held one is `401` `unknown or expired token` until the
   client authenticates again), and its portfolio ids count from 1 again.
 
-`cleared` counts `outcomes` that were flipped, and with `all`, `tokens`
+`cleared` counts `outcomes` that were flipped and journal `requests`, and
+with `all`, `tokens`
 and `portfolios` created. Another environment's outcomes and tokens are
 left alone.
 
 ```json
-{"service": "verification", "scope": "flow", "env": "default", "cleared": {"outcomes": 2},
+{"service": "verification", "scope": "flow", "env": "default", "cleared": {"outcomes": 2, "requests": 5},
  "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
 ```
 
