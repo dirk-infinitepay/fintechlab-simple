@@ -643,7 +643,7 @@ func (a *app) kyc6Screen(w http.ResponseWriter, r *http.Request) {
 			"resourceId": "sim-match-1",
 			"name":       str(body["name"]),
 			"score":      0.92,
-			"datasets":   []string{"SANCTIONS"},
+			"datasets":   []string{"SAN-CURRENT"},
 			"matchTypes": []string{"name"},
 		})
 	}
@@ -658,7 +658,7 @@ func (a *app) kyc6Screen(w http.ResponseWriter, r *http.Request) {
 func (a *app) kyc6Profile(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"resourceId": r.PathValue("resourceId"),
-		"datasets":   []string{"SANCTIONS"},
+		"datasets":   []string{"SAN-CURRENT"},
 	})
 }
 

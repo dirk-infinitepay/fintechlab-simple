@@ -157,6 +157,13 @@ func TestOutcomesAreFlippable(t *testing.T) {
 	if n, _ := results["matchCount"].(float64); n != 1 {
 		t.Errorf("a screening hit should produce a match: %v", results)
 	}
+	matches, _ := results["matches"].([]any)
+	if len(matches) == 1 {
+		datasets, _ := matches[0].(map[string]any)["datasets"].([]any)
+		if len(datasets) != 1 || datasets[0] != "SAN-CURRENT" {
+			t.Errorf("a sanctions hit carries KYC6's SAN-CURRENT dataset: %v", datasets)
+		}
+	}
 
 	if err := a.outcomes(tenant.Default).set(checkIdentity, "fail"); err != nil {
 		t.Fatal(err)

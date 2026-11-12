@@ -243,8 +243,10 @@ Answers `200`; clear means zero matches:
 With the `screening` outcome at `hit`:
 
 ```json
-{"results": {"matchCount": 1, "matches": [{"resourceId": "sim-match-1", "name": "Ada Lovelace", "score": 0.92, "datasets": ["SANCTIONS"], "matchTypes": ["name"]}]}}
+{"results": {"matchCount": 1, "matches": [{"resourceId": "sim-match-1", "name": "Ada Lovelace", "score": 0.92, "datasets": ["SAN-CURRENT"], "matchTypes": ["name"]}]}}
 ```
+
+`SAN-CURRENT` is KYC6's dataset key for a current sanctions listing.
 
 ### `POST /kyc6/businesses`
 
@@ -254,7 +256,7 @@ Screens a business. Same handler, body and answers as
 ### `GET /kyc6/individuals/{resourceId}`
 
 A match's profile. Answers `200` with
-`{"resourceId": "<the path id>", "datasets": ["SANCTIONS"]}` for any id.
+`{"resourceId": "<the path id>", "datasets": ["SAN-CURRENT"]}` for any id.
 
 ### `GET /kyc6/businesses/{resourceId}`
 
