@@ -448,8 +448,11 @@ environment this service was never given.
 The request journal, newest first: every request the platform made to a
 vendor on `:8089`, and the status it was answered with. Query: `limit`
 (positive integer, default 100); `env` (the default when left out, `*` for
-every environment's). A request is the environment its credentials name, a
-login included; one the vendor refused is the default's.
+every environment's); `404` for an environment this service was never
+given. A request is the environment its credentials name, a login
+included. A request refused for a missing or unknown token is the
+default's: no environment can be read from a token this service did not
+issue.
 
 Answers `200`:
 
@@ -463,7 +466,9 @@ Answers `200`:
 ```
 
 `op` is the vendor: `creditsafe`, `iban.com`, `kyc6` or `lexisnexis`. A
-`4xx` answer is `warn` and carries the vendor's error in the summary.
+`4xx` answer is `warn` and carries the vendor's error in the summary, and
+so is iban.com's refusal, which it answers `200` with an `error` field. The
+journal keeps the first 64 KiB of a request body; the vendor reads it all.
 
 ### `GET /sim/info`
 
@@ -497,12 +502,13 @@ it.
   client authenticates again), and its portfolio ids count from 1 again.
 
 `cleared` counts `outcomes` that were flipped, `companies` that were
-registered and journal `requests`, and with `all`, `tokens`
+registered and journal events it held (`activity`, at most 256 per
+environment), and with `all`, `tokens`
 and `portfolios` created. Another environment's outcomes and tokens are
 left alone.
 
 ```json
-{"service": "verification", "scope": "flow", "env": "default", "cleared": {"companies": 1, "outcomes": 2, "requests": 5},
+{"service": "verification", "scope": "flow", "env": "default", "cleared": {"activity": 5, "companies": 1, "outcomes": 2},
  "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
 ```
 
@@ -543,8 +549,9 @@ lower-case letters, digits and dashes, starting with a letter, at most
 
 ### `DELETE /sim/customers/{env}`
 
-Removes one customer and what it had here: its outcomes and every token
-issued to it. Its login is then a stranger's, the default's.
+Removes one customer and what it had here: its outcomes, every token
+issued to it and its journal. Its login is then a stranger's, the
+default's.
 
 Answers `200` `{"env": "sbx", "deleted": true}`; `404`
 `no environment sbx here`.

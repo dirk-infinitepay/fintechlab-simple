@@ -268,6 +268,7 @@ func (a *app) dropTokens(scope string) int {
 // forget is a customer's removal: its outcomes and its tokens go with it.
 func (a *app) forget(env string) error {
 	a.dropTokens(env)
+	a.requests.ClearIn(env)
 	a.mu.Lock()
 	delete(a.envs, env)
 	a.mu.Unlock()
@@ -317,7 +318,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
 	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
 	ctl.Mux.HandleFunc("POST /sim/creditsafe/companies", a.registerCreditsafeCompany)
-	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(a.requests))
+	ctl.Mux.HandleFunc("GET /sim/activity", a.readActivity(activity.Handler(a.requests)))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -326,39 +327,38 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	// The old /sim paths on the vendor port, until phase 4.
 	mux.Handle("/sim/", ctl.Mux)
 
-	// vendor routes a vendor endpoint through the request journal.
-	vendor := func(pattern string, h http.HandlerFunc) {
-		path := pattern[strings.Index(pattern, " ")+1:]
-		mux.HandleFunc(pattern, a.requests.Watch(vendorOf(path), nil, h))
+	// vendor routes one vendor's endpoint through the request journal,
+	// filed under that vendor.
+	vendor := func(name, pattern string, h http.HandlerFunc) {
+		mux.HandleFunc(pattern, a.requests.Watch(name, summarize[name], h))
 	}
 
-	// --- Creditsafe: company data and UK bank verification ----------
-	vendor("POST /creditsafe/authenticate", a.creditsafeAuthenticate)
-	vendor("POST /creditsafe/localSolutions/GB/bankVerification/search", a.bearer(a.creditsafeBankVerification))
-	vendor("GET /creditsafe/companies", a.bearer(a.creditsafeCompanySearch))
-	vendor("GET /creditsafe/companies/{id}", a.bearer(a.creditsafeCompany))
-	vendor("GET /creditsafe/monitoring/portfolios", a.bearer(a.creditsafePortfolios))
-	vendor("POST /creditsafe/monitoring/portfolios", a.bearer(a.creditsafeCreatePortfolio))
-	vendor("POST /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafeAddPortfolioCompany))
-	vendor("GET /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafePortfolioCompanies))
-	vendor("PUT /creditsafe/monitoring/portfolios/{portfolioId}/eventRules/{countryCode}", a.bearer(a.creditsafeEventRules))
-	vendor("GET /creditsafe/monitoring/notificationEvents", a.bearer(a.creditsafeEvents))
+	vendor("creditsafe", "POST /creditsafe/authenticate", a.creditsafeAuthenticate)
+	vendor("creditsafe", "POST /creditsafe/localSolutions/GB/bankVerification/search", a.bearer(a.creditsafeBankVerification))
+	vendor("creditsafe", "GET /creditsafe/companies", a.bearer(a.creditsafeCompanySearch))
+	vendor("creditsafe", "GET /creditsafe/companies/{id}", a.bearer(a.creditsafeCompany))
+	vendor("creditsafe", "GET /creditsafe/monitoring/portfolios", a.bearer(a.creditsafePortfolios))
+	vendor("creditsafe", "POST /creditsafe/monitoring/portfolios", a.bearer(a.creditsafeCreatePortfolio))
+	vendor("creditsafe", "POST /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafeAddPortfolioCompany))
+	vendor("creditsafe", "GET /creditsafe/monitoring/portfolios/{portfolioId}/companies", a.bearer(a.creditsafePortfolioCompanies))
+	vendor("creditsafe", "PUT /creditsafe/monitoring/portfolios/{portfolioId}/eventRules/{countryCode}", a.bearer(a.creditsafeEventRules))
+	vendor("creditsafe", "GET /creditsafe/monitoring/notificationEvents", a.bearer(a.creditsafeEvents))
 
 	// --- iban.com: the base URL is the endpoint ---------------------
-	vendor("POST /iban/verify", a.ibanVerify)
+	vendor("iban.com", "POST /iban/verify", a.ibanVerify)
 
 	// --- KYC6: sanctions, PEP and adverse media ---------------------
-	vendor("POST /kyc6/individuals", a.apiKey(a.kyc6Screen))
-	vendor("POST /kyc6/businesses", a.apiKey(a.kyc6Screen))
-	vendor("GET /kyc6/individuals/{resourceId}", a.apiKey(a.kyc6Profile))
-	vendor("GET /kyc6/businesses/{resourceId}", a.apiKey(a.kyc6Profile))
-	vendor("PUT /kyc6/worklists/{worklistId}", a.apiKey(a.kyc6CreateWorklist))
-	vendor("GET /kyc6/lifecycle/ongoing-monitoring/{alertId}", a.apiKey(a.kyc6Monitoring))
+	vendor("kyc6", "POST /kyc6/individuals", a.apiKey(a.kyc6Screen))
+	vendor("kyc6", "POST /kyc6/businesses", a.apiKey(a.kyc6Screen))
+	vendor("kyc6", "GET /kyc6/individuals/{resourceId}", a.apiKey(a.kyc6Profile))
+	vendor("kyc6", "GET /kyc6/businesses/{resourceId}", a.apiKey(a.kyc6Profile))
+	vendor("kyc6", "PUT /kyc6/worklists/{worklistId}", a.apiKey(a.kyc6CreateWorklist))
+	vendor("kyc6", "GET /kyc6/lifecycle/ongoing-monitoring/{alertId}", a.apiKey(a.kyc6Monitoring))
 
 	// --- LexisNexis: OAuth, then identity and verification ----------
-	vendor("POST /lexisnexis/oauth/token", a.lexisToken)
-	vendor("POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
-	vendor("POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
+	vendor("lexisnexis", "POST /lexisnexis/oauth/token", a.lexisToken)
+	vendor("lexisnexis", "POST /lexisnexis/idu/v1/reports", a.bearer(a.lexisIDU))
+	vendor("lexisnexis", "POST /lexisnexis/ivi/api/attribute-query", a.lexisIVI)
 	return mux, ctl, nil
 }
 
@@ -377,7 +377,7 @@ func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetRes
 		flipped += s.out.reset()
 		companies += s.forgetCompanies()
 	}
-	cleared := map[string]int{"outcomes": flipped, "companies": companies, "requests": int(a.requests.ClearIn(scope))}
+	cleared := map[string]int{"outcomes": flipped, "companies": companies, "activity": int(a.requests.ClearIn(scope))}
 	if req.Scope != simctl.ScopeAll {
 		return simctl.ResetResult{Cleared: cleared, Kept: []string{"tokens", "portfolios"}}, nil
 	}
@@ -477,17 +477,25 @@ func (a *app) registerCreditsafeCompany(w http.ResponseWriter, r *http.Request) 
 	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "id": id, "company": company})
 }
 
-// vendorOf names the vendor a path belongs to, as the journal files it.
-func vendorOf(path string) string {
-	switch {
-	case strings.HasPrefix(path, "/creditsafe/"):
-		return "creditsafe"
-	case strings.HasPrefix(path, "/iban/"):
-		return "iban.com"
-	case strings.HasPrefix(path, "/kyc6/"):
-		return "kyc6"
-	default:
-		return "lexisnexis"
+// summarize is each vendor's journal line where the default needs help:
+// iban.com refuses a call with a 200 and an error field, which is a
+// refusal all the same.
+var summarize = map[string]activity.Summarizer{
+	"iban.com": func(c *activity.Call) (string, map[string]string) {
+		c.Refused = c.RespField("error")
+		return "", nil
+	},
+}
+
+// readActivity is GET /sim/activity for an environment this service knows:
+// a typo is a 404, as at GET /sim/outcome, not an empty journal.
+func (a *app) readActivity(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if env := tenant.FromRequest(r); !a.known(env) {
+			httputilx.Error(w, 404, "no environment "+env+" at verification")
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -585,7 +593,8 @@ func (a *app) creditsafeAuthenticate(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "invalid username or password")
 		return
 	}
-	a.as(r, env)
+	tenant.Set(r.Context(), env)
+	a.customers.Seen(env)
 	httputilx.WriteJSON(w, 200, map[string]any{"token": a.issue("cs", env)})
 }
 
@@ -826,7 +835,8 @@ func (a *app) lexisToken(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "invalid client_id or client_secret")
 		return
 	}
-	a.as(r, env)
+	tenant.Set(r.Context(), env)
+	a.customers.Seen(env)
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"access_token": a.issue("ln", env),
 		"expires_in":   3600,

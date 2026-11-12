@@ -42,7 +42,7 @@ func TestEveryVendorRequestIsInTheJournal(t *testing.T) {
 		t.Errorf("refused Creditsafe request = %+v", newest)
 	}
 
-	if cleared, _ := resetVia(t, a, "flow"); cleared["requests"] != 2 {
+	if cleared, _ := resetVia(t, a, "flow"); cleared["activity"] != 2 {
 		t.Errorf("cleared = %v, want the two requests", cleared)
 	}
 }
@@ -69,5 +69,43 @@ func TestALoginIsInItsOwnEnvironmentsJournal(t *testing.T) {
 	serve(ctl, http.MethodPost, "/sim/reset", `{"scope":"flow","env":"sbx"}`)
 	if sbx := count("sbx"); sbx != 0 {
 		t.Errorf("sbx's journal after its reset: %d, want 0", sbx)
+	}
+
+	bearerTok(t, svc, "/creditsafe/authenticate", `{"username":"sbx-user","password":"sbx-secret"}`)
+	serve(ctl, http.MethodDelete, "/sim/customers/sbx", "")
+	serve(ctl, http.MethodPut, "/sim/customers/sbx", sbxCustomer)
+	if sbx := count("sbx"); sbx != 0 {
+		t.Errorf("a recreated sbx's journal: %d, want none of the old sbx's requests", sbx)
+	}
+	if w := serve(ctl, http.MethodGet, "/sim/activity?env=sbz", ""); w.Code != http.StatusNotFound {
+		t.Errorf("GET /sim/activity for an environment never given: %d, want 404", w.Code)
+	}
+}
+
+// TestAnIbanComRefusalIsAWarning: iban.com refuses a call with a 200 and an
+// error field, and the journal says so.
+func TestAnIbanComRefusalIsAWarning(t *testing.T) {
+	a := newApp()
+	svc, ctl := surfaces(t, a)
+	r := httptest.NewRequest(http.MethodPost, "/iban/verify", strings.NewReader(`{"name":"Southwind"}`))
+	r.Header.Set("x-api-key", "sim-key")
+	svc.ServeHTTP(httptest.NewRecorder(), r)
+
+	var got struct {
+		Logs []struct {
+			Events []struct {
+				Op      string `json:"op"`
+				Summary string `json:"summary"`
+				Status  string `json:"status"`
+			} `json:"events"`
+		} `json:"logs"`
+	}
+	_ = json.Unmarshal(serve(ctl.Handler(), http.MethodGet, "/sim/activity", "").Body.Bytes(), &got)
+	if len(got.Logs) != 1 || len(got.Logs[0].Events) != 1 {
+		t.Fatalf("journal = %+v", got)
+	}
+	e := got.Logs[0].Events[0]
+	if e.Op != "iban.com" || e.Status != "warn" || !strings.Contains(e.Summary, "IBAN is required") {
+		t.Errorf("refused iban.com check = %+v, want a warning with iban.com's error", e)
 	}
 }
