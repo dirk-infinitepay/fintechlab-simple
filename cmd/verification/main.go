@@ -159,6 +159,42 @@ type app struct {
 type envState struct {
 	out          *outcomes
 	portfolioIDs atomic.Int64
+	companies    sync.Map
+}
+
+// creditsafeCompany is what a test registers about a company, served in its
+// Creditsafe report so the platform's comparisons have something to compare.
+type creditsafeCompany struct {
+	Country                       string             `json:"country"`
+	RegNo                         string             `json:"regNo"`
+	BusinessName                  string             `json:"businessName"`
+	RegistrationDate              string             `json:"registrationDate"`
+	Address                       string             `json:"address"`
+	Directors                     []creditsafePerson `json:"directors"`
+	Shareholders                  []creditsafePerson `json:"shareholders"`
+	PersonsWithSignificantControl []creditsafePerson `json:"personsWithSignificantControl"`
+}
+
+// creditsafePerson is one director, shareholder or person with significant
+// control, served as registered: a name and any of Creditsafe's own fields,
+// such as percentSharesHeld, shareholderType or countryOfResidence.
+type creditsafePerson map[string]any
+
+func (p creditsafePerson) named() bool {
+	name, _ := p["name"].(string)
+	return name != ""
+}
+
+func creditsafeCompanyID(country, regNo string) string { return country + "-0-" + regNo }
+
+func (s *envState) forgetCompanies() int {
+	n := 0
+	s.companies.Range(func(k, _ any) bool {
+		s.companies.Delete(k)
+		n++
+		return true
+	})
+	return n
 }
 
 // issued is a bearer token's record: whose it is, and when it was issued.
@@ -273,6 +309,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	// --- the lab seam -----------------------------------------------
 	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
 	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
+	ctl.Mux.HandleFunc("POST /sim/creditsafe/companies", a.registerCreditsafeCompany)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -321,11 +358,12 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 func (a *app) reset(_ context.Context, req simctl.ResetRequest) (simctl.ResetResult, error) {
 	scope := tenant.Normalize(req.Env)
 	states := a.statesIn(scope)
-	flipped := 0
+	flipped, companies := 0, 0
 	for _, s := range states {
 		flipped += s.out.reset()
+		companies += s.forgetCompanies()
 	}
-	cleared := map[string]int{"outcomes": flipped}
+	cleared := map[string]int{"outcomes": flipped, "companies": companies}
 	if req.Scope != simctl.ScopeAll {
 		return simctl.ResetResult{Cleared: cleared, Kept: []string{"tokens", "portfolios"}}, nil
 	}
@@ -388,6 +426,41 @@ func (a *app) setOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("verification: %s now answers %q in environment %s", req.Check, req.Outcome, env)
 	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "outcomes": out.snapshot()})
+}
+
+// registerCreditsafeCompany is POST /sim/creditsafe/companies: the named
+// environment's Creditsafe reports for this company carry these details.
+func (a *app) registerCreditsafeCompany(w http.ResponseWriter, r *http.Request) {
+	env := tenant.FromRequest(r)
+	switch {
+	case env == tenant.All:
+		httputilx.Error(w, 400, "a company is registered in one environment, not in all of them")
+		return
+	case !a.known(env):
+		httputilx.Error(w, 404, "no environment "+env+" at verification")
+		return
+	}
+	var company creditsafeCompany
+	if err := httputilx.ReadJSON(r, &company); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	if company.Country == "" || company.RegNo == "" {
+		httputilx.Error(w, 400, "a company needs its country and regNo, as the platform searches by them")
+		return
+	}
+	for _, people := range [][]creditsafePerson{company.Directors, company.Shareholders, company.PersonsWithSignificantControl} {
+		for _, person := range people {
+			if !person.named() {
+				httputilx.Error(w, 400, "every director, shareholder and person with significant control needs a name")
+				return
+			}
+		}
+	}
+	id := creditsafeCompanyID(company.Country, company.RegNo)
+	a.in(env).companies.Store(id, company)
+	log.Printf("verification: Creditsafe company %s registered in environment %s", id, env)
+	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "id": id, "company": company})
 }
 
 // --- auth ---------------------------------------------------------------
@@ -497,19 +570,20 @@ func (a *app) creditsafeBankVerification(w http.ResponseWriter, r *http.Request)
 	var body map[string]any
 	_ = json.NewDecoder(r.Body).Decode(&body)
 
-	result, nameMatch := true, "MATCH"
+	result, nameMatch, accountType := true, "Full", true
 	switch a.answer(r, checkBankAccount) {
 	case "mismatch":
-		nameMatch = "NOMATCH"
+		nameMatch = "No Match"
 	case "invalid":
-		result, nameMatch = false, "NOMATCH"
+		result, nameMatch, accountType = false, "No Match", false
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"supplierResponse": map[string]any{
-			"result":          result,
-			"nameMatchResult": nameMatch,
-			"accountNumber":   body["accountNumber"],
-			"sortCode":        body["sortCode"],
+			"result":            result,
+			"nameMatchResult":   nameMatch,
+			"accountTypeResult": accountType,
+			"accountNumber":     body["accountNumber"],
+			"sortCode":          body["sortCode"],
 		},
 		"request": body,
 	})
@@ -521,7 +595,7 @@ func (a *app) creditsafeCompanySearch(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"totalSize": 1,
 		"companies": []map[string]any{{
-			"id":      country + "-0-" + regNo,
+			"id":      creditsafeCompanyID(country, regNo),
 			"country": country,
 			"regNo":   regNo,
 		}},
@@ -530,19 +604,50 @@ func (a *app) creditsafeCompanySearch(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) creditsafeCompany(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	status := "Active"
+	companyStatus := map[string]any{"status": "Active"}
 	if a.answer(r, checkCompany) == "dissolved" {
-		status = "Dissolved"
+		companyStatus = map[string]any{"status": "NonActive", "providerStatus": "Dissolved"}
 	}
-	httputilx.WriteJSON(w, 200, map[string]any{
-		"companyId": id,
-		"report": map[string]any{
-			"companySummary": map[string]any{
-				"companyNumber": id,
-				"companyStatus": map[string]any{"status": status},
-			},
+	summary := map[string]any{
+		"companyNumber": id,
+		"companyStatus": companyStatus,
+		"creditRating":  map[string]any{"commonValue": "A", "commonDescription": "Very Low Risk"},
+	}
+	report := map[string]any{
+		"companySummary": summary,
+		"creditScore": map[string]any{
+			"currentCreditRating": map[string]any{"commonValue": "A", "commonDescription": "Very Low Risk", "pod": 0.5},
 		},
-	})
+		"negativeInformation": map[string]any{
+			"ccjSummary": map[string]any{"numberOfExact": 0, "numberOfPossible": 0, "numberOfSatisfied": 0},
+		},
+	}
+	if stored, ok := a.in(tenant.Of(r.Context())).companies.Load(id); ok {
+		company := stored.(creditsafeCompany)
+		summary["businessName"] = company.BusinessName
+		summary["companyRegistrationNumber"] = company.RegNo
+		summary["country"] = company.Country
+		report["companyIdentification"] = map[string]any{
+			"basicInformation": map[string]any{
+				"registeredCompanyName":   company.BusinessName,
+				"companyRegistrationDate": company.RegistrationDate,
+				"contactAddress":          map[string]any{"simpleValue": company.Address},
+			},
+		}
+		report["directors"] = map[string]any{"currentDirectors": orEmpty(company.Directors)}
+		report["shareCapitalStructure"] = map[string]any{"shareHolders": orEmpty(company.Shareholders)}
+		report["additionalInformation"] = map[string]any{
+			"personsWithSignificantControl": map[string]any{"activePSC": orEmpty(company.PersonsWithSignificantControl)},
+		}
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"companyId": id, "report": report})
+}
+
+func orEmpty(people []creditsafePerson) []creditsafePerson {
+	if people == nil {
+		return []creditsafePerson{}
+	}
+	return people
 }
 
 func (a *app) creditsafePortfolios(w http.ResponseWriter, r *http.Request) {
