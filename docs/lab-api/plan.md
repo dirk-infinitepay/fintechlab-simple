@@ -155,6 +155,9 @@ them fire.
 
 - banking-circle `payment.incoming` and `report.read`; aci
   `webhook.deliver`; `http.request` on every sim ([OPEN 15](open.md)).
+  *Built 2026-11-12:* `http.request` and the `respond` effect on
+  verification, so Verify's suite can run vendor outages, errors and
+  unreadable replies. The other sims can offer it the same way.
 - `/v1/mcp` ([lab-api.md §11](lab-api.md#11-agents)).
 - `GET /sim/state`, if [OPEN 16](open.md) wants it.
 
