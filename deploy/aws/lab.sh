@@ -377,11 +377,11 @@ cmd_deny() {
 
 cmd_allowed() {
   need_stack
-  show_list AllowListId "the vendors, the console, the lab API and SFTP" \
+  show_list AllowListId "the vendors, the console (and on https), the lab API and SFTP" \
     "nobody -- 'lab.sh allow' adds your address; 'lab.sh console' works without one"
   if [ -n "$(list_id ConsoleListId)" ]; then
     say ""
-    show_list ConsoleListId "the console and the vendors' pages (8080-8090) only" \
+    show_list ConsoleListId "the console (and on https) and the vendors' pages (8080-8090) only" \
       "nobody -- 'lab.sh allow --console <ip> <note>' adds someone"
   fi
 }
@@ -399,6 +399,23 @@ show_list() {
   fi
 }
 
+# check_https <name>: whether the console answers on https://<name>, from
+# here. A first deploy waits for Let's Encrypt, which takes seconds; an
+# address on neither list cannot tell, and says so.
+check_https() {
+  local i code
+  for i in $(seq 1 20); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://$1/health" 2>/dev/null || true)"
+    [ "$code" = 200 ] && { say "https:    https://$1 answers, with a certificate browsers trust"; return 0; }
+    sleep 3
+  done
+  if [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$1:8090/health" 2>/dev/null || true)" != 200 ]; then
+    say "https:    not checked -- this address is on neither list ('lab.sh allow')"
+  else
+    say "https:    https://$1 does not answer yet (curl says $code): 'lab.sh logs front' shows how its certificate is going" >&2
+  fi
+}
+
 cmd_outputs() {
   aws cloudformation describe-stacks --stack-name "$STACK" \
     --query 'Stacks[0].Outputs[].[OutputKey,OutputValue]' --output text | column -t
@@ -407,8 +424,11 @@ cmd_outputs() {
 cmd_deploy() {
   account
   need_stack
-  local id host ip bucket vol sans rev key url
+  local id host ip bucket vol sans rev key url https=""
   id="$(output InstanceId)" host="$(output PublicHost)" ip="$(output PublicIp)"
+  # A lab with a name serves its console on https too: the pod's front gets
+  # a Let's Encrypt certificate for the name (the stack opens 80 for that).
+  [[ "$host" =~ [a-z] ]] && https="$host"
   bucket="$(output ReleaseBucket)" vol="$(output DataVolumeId)"
   # The Elastic IP, and any names LAB_SANS adds (DNS:<name>,IP:<address>).
   sans="IP:$ip${LAB_SANS:+,$LAB_SANS}"
@@ -419,7 +439,8 @@ cmd_deploy() {
   say "building the ${LAB_PROFILE:-cloud} bundle for $host"
   make --no-print-directory cloud-bundle LAB_PROFILE="${LAB_PROFILE:-cloud}" \
     LAB_PUBLIC_HOST="$host" LAB_SANS="$sans" \
-    LAB_WEBHOOK_ALLOW="${LAB_WEBHOOK_ALLOW:-}" LAB_SET="${LAB_SET:-}" LAB_SEEDER_IMAGE="${LAB_SEEDER_IMAGE:-}"
+    LAB_WEBHOOK_ALLOW="${LAB_WEBHOOK_ALLOW:-}" LAB_SET="${LAB_SET:-}" LAB_SEEDER_IMAGE="${LAB_SEEDER_IMAGE:-}" \
+    LAB_HTTPS_HOST="$https"
   rev="$(head -1 dist/cloud/REVISION | cut -d' ' -f1)"
   key="bundles/$(date -u +%Y%m%dT%H%M%SZ)-$rev.tgz"
 
@@ -440,7 +461,12 @@ rm -f /opt/fintechlab/bundle.tgz
 DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' ROTATE_TOKEN='${ROTATE_TOKEN:-false}' sh \"\$d/play.sh\""
 
   say ""
-  say "console:  http://$host:8090   (from the allowlist -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
+  if [ -n "$https" ]; then
+    check_https "$https"
+    say "console:  https://$https   (and http://$host:8090; from the allowlists -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
+  else
+    say "console:  http://$host:8090   (from the allowlist -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
+  fi
   say "lab API:  http://$host:8097/v1 with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   say "platform: 'lab.sh env' downloads its .env, addressed to $host"
   say "check:    'lab.sh e2e' runs the e2e suite inside the pod"

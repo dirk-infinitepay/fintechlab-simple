@@ -341,6 +341,9 @@ pod-bundle: pod-images
 #   LAB_SANS           more certificate names: DNS:<name>,IP:<address>
 #   LAB_WEBHOOK_ALLOW  the platform's webhook/callback hosts, comma-separated
 #   LAB_SET            container.KEY=value overrides, space-separated
+#   LAB_HTTPS_HOST     serve the console at https://<name>: a Caddy front with a
+#                      Let's Encrypt certificate (FRONT_IMAGE), which needs :80
+#                      open to the internet; empty: no front
 #
 # cloud-bundle's dist/fintechlab-cloud.tgz runs on any Linux host with
 # deploy/host/play.sh inside it; deploy/aws/lab.sh is the AWS way to hand
@@ -351,12 +354,16 @@ LAB_PUBLIC_HOST ?=
 LAB_SANS ?=
 LAB_WEBHOOK_ALLOW ?=
 LAB_SET ?=
+LAB_HTTPS_HOST ?=
+# Caddy, unchanged: its Caddyfile travels in the pod manifest (deploy/pod/render.go).
+FRONT_IMAGE ?= docker.io/library/caddy:2.10.2
 CLOUD_SERVICES := $(filter-out clock,$(POD_SERVICES))
 # The pod's images, and the e2e suite's: deploy/host/e2e.sh runs it inside
 # the pod after a deploy (lab.sh e2e).
 BUNDLE_SERVICES = $(if $(filter cloud,$(LAB_PROFILE)),$(CLOUD_SERVICES),$(POD_SERVICES)) e2e
 CLOUD_RENDER = go run ./deploy/pod/render -profile '$(LAB_PROFILE)' -public-host '$(LAB_PUBLIC_HOST)' \
-	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)') -seeder-image '$(LAB_SEEDER_IMAGE)'
+	-san '$(LAB_SANS)' -allow '$(LAB_WEBHOOK_ALLOW)' $(foreach s,$(LAB_SET),-set '$(s)') -seeder-image '$(LAB_SEEDER_IMAGE)' \
+	-https-host '$(LAB_HTTPS_HOST)' -front-image '$(FRONT_IMAGE)'
 
 cloud-manifest:
 	@$(CLOUD_RENDER)
@@ -367,7 +374,8 @@ cloud-bundle:
 	@$(MAKE) --no-print-directory pod-images POD_IMAGES="$(BUNDLE_SERVICES)" IMAGE_PREFIX=localhost/fintechlab LAB_VERSION=v1
 	@rm -rf dist/cloud && mkdir -p dist/cloud
 	@$(CLOUD_RENDER) > dist/cloud/fintechlab.yaml
-	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1) $(LAB_SEEDER_IMAGE)
+	@$(if $(LAB_HTTPS_HOST),podman image exists $(FRONT_IMAGE) || podman pull -q --arch amd64 $(FRONT_IMAGE) >/dev/null)
+	@podman save -q -m -o dist/cloud/images.tar $(foreach s,$(BUNDLE_SERVICES),localhost/fintechlab/$(s):v1) $(LAB_SEEDER_IMAGE) $(if $(LAB_HTTPS_HOST),$(FRONT_IMAGE))
 	@cp deploy/pod/regenerate-keys.yaml deploy/host/play.sh deploy/host/e2e.sh dist/cloud/
 	@echo "$$(git describe --always --dirty 2>/dev/null || echo unknown) $(LAB_PROFILE) built $$(date -u +%FT%TZ) by $$(git config user.name 2>/dev/null || whoami)" > dist/cloud/REVISION
 	@tar -czf dist/fintechlab-cloud.tgz -C dist/cloud .

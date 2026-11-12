@@ -79,6 +79,7 @@ kept by `podman kube down`:
 | `fintechlab-b4b-data` | `/b4b-data` | everything B4B has been told |
 | `fintechlab-bc-data` | `/bc-data` | everything Banking Circle has been told: balances, payouts, subscriptions, notifications not yet delivered, tokens |
 | `fintechlab-console-data` | `/console-data` | the merchant registry |
+| `fintechlab-front-data` | `/data` in `front` | a cloud lab with a name only: the HTTPS front's Let's Encrypt account and certificates ([deploy-cloud.md](deploy-cloud.md#the-console-on-https)) |
 
 **The keys survive every play.** A redeploy (`make pod-up` again, or
 `kube play --replace`), a pod restart and a reboot all keep

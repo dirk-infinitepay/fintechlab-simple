@@ -72,6 +72,7 @@ drives it with nothing but the AWS CLI (no CDK bootstrap, no state backend).
 | --- | --- |
 | VPC, one public subnet, internet gateway | the lab's own network: nothing in it depends on, peers with, or blocks deleting anyone else's |
 | Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist); optionally a fourth, 8080-8090 only, open to a second list, the console list. Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
+| HTTPS console (with `LAB_DOMAIN`) | a second security group: 443 for both lists, 80 for anyone. The pod's front — Caddy, unchanged, its config in the rendered manifest — gets a Let's Encrypt certificate for the name over 80, renews it, redirects the rest of 80 to https and forwards 443 to the console. Its certificates live on the `fintechlab-front-data` volume, so a deploy does not ask for them again. See [The console on https](#the-console-on-https) |
 | EC2 host, Ubuntu 24.04, `t3.small` | SSM only: no key pair, no port 22. IMDSv2 with hop limit 1, so no container can act as the host's role, which can only be managed by SSM anyway |
 | Data volume (20 GiB) | podman's storage. A replaced host — a new image, a new type — keeps every key the platform holds |
 | Elastic IP | the lab's one stable address; optionally a Route 53 record for `LAB_DOMAIN` |
@@ -108,8 +109,8 @@ VPC console does the same (*Managed prefix lists* → the list → *Modify*).
   lab API. The **console list** (`<stack>-console`, the `ConsoleListId`
   output) opens the console and the vendors' pages only — the people who
   look at the lab. They still reach the lab API, through the console, which
-  forwards `/v1`: `http://<PublicHost>:8090/v1` with the same token. Its
-  people get no SFTP. Moving an address from the console list to the
+  forwards `/v1` and adds the token itself: `https://<LAB_DOMAIN>/v1` or
+  `http://<PublicHost>:8090/v1`. Its people get no SFTP. Moving an address from the console list to the
   allowlist is `lab.sh allow` on it.
 - **How many.** Each rule that names a list costs the list's size against
   the security group's rules — 60, the VPC quota *Inbound or outbound rules
@@ -193,16 +194,37 @@ most exposed:
 2. **An address on the allowlist** — `deploy/aws/lab.sh allow` adds yours,
    and the console is `http://<PublicHost>:8090`.
 3. **A name** — `LAB_DOMAIN` (with `LAB_HOSTED_ZONE_ID` the stack writes
-   the record). The link is `http://<LAB_DOMAIN>:8090`; the certificates the
-   platform dials carry the name. Set it before the first deploy, or
-   redeploy with new keys.
+   the record). The link is `https://<LAB_DOMAIN>`
+   ([below](#the-console-on-https)), and `http://<LAB_DOMAIN>:8090` still
+   works; the certificates the platform dials carry the name. Set it before
+   the first deploy, or redeploy with new keys.
 
-A link that anyone in the company can open — HTTPS on 443, behind the
-company's sign-in — is a load balancer with an OIDC action in front of
-`:8090`. It needs a domain and a certificate, so it is not part of this
-stack yet; the console needs no change for it. The vendors' ports stay
-direct either way: Banking Circle's mTLS ends at the lab, so anything in
-front of `:8085` has to pass TCP through.
+### The console on https
+
+A lab with a name serves its console at `https://<LAB_DOMAIN>`, for the
+same people as `:8090`: both lists. `lab.sh infra` gives the host a second
+security group — 443 for the lists, 80 for anyone — and `lab.sh deploy`
+adds a front to the pod: Caddy, from its own image, with a Caddyfile the
+renderer writes (`deploy/pod/render.go`). It
+
+- gets a certificate for the name from Let's Encrypt and renews it, by the
+  HTTP challenge on 80 — which is why 80 is open to the internet. Nothing
+  else answers there: every other request on 80 is a redirect to https.
+  The TLS challenge is off, since 443 is not open to Let's Encrypt;
+- forwards everything on 443 to the console on `:8090`, so `/v1` is the lab
+  API there too, with the token added;
+- keeps its account and certificates on the `fintechlab-front-data`
+  volume, so a deploy does not ask for them again (Let's Encrypt allows five
+  of the same certificate a week).
+
+The name must point at the lab before the deploy: Let's Encrypt checks it
+from outside. `lab.sh deploy` checks `https://<LAB_DOMAIN>` at the end;
+`lab.sh logs front` shows how a certificate is going. The vendors' ports
+stay direct: Banking Circle's mTLS ends at the lab, and SFTP is not HTTP.
+
+A link that anyone in the company can open, behind the company's sign-in,
+is still a load balancer with an OIDC action in front of `:8090`; this one
+is for the people on the lists.
 
 ## Connecting a platform
 
@@ -307,6 +329,7 @@ address, and has to allow those for as long as it runs on the tunnel.
 | `make aws-e2e` | the e2e suite inside the pod; `E2E_ONLY=a,b deploy/aws/lab.sh e2e` for some |
 | `make aws-token` | the lab API's token |
 | `deploy/aws/lab.sh tunnel <port>…` | this machine's ports, reachable from the lab as `host.containers.internal:<port+10000>`, until Ctrl-C |
+| `deploy/aws/lab.sh logs front` | the HTTPS front's log: its certificate, renewals, what it forwarded |
 | `make aws-allow` / `make aws-allowed` | add your address to the allowlist / list both lists; `deploy/aws/lab.sh allow --console <ip> <note>` adds to the console list, `deploy/aws/lab.sh deny <cidr>` takes one off |
 | `make aws-status` | the stack's outputs, the host, the revision it runs, each container |
 | `deploy/aws/lab.sh logs banking-circle` | the last 200 lines (`LAB_TAIL`) of one container |

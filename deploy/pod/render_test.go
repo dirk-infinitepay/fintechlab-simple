@@ -1,6 +1,7 @@
 package pod
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -259,5 +260,108 @@ func TestASeederJoinsThePodOnTheLabAPIsVolume(t *testing.T) {
 	plain, _ := Render(src, Options{})
 	if strings.Contains(string(plain), "seeder") {
 		t.Fatal("a pod rendered without a seeder image has one")
+	}
+}
+
+func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
+	src, err := os.ReadFile("fintechlab.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := Render(src, Options{Profile: ProfileCloud, HTTPSHost: "lab.example.test", FrontImage: "docker.io/library/caddy:2.10.2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pod struct {
+		Spec struct {
+			Containers []struct {
+				Name    string   `yaml:"name"`
+				Image   string   `yaml:"image"`
+				Command []string `yaml:"command"`
+				Ports   []struct {
+					ContainerPort int `yaml:"containerPort"`
+					HostPort      int `yaml:"hostPort"`
+				} `yaml:"ports"`
+				Env []struct {
+					Name  string `yaml:"name"`
+					Value string `yaml:"value"`
+				} `yaml:"env"`
+				VolumeMounts []struct {
+					Name      string `yaml:"name"`
+					MountPath string `yaml:"mountPath"`
+				} `yaml:"volumeMounts"`
+			} `yaml:"containers"`
+			Volumes []struct {
+				Name string `yaml:"name"`
+				PVC  struct {
+					ClaimName string `yaml:"claimName"`
+				} `yaml:"persistentVolumeClaim"`
+			} `yaml:"volumes"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(out, &pod); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, c := range pod.Spec.Containers {
+		if c.Name != "front" {
+			continue
+		}
+		found = true
+		if c.Image != "docker.io/library/caddy:2.10.2" {
+			t.Errorf("the front runs %q", c.Image)
+		}
+		var ports []int
+		for _, p := range c.Ports {
+			if p.ContainerPort != p.HostPort {
+				t.Errorf("the front's %d is published on %d", p.ContainerPort, p.HostPort)
+			}
+			ports = append(ports, p.HostPort)
+		}
+		if fmt.Sprint(ports) != "[80 443]" {
+			t.Errorf("the front listens on %v, want [80 443]", ports)
+		}
+		if len(c.Env) != 1 || c.Env[0].Name != "CADDYFILE" {
+			t.Fatalf("the front's environment is %+v, want its Caddyfile alone", c.Env)
+		}
+		cf := c.Env[0].Value
+		for _, want := range []string{"lab.example.test {", "reverse_proxy 127.0.0.1:8090", "admin off", "disable_tlsalpn_challenge"} {
+			if !strings.Contains(cf, want) {
+				t.Errorf("the Caddyfile has no %q:\n%s", want, cf)
+			}
+		}
+		if len(c.Command) != 3 || !strings.Contains(c.Command[2], `"$CADDYFILE"`) || !strings.Contains(c.Command[2], "exec caddy run") {
+			t.Errorf("the front does not run its Caddyfile: %q", c.Command)
+		}
+		if len(c.VolumeMounts) != 1 || c.VolumeMounts[0].Name != "front-data" || c.VolumeMounts[0].MountPath != "/data" {
+			t.Errorf("the front keeps its certificates in %+v, want front-data at /data", c.VolumeMounts)
+		}
+	}
+	if !found {
+		t.Fatal("no front container in the rendered pod")
+	}
+	var claim string
+	for _, v := range pod.Spec.Volumes {
+		if v.Name == "front-data" {
+			claim = v.PVC.ClaimName
+		}
+	}
+	if claim != "fintechlab-front-data" {
+		t.Errorf("the front-data volume is claim %q, want fintechlab-front-data", claim)
+	}
+
+	plain, _ := Render(src, Options{Profile: ProfileCloud, FrontImage: "docker.io/library/caddy:2.10.2"})
+	if strings.Contains(string(plain), "front") {
+		t.Fatal("a pod rendered without an HTTPS host has a front")
+	}
+	for _, bad := range []Options{
+		{HTTPSHost: "lab.example.test"},
+		{HTTPSHost: "203.0.113.7", FrontImage: "caddy:2"},
+		{HTTPSHost: "localhost", FrontImage: "caddy:2"},
+		{HTTPSHost: "lab.example.test", FrontImage: "Caddy Latest"},
+	} {
+		if _, err := Render(src, bad); err == nil {
+			t.Errorf("Render(%+v) = nil error, want a refusal", bad)
+		}
 	}
 }

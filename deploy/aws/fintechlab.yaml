@@ -20,6 +20,8 @@ Description: >-
 #     template creates the lists and never sets their entries: people add and
 #     remove theirs (lab.sh allow, or the VPC console) and the stack does not
 #     drift, since CloudFormation checks only the properties a template sets;
+#   - with a name, a second security group for the console on https: 443
+#     for the lists, 80 for anyone (Let's Encrypt's challenge, a redirect);
 #   - a private bucket the deploy script hands bundles over through.
 # Nothing in the instance's user data: deploy/host/play.sh prepares the host
 # on the first deploy, so editing it never replaces the instance.
@@ -77,11 +79,13 @@ Parameters:
     Description: >-
       How many addresses the console list holds; 0 makes none. They reach the
       vendors' surfaces and the console (8080-8090) only -- the lab API too,
-      through the console's /v1 and its token -- and each costs one rule.
+      through the console's /v1, which adds the token -- and each costs one
+      rule. With DomainName, both lists also reach the console on https.
 
 Conditions:
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
   HasConsoleList: !Not [!Equals [!Ref ConsoleListSize, "0"]]
+  HttpsForConsoleList: !And [!Condition HasDomain, !Condition HasConsoleList]
   WriteDnsRecord: !And
     - !Condition HasDomain
     - !Not [!Equals [!Ref HostedZoneId, ""]]
@@ -259,6 +263,51 @@ Resources:
       SourcePrefixListId: !Ref ConsoleList
       Description: the vendor surfaces and the console 8090, for the console list
 
+  # The console on https, for a lab with a name: the pod's front (Caddy,
+  # deploy/pod/render.go) on 443 for both lists, and on 80 for anyone --
+  # Let's Encrypt checks the name over 80 from wherever it likes, and
+  # everything else on 80 is a redirect to https. A group of its own, so
+  # its rules do not come out of the first group's 60, which the lists'
+  # sizes fill: here they cost AllowListSize + ConsoleListSize + 1, which
+  # always fits when 3 x AllowListSize + ConsoleListSize does.
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: HasDomain
+    Properties:
+      GroupDescription: fintechlab lab console on https, for the allowlists; port 80 for the ACME challenge and a redirect
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: ACME HTTP challenge (Lets Encrypt) and a redirect to https, nothing else
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-web
+
+  WebAllowListIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasDomain
+    Properties:
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourcePrefixListId: !Ref AllowList
+      Description: the console on https, for the allowlist
+
+  WebConsoleListIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HttpsForConsoleList
+    Properties:
+      GroupId: !Ref WebSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourcePrefixListId: !Ref ConsoleList
+      Description: the console on https, for the console list
+
   # --- the host -------------------------------------------------------------------
 
   # SSM only. The lab's containers cannot reach the instance metadata service
@@ -293,6 +342,7 @@ Resources:
       SubnetId: !Ref Subnet
       SecurityGroupIds:
         - !Ref SecurityGroup
+        - !If [HasDomain, !Ref WebSecurityGroup, !Ref AWS::NoValue]
       MetadataOptions:
         HttpEndpoint: enabled
         HttpTokens: required
@@ -390,10 +440,14 @@ Outputs:
     Description: The address a platform reaches the lab at, and the one its certificates name.
     Value: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
   ConsoleUrl:
-    Description: Reachable from the allowlist (lab.sh allow); otherwise lab.sh console forwards it to 127.0.0.1.
-    Value: !Sub
-      - http://${Host}:8090
-      - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
+    Description: >-
+      Reachable from the allowlists (lab.sh allow); otherwise lab.sh console
+      forwards it to 127.0.0.1. https once a deploy's front has its
+      certificate; http on 8090 as well.
+    Value: !If
+      - HasDomain
+      - !Sub https://${DomainName}
+      - !Sub http://${Address.PublicIp}:8090
   LabApiUrl:
     Description: The platform's FINTECH_SIM_LAB_URL. lab.sh token prints the token it asks for.
     Value: !Sub

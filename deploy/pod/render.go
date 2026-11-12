@@ -61,6 +61,18 @@ type Options struct {
 	// own image, on the lab API's data volume at the same path, which the
 	// lab API reaches at LAB_SEEDER_URL. Empty: a lab without one.
 	SeederImage string
+	// HTTPSHost, when set, serves the console at https://<HTTPSHost>: a
+	// front container (FrontImage, Caddy) on :443 that forwards to the
+	// console, gets a Let's Encrypt certificate for the name and renews it,
+	// and on :80 answers the ACME HTTP challenge and redirects the rest to
+	// https. Let's Encrypt has to reach :80 from the internet; :443 is for
+	// whoever may reach the console. The certificates are kept on the
+	// front-data volume, so a new deploy does not ask for them again.
+	// Empty: no front, the console on :8090 only.
+	HTTPSHost string
+	// FrontImage is the front's image, required with HTTPSHost and
+	// ignored without it.
+	FrontImage string
 }
 
 // imageRef is a container image reference: registry/path:tag or @digest.
@@ -133,6 +145,11 @@ func Render(src []byte, o Options) ([]byte, error) {
 	m.images(o.ImagePrefix, o.Version)
 	if o.SeederImage != "" {
 		if err := m.seeder(o.SeederImage); err != nil {
+			return nil, err
+		}
+	}
+	if o.HTTPSHost != "" {
+		if err := m.front(o.HTTPSHost, o.FrontImage); err != nil {
 			return nil, err
 		}
 	}
@@ -211,6 +228,100 @@ func (m *manifest) seeder(image string) error {
 	}
 	setEnv(api, "LAB_SEEDER_URL", "http://seeder:"+seederPort)
 	return nil
+}
+
+// The front: what it is called in the pod, where the console it forwards to
+// listens, and the volume its certificates live on.
+const (
+	frontContainer = "front"
+	frontVolume    = "front-data"
+	frontClaim     = "fintechlab-front-data"
+	consolePort    = "8090"
+)
+
+// dnsName is a host name a public CA issues for: two labels or more.
+var dnsName = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// front adds the HTTPS front: a Caddy container on :80 and :443 that serves
+// host with a Let's Encrypt certificate and forwards to the console. Its
+// Caddyfile travels in its environment: the image is Caddy's own, unchanged.
+func (m *manifest) front(host, image string) error {
+	switch {
+	case image == "":
+		return fmt.Errorf("HTTPS host %q: give the front's image too", host)
+	case !dnsName.MatchString(host):
+		return fmt.Errorf("HTTPS host %q: want a DNS name a public CA can issue for (not an address)", host)
+	case !imageRef.MatchString(image):
+		return fmt.Errorf("front image %q: want a container image reference", image)
+	case m.find("console") == nil:
+		return fmt.Errorf("manifest: no console container for the front to serve")
+	}
+	// admin off: nothing else in the pod may reconfigure it. Only the HTTP
+	// challenge: :443 is not open to Let's Encrypt, only to the lab's lists.
+	caddyfile := "{\n\tadmin off\n\tcert_issuer acme {\n\t\tdisable_tlsalpn_challenge\n\t}\n}\n\n" +
+		host + " {\n\treverse_proxy 127.0.0.1:" + consolePort + "\n}\n"
+	type envVar struct {
+		Name  string `yaml:"name"`
+		Value string `yaml:"value"`
+	}
+	type port struct {
+		ContainerPort int `yaml:"containerPort"`
+		HostPort      int `yaml:"hostPort"`
+	}
+	type mount struct {
+		Name      string `yaml:"name"`
+		MountPath string `yaml:"mountPath"`
+	}
+	c := struct {
+		Name         string   `yaml:"name"`
+		Image        string   `yaml:"image"`
+		Command      []string `yaml:"command"`
+		Ports        []port   `yaml:"ports"`
+		Env          []envVar `yaml:"env"`
+		VolumeMounts []mount  `yaml:"volumeMounts"`
+	}{
+		Name:  frontContainer,
+		Image: image,
+		Command: []string{"sh", "-c",
+			`printf '%s' "$CADDYFILE" > /etc/caddy/Caddyfile && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile`},
+		Ports:        []port{{80, 80}, {443, 443}},
+		Env:          []envVar{{"CADDYFILE", caddyfile}},
+		VolumeMounts: []mount{{frontVolume, "/data"}},
+	}
+	node, err := toNode(c)
+	if err != nil {
+		return err
+	}
+	containers := get(m.spec, "containers")
+	if containers == nil {
+		return fmt.Errorf("manifest: no containers")
+	}
+	containers.Content = append(containers.Content, node)
+	m.containers = append(m.containers, node)
+
+	vol, err := toNode(map[string]any{"name": frontVolume, "persistentVolumeClaim": map[string]string{"claimName": frontClaim}})
+	if err != nil {
+		return err
+	}
+	volumes := get(m.spec, "volumes")
+	if volumes == nil {
+		return fmt.Errorf("manifest: no volumes")
+	}
+	volumes.Content = append(volumes.Content, vol)
+	return nil
+}
+
+// toNode is v as a YAML node, to add to the manifest.
+func toNode(v any) (*yaml.Node, error) {
+	b, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	return doc.Content[0], nil
 }
 
 func (m *manifest) find(name string) *yaml.Node {
