@@ -310,8 +310,14 @@ Body: only `reference` is read. `{"reference": "ref-1"}`.
 Answers `200`:
 
 ```json
-{"data": {"id": "sim-idu-ref-1", "status": "PASS", "assessment": {"result": "PASS", "score": 850}, "context": {"pass_threshold": 700}, "attributes": {"dob_count": 1}}}
+{"data": {"id": "sim-idu-ref-1", "status": "PASS", "assessment": {"result": "PASS", "score": 850}, "context": {"pass_threshold": 700},
+          "attributes": {"dob_count": 1, "address_verified": true, "sanction": false, "pep": false, "insolvency": false,
+                         "ccj": false, "death_ddri": false, "death_gro": false, "death_halo": false}}}
 ```
+
+`attributes` is a clean person: the address is verified and no sanction,
+PEP, insolvency, CCJ or death register flags them. The `identity` outcome
+leaves them as they are.
 
 `identity` outcome: `refer` gives `REFER` with score 500, `fail` gives
 `FAIL` with score 100, in both `status` and `assessment.result`.
