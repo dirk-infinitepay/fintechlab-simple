@@ -5,9 +5,9 @@ merchant's money: **Creditsafe** (company data and UK bank-account
 verification), **iban.com** (IBAN validity and name match), **KYC6**
 (sanctions, PEP and adverse-media screening) and **LexisNexis** (OAuth, then
 IDU identity reports and IVI attribute queries). One process, one path prefix
-per vendor, no state shared between them. It sits on the **verification**
-side of the line in [catalogue.md](../../catalogue.md): real vendors the
-platform calls directly. What is real: the paths after each prefix, the auth
+per vendor, no state shared between them. It sits on the **vendor** side
+of the line in [catalogue.md](../../catalogue.md): real vendors the platform
+calls directly. What is real: the paths after each prefix, the auth
 handshakes (tokens are issued and checked), and the response fields the
 platform's own clients read. What is simplified: the judgement (every check
 passes until flipped with `POST /sim/outcome`), credentials (any non-empty
