@@ -47,7 +47,7 @@ const (
 	StateDisarmed = "disarmed"
 )
 
-// EffectPath is the only effect kind so far: a lifecycle's next states.
+// EffectPath is a lifecycle's next states.
 const EffectPath = "path"
 
 // Field is one field a hook's traps can match on.
@@ -104,9 +104,29 @@ func (s Step) Params() map[string]string {
 	return out
 }
 
-// Effect is what happens to a caught event.
+// Effect is what happens to a caught event: a path, or for a respond hook
+// one of Respond, Delay or Close.
 type Effect struct {
-	Path []Step `json:"path"`
+	Path    []Step    `json:"path"`
+	Respond *Response `json:"respond,omitempty"`
+	Delay   string    `json:"delay,omitempty"`
+	Close   bool      `json:"close,omitempty"`
+}
+
+// MarshalJSON leaves the path out of a respond effect.
+func (e Effect) MarshalJSON() ([]byte, error) {
+	if e.Respond != nil || e.Delay != "" || e.Close {
+		type respond struct {
+			Respond *Response `json:"respond,omitempty"`
+			Delay   string    `json:"delay,omitempty"`
+			Close   bool      `json:"close,omitempty"`
+		}
+		return json.Marshal(respond{Respond: e.Respond, Delay: e.Delay, Close: e.Close})
+	}
+	type path struct {
+		Path []Step `json:"path"`
+	}
+	return json.Marshal(path{Path: e.Path})
 }
 
 // Spec arms a trap. Match values are a string (exact), or In, Prefix or
@@ -123,6 +143,9 @@ type Spec struct {
 	Forever   bool
 	ExpiresAt *time.Time
 	Path      []Step
+	Respond   *Response
+	Delay     string
+	Close     bool
 }
 
 // In matches any of the values.
@@ -294,6 +317,11 @@ func (s *Store) arm(spec Spec, standing bool) (Trap, error) {
 			return Trap{}, err
 		}
 	}
+	if h.Effect == EffectRespond {
+		if err := validateRespond(h, spec); err != nil {
+			return Trap{}, err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.armLocked(spec, conds, standing), nil
@@ -319,7 +347,10 @@ func (s *Store) armLocked(spec Spec, conds []cond, standing bool) Trap {
 		}
 		t.Times = &n
 	}
-	t.Effect = Effect{Path: append([]Step{}, spec.Path...)}
+	t.Effect = Effect{Respond: spec.Respond, Delay: spec.Delay, Close: spec.Close}
+	if spec.Path != nil || s.hooks[spec.Hook].Effect == EffectPath {
+		t.Effect.Path = append([]Step{}, spec.Path...)
+	}
 	t.State = StateArmed
 	t.CreatedAt = s.Wall().UTC()
 	t.ctx, t.cancel = context.WithCancel(s.root)
@@ -341,7 +372,10 @@ func describe(t Trap) string {
 		b, _ := json.Marshal(t.Match)
 		parts = append(parts, "match "+string(b))
 	}
-	if len(t.Effect.Path) > 0 {
+	if t.Effect.Respond != nil || t.Effect.Delay != "" || t.Effect.Close {
+		b, _ := json.Marshal(t.Effect)
+		parts = append(parts, "→ "+string(b))
+	} else if len(t.Effect.Path) > 0 {
 		var tos []string
 		for _, st := range t.Effect.Path {
 			tos = append(tos, st.To)
@@ -824,6 +858,10 @@ func matches(conds []cond, fields map[string]string) bool {
 				a, ok1 := new(big.Rat).SetString(got)
 				b, _ := new(big.Rat).SetString(c.equals)
 				if !ok1 || a.Cmp(b) != 0 {
+					return false
+				}
+			} else if c.typ == TypePath {
+				if !pathMatches(c.equals, got) {
 					return false
 				}
 			} else if got != c.equals {

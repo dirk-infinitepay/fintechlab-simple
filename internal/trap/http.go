@@ -93,7 +93,10 @@ type armBody struct {
 	Times     json.RawMessage `json:"times"`
 	ExpiresAt *time.Time      `json:"expires_at"`
 	Effect    *struct {
-		Path []Step `json:"path"`
+		Path    []Step    `json:"path"`
+		Respond *Response `json:"respond"`
+		Delay   string    `json:"delay"`
+		Close   bool      `json:"close"`
 	} `json:"effect"`
 }
 
@@ -129,7 +132,7 @@ func ParseSpec(raw []byte) (Spec, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&b); err != nil {
-		return Spec{}, fmt.Errorf("%w: want {\"hook\", \"match\", \"effect\": {\"path\": […]}, \"times\", \"label\", \"expires_at\"}: %v", ErrInvalid, err)
+		return Spec{}, fmt.Errorf("%w: want {\"hook\", \"match\", \"effect\": {\"path\": […]} or {\"respond\"|\"delay\"|\"close\": …}, \"times\", \"label\", \"expires_at\"}: %v", ErrInvalid, err)
 	}
 	spec := Spec{Label: b.Label, Hook: b.Hook, Match: b.Match, ExpiresAt: b.ExpiresAt}
 	if spec.Hook == "" {
@@ -154,6 +157,7 @@ func ParseSpec(raw []byte) (Spec, error) {
 		return Spec{}, fmt.Errorf("%w: effect is required", ErrInvalid)
 	}
 	spec.Path = b.Effect.Path
+	spec.Respond, spec.Delay, spec.Close = b.Effect.Respond, b.Effect.Delay, b.Effect.Close
 	return spec, nil
 }
 
