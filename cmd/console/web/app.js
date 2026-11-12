@@ -42,7 +42,7 @@ const VIEWS = {
   },
   verification: {
     title: 'Verification',
-    sub: 'The checks a merchant passes before any money exists. Every one answers positively by default, and every outcome can be flipped.',
+    sub: 'The stand-in for your own verification service: the AML decision a merchant passes before any money exists. It approves by default.',
     kind: 'verification',
   },
   banks: {

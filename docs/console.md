@@ -148,14 +148,16 @@ headings on one page to the navigation itself. They used to be three
 sections under a nav item called *Standalone*, a name left over from an
 architecture this tree no longer has.
 
-- **Vendors** — the third parties the lab simulates. The deliverable.
+- **Vendors** — the third parties the lab simulates. The deliverable. The
+  verification vendors (Creditsafe, iban.com, KYC6, LexisNexis) are here
+  too: they are third parties the platform calls, like any other.
 - **Platform** — your own stack: the platform under test, which registers
   its own card here and is listed first because it is the thing under test,
   then the lab clock, then the stand-ins that exist so a hop can be proved
   connected.
-- **Verification** — the checks a merchant passes before any money exists.
-  Their own view rather than filed under vendors, because they are what an
-  operator goes and flips an outcome on.
+- **Verification** — the AML decision stand-in (`verify`): the platform's
+  own verification service, which gates a merchant before any money exists.
+  Its own view, because it stands in for your stack rather than a vendor.
 
 Each view carries four tiles: up, down and not reporting **for that
 section**, and the whole lab's `up/total` in accent. Splitting the list took

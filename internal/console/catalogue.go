@@ -28,10 +28,9 @@ type Kind string
 const (
 	KindVendor   Kind = "vendor"
 	KindPlatform Kind = "platform"
-	// KindVerification is its own kind rather than a vendor because of what
-	// an operator does with these: every other vendor is driven by the
-	// money path, while these are the checks that gate a merchant before
-	// any money exists, and they are the ones you go and flip an outcome on.
+	// KindVerification is the stand-in for the platform's own verification
+	// service: the AML decision that gates a merchant before any money
+	// exists. The vendors that service calls are vendors like any other.
 	KindVerification Kind = "verification"
 )
 
@@ -284,7 +283,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "verification", Name: "Verification vendors", Kind: KindVerification,
+			ID: "verification", Name: "Verification vendors", Kind: KindVendor,
 			Summary:    "The four checks the platform runs before a merchant may trade, behind one address: Creditsafe bank verification, iban.com, KYC6 screening and LexisNexis identity. Each answers positively by default and each outcome can be flipped, so the unhappy paths are reachable without a real vendor account.",
 			BaseURL:    "http://127.0.0.1:8089",
 			HealthPath: "/health",
