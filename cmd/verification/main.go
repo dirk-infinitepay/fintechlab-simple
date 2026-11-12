@@ -267,6 +267,7 @@ func (a *app) dropTokens(scope string) int {
 // forget is a customer's removal: its outcomes and its tokens go with it.
 func (a *app) forget(env string) error {
 	a.dropTokens(env)
+	a.traps.ResetIn(env)
 	a.mu.Lock()
 	delete(a.envs, env)
 	a.mu.Unlock()

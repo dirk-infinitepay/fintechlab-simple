@@ -248,7 +248,23 @@ func TestDeletingACustomerClearsWhatItHad(t *testing.T) {
 	a, svc, ctl := withSbx(t)
 	tok := bearerTok(t, svc, "/creditsafe/authenticate", `{"username":"sbx-user","password":"sbx-secret"}`)
 	do(t, ctl, "POST", "/sim/outcome?env=sbx", `{"check":"screening","outcome":"hit"}`, nil)
+	if code, out := do(t, ctl, "POST", "/sim/traps?env=sbx", `{"hook":"http.request","match":{},"effect":{"respond":{"status":503}},"times":null}`, nil); code != 201 {
+		t.Fatalf("arm in sbx = %d %v", code, out)
+	}
 
+	if code, out := do(t, ctl, "DELETE", "/sim/customers/sbx", "", nil); code != 200 {
+		t.Fatalf("DELETE /sim/customers/sbx = %d %v", code, out)
+	}
+	if code, out := do(t, ctl, "PUT", "/sim/customers/sbx", sbxCustomer, nil); code != 200 {
+		t.Fatalf("PUT sbx again = %d %v", code, out)
+	}
+	srv := httptest.NewServer(a.faults(svc))
+	t.Cleanup(srv.Close)
+	r, _ := http.NewRequest("POST", srv.URL+"/kyc6/individuals", strings.NewReader(`{"name":"Ada"}`))
+	r.Header.Set("x-api-key", "sbx-secret")
+	if res, err := http.DefaultClient.Do(r); err != nil || res.StatusCode != 200 {
+		t.Errorf("a recreated sbx's request = %v %v, want the vendor's 200, not the old trap", res, err)
+	}
 	if code, out := do(t, ctl, "DELETE", "/sim/customers/sbx", "", nil); code != 200 {
 		t.Fatalf("DELETE /sim/customers/sbx = %d %v", code, out)
 	}
