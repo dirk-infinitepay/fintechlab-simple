@@ -56,9 +56,9 @@ A lab reached over a network asks every caller of `:8097` for its token
 (`LAB_API_TOKEN`, [deploy-pod.md](deploy-pod.md#asking-for-a-token)).
 `deploy/host/play.sh` makes one on the first deploy and keeps it on the data
 volume, so a redeploy, a stop or a replaced host keeps it; `lab.sh token`
-prints it. The console adds it to everything it forwards, so its page needs
-none — which is also why the console itself is kept behind
-the allowlist ([Reaching it](#reaching-it)).
+prints it. The console adds it to every call it forwards that brings no
+token of its own, so its page needs none — which is also why the console
+itself is kept behind the allowlist ([Reaching it](#reaching-it)).
 
 `make cloud-manifest` prints the rendered manifest; `LAB_PROFILE=local`
 keeps the clock, for a lab on another machine that a laptop runner follows.
@@ -109,8 +109,10 @@ VPC console does the same (*Managed prefix lists* → the list → *Modify*).
   lab API. The **console list** (`<stack>-console`, the `ConsoleListId`
   output) opens the console and the vendors' pages only — the people who
   look at the lab. They still reach the lab API, through the console, which
-  forwards `/v1` and adds the token itself: `https://<LAB_DOMAIN>/v1` or
-  `http://<PublicHost>:8090/v1`. Its people get no SFTP. Moving an address from the console list to the
+  forwards `/v1` and adds the admin token to a call that brings none:
+  `https://<LAB_DOMAIN>/v1` or `http://<PublicHost>:8090/v1`. A script or
+  agent that sends its environment's token there is forwarded with it, and
+  held to that environment as on `:8097`. Its people get no SFTP. Moving an address from the console list to the
   allowlist is `lab.sh allow` on it.
 - **How many.** Each rule that names a list costs the list's size against
   the security group's rules — 60, the VPC quota *Inbound or outbound rules
@@ -181,8 +183,9 @@ must reach (B4B's, on the settlement stand-in) — the same reason
 
 ## Reaching it
 
-**The console asks for nothing.** It adds the lab API's token to what it
-forwards, so whoever reaches `:8090` can drive the lab, download its keys
+**The console asks for nothing.** It adds the lab API's admin token to
+what it forwards without a token, so whoever reaches `:8090` — or the
+console on https — can drive the lab as its admin, in any environment, download its keys
 and register a plugin. The lab API on `:8097` asks for the token. Every key
 is fake, but never open either to `0.0.0.0/0`. Three ways in, from least to
 most exposed:
@@ -212,7 +215,8 @@ renderer writes (`deploy/pod/render.go`). It
   else answers there: every other request on 80 is a redirect to https.
   The TLS challenge is off, since 443 is not open to Let's Encrypt;
 - forwards everything on 443 to the console on `:8090`, so `/v1` is the lab
-  API there too, with the token added;
+  API there too: the admin token added to a call that brings none, a
+  caller's own token kept;
 - keeps its account and certificates on the `fintechlab-front-data`
   volume, so a deploy does not ask for them again (Let's Encrypt allows five
   of the same certificate a week).

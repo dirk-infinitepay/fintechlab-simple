@@ -736,7 +736,7 @@ The console takes two variables:
 | --- | --- | --- |
 | `LISTEN` | `:8090` | listen address |
 | `LAB_API_URL` | `http://127.0.0.1:8097` | the lab API it forwards `/v1` (and the old `/api`) to |
-| `LAB_API_TOKEN` | unset | when the lab API asks for a token, the console adds it to everything it forwards |
+| `LAB_API_TOKEN` | unset | when the lab API asks for a token, the console adds it to every forwarded call that carries none; a call with its own token (an environment's) is forwarded with it |
 
 Compose and the pod give the console and the lab API the same
 `LAB_API_TOKEN`: from the host's environment (`LAB_API_TOKEN=… make up`),

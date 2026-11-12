@@ -45,8 +45,12 @@ func main() {
 }
 
 // handler serves the embedded page and forwards the API to labAPI. token,
-// when set, is added to every forwarded call: the lab API asks for it, and
-// the page has no way to hold a secret (docs/lab-api/architecture.md §8).
+// when set, is added to every forwarded call that carries no token of its
+// own: the lab API asks for it, and the page has no way to hold a secret
+// (docs/lab-api/architecture.md §8). A call that brings its own -- an
+// environment's token, from a script or an agent using the console's
+// address -- is forwarded with it, so the lab API holds that call to its
+// environment, and refuses a token it does not know, as it would on :8097.
 func handler(labAPI, token string) (http.Handler, error) {
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {
@@ -61,7 +65,7 @@ func handler(labAPI, token string) (http.Handler, error) {
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(up)
 			pr.SetXForwarded()
-			if token != "" {
+			if token != "" && pr.In.Header.Get("Authorization") == "" {
 				pr.Out.Header.Set("Authorization", "Bearer "+token)
 			}
 		},

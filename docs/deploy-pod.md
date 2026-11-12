@@ -126,9 +126,10 @@ make command line, where make would expand it.
 
 Like the keys flag, it applies to that play: a play without it runs an open
 lab API. Agents, scripts and the e2e suite send the token themselves
-(`LAB_API_TOKEN` in their environment). The console adds it to everything
-it forwards, so its page needs none — which means `:8090` is as open as
-ever: keep it on a network you trust, or in front of it put an auth proxy
+(`LAB_API_TOKEN` in their environment). The console adds it to every call
+it forwards that brings no token of its own, so its page needs none — which
+means `:8090` is as open as ever (a call that brings an environment's token
+is forwarded with it, and held to that environment): keep it on a network you trust, or in front of it put an auth proxy
 ([lab-api/open.md](lab-api/open.md), question 4). A platform registers
 through the console and follows the clock directly, so it needs no token.
 

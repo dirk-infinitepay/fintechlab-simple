@@ -201,7 +201,7 @@ then carries UI assets. See [OPEN 3](open.md).
 | Control listeners | none: network placement, optionally `SIM_CONTROL_ALLOW` (§4) |
 | `lab-api` | `Authorization: Bearer $LAB_API_TOKEN` when set; open when unset |
 | Plugin registration | the same `LAB_API_TOKEN` |
-| `console` → `lab-api` | the console adds `LAB_API_TOKEN` to what it forwards |
+| `console` → `lab-api` | the console adds `LAB_API_TOKEN` to what it forwards without a token; a caller's own token goes through as it came |
 
 Unset is the local default, so `make up` stays one command. A lab deployed
 somewhere reachable sets it, and `lab-api` and `console` get the same one:

@@ -27,7 +27,8 @@
 # over a network is not one to leave open. It is made once, kept on the data
 # volume at $DATA_DIR/lab-api-token (root only) and handed to the lab API and
 # the console as the ConfigMap deploy/pod/lab-api-token.yaml names; the
-# console adds it to what it forwards, so its page needs none.
+# console adds it to what it forwards without a token of its own, so its
+# page needs none.
 #
 # Idempotent: preparing the host is skipped once done, and a second play
 # replaces the containers and keeps the volumes -- the keys a platform was

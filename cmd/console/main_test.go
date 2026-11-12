@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -111,6 +112,29 @@ func TestTheTokenIsAddedWhenOneIsSet(t *testing.T) {
 	serve(t, mustHandler(t, lab.URL, "s3cret"), "GET", "/v1/lab", "")
 	if auth != "Bearer s3cret" {
 		t.Errorf("lab API saw Authorization %q", auth)
+	}
+}
+
+// A script or an agent may use the console's address with an environment's
+// token: the console must not swap it for the admin's, or the call would
+// reach every environment instead of its own.
+func TestACallersOwnTokenIsForwardedAsItCame(t *testing.T) {
+	var auth []string
+	lab := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+	}))
+	defer lab.Close()
+	h := mustHandler(t, lab.URL, "s3cret")
+	for _, sent := range []string{"Bearer lenv_theirs", "Bearer not-a-token-the-lab-knows", ""} {
+		r := httptest.NewRequest("GET", "/v1/environment", nil)
+		if sent != "" {
+			r.Header.Set("Authorization", sent)
+		}
+		h.ServeHTTP(httptest.NewRecorder(), r)
+	}
+	want := []string{"Bearer lenv_theirs", "Bearer not-a-token-the-lab-knows", "Bearer s3cret"}
+	if fmt.Sprint(auth) != fmt.Sprint(want) {
+		t.Errorf("lab API saw Authorization %q, want %q", auth, want)
 	}
 }
 

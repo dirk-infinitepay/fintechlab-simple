@@ -39,7 +39,9 @@ Two kinds of token reach this API:
 With no `LAB_API_TOKEN` the lab is open: a call without a token is the
 admin's, and an environment's token still scopes the call that carries
 one. `GET /health` never asks for a token. The console adds the admin
-token for the page when it has the same variable.
+token for the page when it has the same variable, to every call it
+forwards that carries no token; a call that brings one (an environment's)
+is forwarded with it, so the console's address scopes it the same way.
 
 Each route's `class` in `GET /v1` says who may call it: `open` (no
 token), `any` (any token), `admin` (the admin token only) or `env` (one
