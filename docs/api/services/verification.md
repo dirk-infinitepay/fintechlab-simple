@@ -399,9 +399,8 @@ does. `400` for an unknown check or outcome, which changes nothing:
 The request journal, newest first: every request the platform made to a
 vendor on `:8089`, and the status it was answered with. Query: `limit`
 (positive integer, default 100); `env` (the default when left out, `*` for
-every environment's). A request is its credentials' environment; a login
-sent in the body (`/creditsafe/authenticate`, `/lexisnexis/oauth/token`,
-IVI) is the default's.
+every environment's). A request is the environment its credentials name, a
+login included; one the vendor refused is the default's.
 
 Answers `200`:
 
