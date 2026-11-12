@@ -628,9 +628,13 @@ before the console existed to notice.
 2. *Register outlets at B4B* — each MID comes back with a beneficiary and
    a `pass`.
 3. *Seed 5 card payments / outlet*.
-4. **Services** → Worldline → *Run morning cycle (ER)*. One file per
-   currency, covering every MID that traded, plain onto Worldline's
-   SFTP root as Worldline leaves them, with the lump sum credited to the safeguarding account.
+4. **Platform** → the environment's card → *Cut from the lab's trading*,
+   then *Run*. One file per currency, covering every MID that traded, put
+   plain onto Worldline's SFTP root as Worldline leaves them, with the lump
+   sum credited to the safeguarding account. A lab that runs a seeder offers
+   its own files there instead; `POST /v1/settlement-files/cut` still cuts
+   one, and Worldline's own morning cycle cuts and publishes them at 08:00
+   on the lab clock. Worldline's card shows where the file landed.
 5. **Services** → Settlement → *Pull from Worldline now*. It dials SFTP,
    authenticates, downloads, parses, splits per MID and pays each
    outlet through B4B.

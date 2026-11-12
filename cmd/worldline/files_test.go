@@ -473,3 +473,52 @@ func TestAWorldlineNamedFileIsDeliveredUnderTheEnvironmentsIdentifierAndTheMomen
 		}
 	}
 }
+
+// The environment's SFTP folders list what its login would see: a published
+// file in download/ and to_WLNORDIC/, in that environment's jail only.
+func TestTheSFTPFoldersListWhatTheEnvironmentsLoginSees(t *testing.T) {
+	bc, _ := bridgeFake(t)
+	w := newTestSim(t, bc.URL)
+	_, ctl := testSurfaces(t, w)
+	h := ctl.Handler()
+	seedTwo(t, h)
+
+	f := render(t, h, "?env=sbx", `{"currency":"EUR","date":"`+settleDay+`"}`)
+	if r := serve(t, h, "POST", publishQuery("sbx", f.Name, "false"), f.Content); r.Code != 201 {
+		t.Fatalf("publish in sbx: %d %s", r.Code, r.Body)
+	}
+	var got struct {
+		Env     string `json:"env"`
+		Folders []struct {
+			Path  string `json:"path"`
+			Files []struct {
+				Name  string `json:"name"`
+				Bytes int64  `json:"bytes"`
+			} `json:"files"`
+		} `json:"folders"`
+	}
+	r := serve(t, h, "GET", "/sim/sftp?env=sbx", "")
+	if r.Code != 200 {
+		t.Fatalf("GET /sim/sftp?env=sbx: %d %s", r.Code, r.Body)
+	}
+	decode(t, r, &got)
+	held := map[string][]string{}
+	for _, d := range got.Folders {
+		for _, file := range d.Files {
+			if file.Bytes != int64(len(f.Content)) {
+				t.Errorf("%s/%s is %d bytes, want %d", d.Path, file.Name, file.Bytes, len(f.Content))
+			}
+			held[d.Path] = append(held[d.Path], file.Name)
+		}
+	}
+	if got.Env != "sbx" || len(got.Folders) != 4 || strings.Join(held[wlsftp.DirDownload], ",") != f.Name ||
+		strings.Join(held[wlsftp.DirToWLNordic], ",") != f.Name || len(held[wlsftp.DirFromWLNordic]) != 0 {
+		t.Fatalf("sbx's folders: %s", r.Body)
+	}
+	if r := serve(t, h, "GET", "/sim/sftp", ""); r.Code != 200 || strings.Contains(r.Body.String(), f.Name) {
+		t.Errorf("the default's folders show sbx's file: %d %s", r.Code, r.Body)
+	}
+	if r := serve(t, h, "GET", "/sim/sftp?env=*", ""); r.Code != 400 {
+		t.Errorf("every environment's folders at once: %d", r.Code)
+	}
+}

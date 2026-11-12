@@ -166,8 +166,9 @@ var opSpecs = map[string]opSpec{
 		"files":     str("delete (default) or keep: the generated settlement files, on reseed or remove"),
 		"seed":      integer("replays a population; null for a new one"),
 	})},
-	"GET /v1/settlement-files/preview": {Query: []param{{Name: "name", About: "the file's name", Required: true}, {Name: "lines", Type: "integer", About: "1 to 1000, default 100"}}},
-	"DELETE /v1/settlement-files":      {Bodyless: true, Query: []param{{Name: "name", About: "the file's name", Required: true}}},
+	"GET /v1/settlement-files/preview":  {Query: []param{{Name: "name", About: "the file's name", Required: true}, {Name: "lines", Type: "integer", About: "1 to 1000, default 100"}}},
+	"GET /v1/settlement-files/download": {Returns: "text/csv", Query: []param{{Name: "name", About: "the file's name", Required: true}}},
+	"DELETE /v1/settlement-files":       {Bodyless: true, Query: []param{{Name: "name", About: "the file's name", Required: true}}},
 	"POST /v1/settlement-files/publish": {BodyRequired: true, Body: obj(map[string]any{
 		"files": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the files to publish, at most one per currency"},
 		"wire":  boolean("wire each ER file's lump sum to the environment's safeguarding account, as Worldline's morning does; default true"),

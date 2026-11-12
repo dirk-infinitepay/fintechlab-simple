@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -290,6 +291,34 @@ func (a *app) previewSettlementFile(w http.ResponseWriter, r *http.Request) {
 		out = append(out, line)
 	}
 	httputilx.WriteJSON(w, 200, map[string]any{"name": name, "lines": out, "truncated": sc.Scan(), "long_lines": long, "bytes": st.Size()})
+}
+
+// downloadSettlementFile hands one of the environment's files over whole,
+// as a download named as it is listed.
+func (a *app) downloadSettlementFile(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if !validName(w, name) {
+		return
+	}
+	path, _, ok := a.findFile(r.Context(), name)
+	if !ok {
+		httputilx.Error(w, 404, "no file "+name+" in this environment")
+		return
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	http.ServeContent(w, r, name, st.ModTime(), f)
 }
 
 func (a *app) deleteSettlementFile(w http.ResponseWriter, r *http.Request) {

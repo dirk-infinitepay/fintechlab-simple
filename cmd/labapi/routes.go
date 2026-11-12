@@ -158,6 +158,7 @@ func (a *app) apiRoutes() []route {
 		{"POST", "/v1/settlement-files/generate", "", "card", "Have the platform's seeder write settlement files for the environment's seeded merchants", "the seeder's POST /settlement-files", a.generateSettlementFile},
 		{"POST", "/v1/settlement-files/cut", "", "card", "Keep the file Worldline would cut from the environment's trading", "worldline POST /sim/settlement-files/render", a.cutSettlementFile},
 		{"GET", "/v1/settlement-files/preview", "", "card", "The first lines of one of the environment's files", "the lab API's own volume", a.previewSettlementFile},
+		{"GET", "/v1/settlement-files/download", "", "card", "One of the environment's files, whole, as a download", "the lab API's own volume", a.downloadSettlementFile},
 		{"DELETE", "/v1/settlement-files", "", "card", "Delete one of the environment's files", "the lab API's own volume", a.deleteSettlementFile},
 		{"POST", "/v1/settlement-files/publish", "", "card", "Have Worldline publish files in the environment's SFTP folder, one per currency", "worldline POST /sim/settlement-files/publish, per file", a.publishSettlementFiles},
 		{"GET", "/v1/platform", "", "card", "What the environment's card can do on the platform's side: seed, generate, poll", "the seeder's GET /info; the lab's database", a.platformState},

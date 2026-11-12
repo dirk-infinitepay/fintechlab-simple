@@ -57,6 +57,7 @@ var currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
 func (s *sim) fileRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /sim/settlement-files/render", s.renderSettlementFile)
 	mux.HandleFunc("POST /sim/settlement-files/publish", s.publishSettlementFile)
+	mux.HandleFunc("GET /sim/sftp", s.sftpFolders)
 }
 
 // renderedFile is render's answer: the file, as plain text, and what it

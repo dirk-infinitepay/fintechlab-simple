@@ -2731,6 +2731,35 @@ paths:
                 $ref: '#/components/schemas/Error'
       externalDocs:
         url: docs/api/lab-api.md#post-v1settlement-filescut
+  /v1/settlement-files/download:
+    get:
+      operationId: getSettlementFilesDownload
+      summary: One of the environment's files, whole, as a download
+      description: 'Reaches: the lab API''s own volume.'
+      tags:
+        - card
+      parameters:
+        - name: name
+          in: query
+          required: true
+          description: the file's name
+          schema:
+            type: string
+      responses:
+        "200":
+          description: done
+          content:
+            text/csv:
+              schema:
+                type: string
+        default:
+          description: 'an error: 400 the caller can fix, 404 unknown, 409 refused by state, 501 not here by design, 502 a peer failed'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      externalDocs:
+        url: docs/api/lab-api.md#get-v1settlement-filesdownload
   /v1/settlement-files/generate:
     post:
       operationId: postSettlementFilesGenerate

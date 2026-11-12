@@ -570,13 +570,15 @@ function envPlatformCard() {
         <td class="mono num">${esc(f.total || '—')}</td>
         <td><span class="pill">${esc(f.source)}${f.bytes != null ? ' · ' + esc(fmtBytes(f.bytes)) : ''}</span></td>
         <td class="actions"><button class="ghost small" data-action="env-preview" data-name="${esc(f.name)}">Preview</button></td>
+        <td class="actions"><a class="ghost small" download
+          href="/v1/settlement-files/download?name=${encodeURIComponent(f.name)}&env=${encodeURIComponent(state.env || 'default')}">Download</a></td>
         <td class="actions">${runnable(f) ? `<button class="btn small" data-action="env-publish" data-files="${esc(f.name)}">Run</button>` : ''}</td>
         <td class="actions"><button class="danger small" data-action="env-delete-file" data-name="${esc(f.name)}">Delete</button></td>
       </tr>`).join('');
     files = list.length
       ? `<div class="table-scroll"><table>
           <thead><tr><th class="actions"></th><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th><th>Source</th>
-            <th class="actions"></th><th class="actions"></th><th class="actions"></th></tr></thead>
+            <th class="actions"></th><th class="actions"></th><th class="actions"></th><th class="actions"></th></tr></thead>
           <tbody>${rows}</tbody></table></div>
         ${picked.length
           ? `<div class="form">
@@ -585,7 +587,11 @@ function envPlatformCard() {
             </div>
             <p class="hint">${esc(picked.join(' + '))}: published together. One file per currency: ticking another file
               of a currency swaps it for the one ticked now.</p>`
-          : '<p class="hint">Tick one file per currency and run them together, as two currencies arrive on a real morning.</p>'}`
+          : '<p class="hint">Tick one file per currency and run them together, as two currencies arrive on a real morning.</p>'}
+        <p class="hint"><b>Run</b> publishes at Worldline: the file goes into this environment's SFTP folder
+          (<span class="mono">download/</span>, and <span class="mono">to_WLNORDIC/</span>), named for its settlement
+          identifier and today, and a morning file's total is wired to its safeguarding account, as Worldline's morning
+          does. <i>Poll now</i> then has the platform take it; Worldline's card shows the folder.</p>`
       : `<div class="note">No settlement files yet. Generate one from this environment's trading, or upload one.</div>`;
   }
   const poll = cfg.poll_url
@@ -594,7 +600,8 @@ function envPlatformCard() {
         <button class="ghost small" data-action="env-poll" data-type="AR">Poll now (AR)</button>
       </div>
       <p class="hint">The platform's own Worldline poll, at <span class="mono">${esc(cfg.poll_url)}</span>: it picks up
-        what Worldline published and starts its settlement now, instead of at its next window.</p>`
+        what Worldline published for that slot and starts its settlement now, instead of at its next window. Its
+        safeguarding check, the step after, is the platform's own.</p>`
     : `<p class="hint">No poll set: the platform picks published files up at its next window. To poll from here, set
         <span class="mono">poll_url</span> and <span class="mono">poll_token</span> in this environment's config
         (<span class="mono">PATCH /v1/environments/${esc(e.id)}</span>).</p>`;
@@ -736,6 +743,34 @@ function openEnvModal() {
    owns the rule that a currency runs once at a time, which the boxes
    enforce too. A file whose merchants are not seeded settles nothing, so it
    gets the command that seeds them instead of a button. */
+/* Worldline's card: what the environment's SFTP login sees now, folder by
+   folder (worldline.md, GET /sim/sftp) -- where a published file is, and
+   whether the platform has taken it. */
+function sftpPanel(s) {
+  if (s.id !== 'worldline') return '';
+  const d = state.sftp;
+  if (!d) return `<div class="note">Reading the SFTP folders…</div>`;
+  if (d.error) return `<div class="note bad">SFTP folders unavailable — ${esc(d.error)}</div>`;
+  const rows = (d.folders || []).map((f) => {
+    const files = f.files || [];
+    if (f.error) return `<tr><td class="mono">${esc(f.path)}/</td><td colspan="3"><span class="hint">${esc(f.error)}</span></td></tr>`;
+    if (!files.length) return `<tr><td class="mono">${esc(f.path)}/</td><td colspan="3"><span class="hint">empty — ${esc(f.holds)}</span></td></tr>`;
+    return files.map((x, i) => `<tr>
+        <td class="mono">${i ? '' : `${esc(f.path)}/`}</td>
+        <td class="mono">${esc(x.name)}</td>
+        <td class="mono num">${esc(fmtBytes(x.bytes))}</td>
+        <td>${esc(ago(x.modified))} ago</td></tr>`).join('');
+  }).join('');
+  return `<div class="section-title">SFTP folders — ${esc(d.env || state.env || 'default')}</div>
+    <p class="hint">What this environment's SFTP login sees now. <i>Run</i> on the platform card puts a settlement file in
+      <span class="mono">download/</span> and <span class="mono">to_WLNORDIC/</span>; the platform's poll lists it from the
+      folder its config names and takes it. Worldline never deletes a file there except on a reset, so one taken is still
+      listed.</p>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Folder</th><th>File</th><th class="num">Size</th><th>Modified</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+}
+
 function filesPanel(s) {
   if (!s.plugin || !s.plugin.settlement || !isUp(s)) return '';
   const d = state.files[s.id];
@@ -1284,6 +1319,16 @@ async function loadActivity() {
       state.files[s.id] = { error: err.message };
     }
   }));
+  // Worldline's card: the environment's SFTP folders, while it is open.
+  if (watched.some((s) => s.id === 'worldline')) {
+    try {
+      state.sftp = await api('GET', '/v1/services/worldline/sim/sftp');
+    } catch (err) {
+      state.sftp = { error: err.message };
+    }
+  } else {
+    delete state.sftp;
+  }
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
       state.subs = await api('GET', '/v1/banking-circle/subscriptions');
@@ -2125,7 +2170,7 @@ function widgetLinks() {
   const links = [
     ['#config/connect', 'Connect your platform', 'every vendor’s .env and keys'],
     ['/v1/connect/env', 'Download fintechlab.env', 'the whole lab, one file', true],
-    ['#vendors/worldline', 'Cut a settlement file', 'Worldline’s morning cycle'],
+    ['#platform', 'Settlement files', 'generate, cut or upload, then Run'],
     ['#vendors/banking-circle', 'Notification subscriptions', 'who Banking Circle calls'],
     ['#merchants', 'Merchants and outlets', 'what the money is for'],
   ];
@@ -2931,6 +2976,7 @@ function serviceCard(s) {
       ${clockPanel(s)}
       ${standInPanel(s)}
       ${filesPanel(s)}
+      ${sftpPanel(s)}
       ${subscriptionPanel(s)}
       ${payoutsPanel(s)}
       ${connectPanel(s)}
@@ -3000,10 +3046,6 @@ function serviceExtras(s) {
   }
   if (s.id === 'banking-circle') {
     return `<button class="ghost small" data-action="fund-sga">Fund safeguarding accounts</button>`;
-  }
-  if (s.id === 'worldline') {
-    return `<button class="btn small" data-action="cycle" data-slot="morning">Run morning cycle (ER)</button>
-            <button class="ghost small" data-action="cycle" data-slot="afternoon">Afternoon confirmation (AR)</button>`;
   }
   if (s.id === 'settlement') {
     return `<button class="btn small" data-action="pull">Pull from Worldline now</button>`;
@@ -3136,7 +3178,7 @@ function renderMerchants() {
         </tr>`;
       }).join('')}</tbody></table></div>
       <p class="hint">Each button is one call over the whole batch, reported per merchant. Payments are dated yesterday
-        (Worldline settles T+1) at each merchant's own typical ticket; run Worldline's morning cycle to cut the file.</p>
+        (Worldline settles T+1) at each merchant's own typical ticket; Worldline's morning cycle (08:00 on the lab clock) cuts the file, or cut it now on the Platform view's card.</p>
     </div></div>`;
   }
 
@@ -3210,7 +3252,7 @@ function merchantCard(m, d) {
         <button class="ghost small" data-action="set-status" data-id="${esc(m.id)}" data-status="${m.status === 'suspended' ? 'active' : 'suspended'}">${m.status === 'suspended' ? 'Reinstate' : 'Suspend'}</button>
         <button class="danger small" data-action="delete-merchant" data-id="${esc(m.id)}">Delete</button>
       </div>
-      <p class="hint">Seeded card payments are dated yesterday, because Worldline settles T+1 — run the morning cycle on the Services view to have them appear in a settlement file.
+      <p class="hint">Seeded card payments are dated yesterday, because Worldline settles T+1 — Worldline's morning cycle (08:00 on the lab clock) puts them in a settlement file, or cut one now on the Platform view's card.
         B4B keeps beneficiaries in memory, so after it restarts an outlet shown here as registered is one B4B has forgotten; re-registering is safe and corrects the record rather than creating a second payee.</p>
     </div>`;
   }
@@ -3373,12 +3415,6 @@ function fmtSeconds(s) {
 
 const ACTIONS = {
   probe: async (d) => { await api('POST', `/v1/services/${d.id}/probe`); },
-
-  cycle: async (d) => {
-    const r = await api('POST', `/v1/actions/worldline-cycle?slot=${encodeURIComponent(d.slot)}`);
-    const files = (r.files || []).map((f) => f.filename).join('\n');
-    toast(`Cycle run (${d.slot})`, files || 'No file cut — nothing had traded in the settled window.', 'good');
-  },
 
   pull: async () => {
     const r = await api('POST', '/v1/actions/settlement-pull');

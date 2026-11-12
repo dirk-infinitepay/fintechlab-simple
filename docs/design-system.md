@@ -655,11 +655,20 @@ buttons when there is one.
   parser's reason under a file it refuses (that row has no box and no
   *Run*). One box per currency counts: ticking another file of a currency
   swaps it for the one ticked now, because a platform settles two
-  currencies at once, never two files of one. *Preview* and *Delete* per
-  row, each in its own column.
+  currencies at once, never two files of one. *Preview*, *Download* (a
+  **Download** link, the file whole) and *Delete* per row, each in its own
+  column.
 - **Run N selected** publishes the ticked files at Worldline, in the
-  environment's SFTP folder. Its toast says the platform's next poll picks
-  them up. **Run** on a row does the same for that one file.
+  environment's SFTP folder, named for its settlement identifier and today,
+  and wires a morning file's total to its safeguarding account. Its toast
+  says the platform's next poll picks them up, and a `.hint` under the table
+  says what Run does. **Run** on a row does the same for that one file.
+- **Worldline's card** (Vendors) offers no buttons of its own: files are made
+  and published here. It shows the environment's SFTP folders instead — a
+  **Table** of folder, file, size and when it was written, every folder
+  listed, an empty one saying what it would hold — above its file exchange
+  log, so where a Run's file is and what the platform took is visible
+  without logging in.
 - **Poll now (ER)** and **Poll now (AR)** call the platform's own poll and
   toast its answer verbatim. Without a `poll_url` in the environment's
   config there are no buttons, and a `.hint` says where to set one.

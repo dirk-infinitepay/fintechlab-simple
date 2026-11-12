@@ -287,3 +287,27 @@ func TestAnEnvironmentsFilesGoWithIt(t *testing.T) {
 		t.Fatalf("a refused create took the environment's files: %s", w.Body)
 	}
 }
+
+// A file on the card downloads whole, under its own name; another
+// environment's is not there to download.
+func TestAnEnvironmentsFileDownloadsWhole(t *testing.T) {
+	a, _ := newFilesApp(t)
+	_, token := createEnvOnly(t, a, `{"id": "sbx"}`)
+	body := bambora(t, "EUR", "70000001")
+	if w := as(t, a, token, "POST", "/v1/settlement-files?name=20261111233416_payfac_ER_EUR.csv", string(body)); w.Code != 201 {
+		t.Fatalf("upload: %d %s", w.Code, w.Body)
+	}
+	w := as(t, a, token, "GET", "/v1/settlement-files/download?name=20261111233416_payfac_ER_EUR.csv", "")
+	if w.Code != 200 || w.Body.String() != string(body) {
+		t.Fatalf("download: %d, %d bytes, want the %d uploaded", w.Code, w.Body.Len(), len(body))
+	}
+	if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename=20261111233416_payfac_ER_EUR.csv` {
+		t.Errorf("Content-Disposition = %q", cd)
+	}
+	if w := as(t, a, "admin-token", "GET", "/v1/settlement-files/download?name=20261111233416_payfac_ER_EUR.csv", ""); w.Code != 404 {
+		t.Errorf("the default environment downloads sbx's file: %d", w.Code)
+	}
+	if w := as(t, a, token, "GET", "/v1/settlement-files/download?name=../../etc/passwd", ""); w.Code != 400 {
+		t.Errorf("a path: %d", w.Code)
+	}
+}

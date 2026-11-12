@@ -657,6 +657,15 @@ The first lines of one file: `?name=`, `?lines=` (1 to 1000, default 100).
 
 **Reaches** — the lab API's own volume.
 
+### `GET /v1/settlement-files/download`
+
+One file whole, `?name=`, as a download (`Content-Disposition: attachment`,
+named as it is listed). A link can carry the environment as `?env=`.
+
+**Answers** — `200` `text/csv`, the file's bytes (ranges honoured); `404`.
+
+**Reaches** — the lab API's own volume.
+
 ### `DELETE /v1/settlement-files`
 
 Delete one file, `?name=`.

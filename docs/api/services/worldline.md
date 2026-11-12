@@ -606,6 +606,28 @@ is kept.
   `account_id` (amber when the wire did not credit). A `flow` reset
   deletes the file, whatever its name, and counts its lump sum.
 
+### `GET /sim/sftp`
+
+What the environment's SFTP folders hold now, as its login would list
+them: read from its jail, nothing changed. `?env=` names the environment
+(the default's when none; `*` is `400`).
+
+- Answers `200`:
+
+  ```json
+  {"env": "sbx", "folders": [
+    {"path": "download", "holds": "settlement files: what a platform's poll lists and downloads",
+     "files": [{"name": "20261112002405_Infinite_Payment_ER_EUR.csv", "bytes": 11537,
+                "modified": "2026-11-12T00:24:05Z"}]},
+    {"path": "to_WLNORDIC", "holds": "…", "files": […]},
+    {"path": "from_WLNORDIC", "holds": "enrolment receipts", "files": []},
+    {"path": "disputes/download", "holds": "dispute files (never written)", "files": []}]}
+  ```
+
+  Every folder is listed, empty when it holds nothing or is not there
+  yet; its files newest first. A folder that cannot be read carries
+  `error`.
+
 ### `GET /sim/enrolment`
 
 An environment's enrolment desk: each environment has its own, answering
