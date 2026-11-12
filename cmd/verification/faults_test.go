@@ -116,6 +116,31 @@ func TestATrapCanDelayTheVendor(t *testing.T) {
 	}
 }
 
+// TestDisarmingLetsADelayedRequestThrough: a request held by a delay is
+// let through as soon as the traps are disarmed, though the trap is spent.
+func TestDisarmingLetsADelayedRequestThrough(t *testing.T) {
+	srv, ctl := faultServer(t)
+	armFault(t, ctl, `{"hook":"http.request","match":{"path":"/iban/verify"},"effect":{"delay":"1h"}}`)
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		res, _ := ibanCheck(srv)
+		done <- res
+	}()
+	time.Sleep(100 * time.Millisecond)
+	if w := serve(ctl, http.MethodDelete, "/sim/traps", ""); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"disarmed":1`) {
+		t.Fatalf("disarm: %d %s", w.Code, w.Body)
+	}
+	select {
+	case res := <-done:
+		if res == nil || res.StatusCode != 200 {
+			t.Errorf("the delayed request: %v, want the vendor's 200", res)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the delayed request was still held after the traps were disarmed")
+	}
+}
+
 // TestTheLabSeamIsNeverTrapped: a trap on every request leaves /health and
 // the /sim paths alone, so it cannot lock the lab out.
 func TestTheLabSeamIsNeverTrapped(t *testing.T) {
