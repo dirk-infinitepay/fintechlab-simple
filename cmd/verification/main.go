@@ -585,7 +585,7 @@ func (a *app) creditsafeAuthenticate(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "invalid username or password")
 		return
 	}
-	a.customers.Seen(env)
+	a.as(r, env)
 	httputilx.WriteJSON(w, 200, map[string]any{"token": a.issue("cs", env)})
 }
 
@@ -826,7 +826,7 @@ func (a *app) lexisToken(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 401, "invalid client_id or client_secret")
 		return
 	}
-	a.customers.Seen(env)
+	a.as(r, env)
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"access_token": a.issue("ln", env),
 		"expires_in":   3600,

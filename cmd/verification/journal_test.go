@@ -46,3 +46,28 @@ func TestEveryVendorRequestIsInTheJournal(t *testing.T) {
 		t.Errorf("cleared = %v, want the two requests", cleared)
 	}
 }
+
+// TestALoginIsInItsOwnEnvironmentsJournal: an environment's login is its
+// own, not the default's, and its reset clears it.
+func TestALoginIsInItsOwnEnvironmentsJournal(t *testing.T) {
+	_, svc, ctl := withSbx(t)
+	bearerTok(t, svc, "/creditsafe/authenticate", `{"username":"sbx-user","password":"sbx-secret"}`)
+	bearerTok(t, svc, "/lexisnexis/oauth/token", `{"client_id":"sbx-user","client_secret":"sbx-secret"}`)
+
+	count := func(env string) int {
+		var got struct {
+			Logs []struct {
+				Events []json.RawMessage `json:"events"`
+			} `json:"logs"`
+		}
+		_ = json.Unmarshal(serve(ctl, http.MethodGet, "/sim/activity?env="+env, "").Body.Bytes(), &got)
+		return len(got.Logs[0].Events)
+	}
+	if sbx, def := count("sbx"), count("default"); sbx != 2 || def != 0 {
+		t.Errorf("journal: sbx %d, default %d, want both logins in sbx", sbx, def)
+	}
+	serve(ctl, http.MethodPost, "/sim/reset", `{"scope":"flow","env":"sbx"}`)
+	if sbx := count("sbx"); sbx != 0 {
+		t.Errorf("sbx's journal after its reset: %d, want 0", sbx)
+	}
+}
