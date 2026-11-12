@@ -71,7 +71,7 @@ drives it with nothing but the AWS CLI (no CDK bootstrap, no state backend).
 | Resource | Why |
 | --- | --- |
 | VPC, one public subnet, internet gateway | the lab's own network: nothing in it depends on, peers with, or blocks deleting anyone else's |
-| Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist). Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
+| Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist); optionally a fourth, 8080-8090 only, open to a second list, the console list. Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
 | EC2 host, Ubuntu 24.04, `t3.small` | SSM only: no key pair, no port 22. IMDSv2 with hop limit 1, so no container can act as the host's role, which can only be managed by SSM anyway |
 | Data volume (20 GiB) | podman's storage. A replaced host — a new image, a new type — keeps every key the platform holds |
 | Elastic IP | the lab's one stable address; optionally a Route 53 record for `LAB_DOMAIN` |
@@ -94,7 +94,8 @@ properties a template sets.
 ```sh
 deploy/aws/lab.sh allow                       # your address, as https://checkip.amazonaws.com sees it
 deploy/aws/lab.sh allow 203.0.113.7 "QA laptop"   # someone else's, with a note
-deploy/aws/lab.sh deny 203.0.113.7/32
+deploy/aws/lab.sh allow --console 203.0.113.9 "Sam home office"   # the console list
+deploy/aws/lab.sh deny 203.0.113.7/32         # off whichever list holds it
 deploy/aws/lab.sh allowed                     # every entry: who added it, when, why
 ```
 
@@ -102,17 +103,31 @@ An entry records who added it and when, so the next person reading the list
 can tell what may go. In effect within seconds; nothing is redeployed. The
 VPC console does the same (*Managed prefix lists* → the list → *Modify*).
 
-- **Who may edit it.** Anyone whose role can call
-  `ec2:ModifyManagedPrefixList` on it — an account administrator, or a role
-  given the stack's `AllowListEditorsPolicyArn` output: a policy for this
-  one list and nothing else.
-- **Twenty entries**, at most. Each rule that names the list costs its size
-  against the security group's 60 rules, and there are three.
+- **Two lists, when there are many people.** The allowlist opens every
+  rule: the platform's NAT addresses go there, since they need SFTP and the
+  lab API. The **console list** (`<stack>-console`, the `ConsoleListId`
+  output) opens the console and the vendors' pages only — the people who
+  look at the lab. They still reach the lab API, through the console, which
+  forwards `/v1`: `http://<PublicHost>:8090/v1` with the same token. Its
+  people get no SFTP. Moving an address from the console list to the
+  allowlist is `lab.sh allow` on it.
+- **How many.** Each rule that names a list costs the list's size against
+  the security group's rules — 60, the VPC quota *Inbound or outbound rules
+  per security group* — so `3 × LAB_ALLOWLIST_SIZE + LAB_CONSOLE_LIST_SIZE`
+  must fit. The default is an allowlist of 20 and no console list; a lab
+  with a team on it might keep 6 and 42. `lab.sh infra` checks the sum
+  against the account's quota and refuses a size below what a list holds.
+  Shrinking the allowlist while growing the console list is one update;
+  the other way round is two (shrink the console list first).
+- **Who may edit them.** Anyone whose role can call
+  `ec2:ModifyManagedPrefixList` on them — an account administrator, or a
+  role given the stack's `AllowListEditorsPolicyArn` output: a policy for
+  these lists and nothing else.
 - **Nothing broader than /16.** `lab.sh` refuses it: the console asks for
-  no login, so the list is all that keeps it private.
-- **`LAB_ALLOWED_CIDRS`** in `lab.env` seeds the list at `lab.sh infra`:
-  missing entries are added, nothing is ever removed. `infra` also puts back
-  any entry an update of the stack might drop.
+  no login, so the lists are all that keep it private.
+- **`LAB_ALLOWED_CIDRS`** in `lab.env` seeds the allowlist at `lab.sh
+  infra`: missing entries are added, nothing is ever removed. `infra` also
+  puts back any entry an update of the stack might drop, on either list.
 
 ### Sharing an account
 
@@ -292,7 +307,7 @@ address, and has to allow those for as long as it runs on the tunnel.
 | `make aws-e2e` | the e2e suite inside the pod; `E2E_ONLY=a,b deploy/aws/lab.sh e2e` for some |
 | `make aws-token` | the lab API's token |
 | `deploy/aws/lab.sh tunnel <port>…` | this machine's ports, reachable from the lab as `host.containers.internal:<port+10000>`, until Ctrl-C |
-| `make aws-allow` / `make aws-allowed` | add your address to the allowlist / list it; `deploy/aws/lab.sh deny <cidr>` takes one off |
+| `make aws-allow` / `make aws-allowed` | add your address to the allowlist / list both lists; `deploy/aws/lab.sh allow --console <ip> <note>` adds to the console list, `deploy/aws/lab.sh deny <cidr>` takes one off |
 | `make aws-status` | the stack's outputs, the host, the revision it runs, each container |
 | `deploy/aws/lab.sh logs banking-circle` | the last 200 lines (`LAB_TAIL`) of one container |
 | `make aws-shell` | a shell on the host: `sudo podman ps --pod` |

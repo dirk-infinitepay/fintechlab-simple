@@ -7,7 +7,9 @@
 #   deploy/aws/lab.sh deploy     build the cloud bundle, hand it to the host, play it
 #   deploy/aws/lab.sh status     the stack, the host, and what it is running
 #   deploy/aws/lab.sh allow [cidr] [note]  let an address in (default: yours)
-#   deploy/aws/lab.sh deny <cidr>          take one off the allowlist
+#   deploy/aws/lab.sh allow --console [cidr] [note]
+#                                          the console and the vendors' pages only
+#   deploy/aws/lab.sh deny <cidr>          take one off whichever list holds it
 #   deploy/aws/lab.sh allowed              who may reach the lab
 #   deploy/aws/lab.sh env [svc]  download the platform's .env from the console
 #   deploy/aws/lab.sh token      print the lab API's token (FINTECH_SIM_LAB_TOKEN)
@@ -128,7 +130,15 @@ run_remote() {
 
 cmd_infra() {
   account
-  local params=() ami before="" list status
+  local params=() ami status saved_allow="" saved_console="" n
+  local allow_size="${LAB_ALLOWLIST_SIZE:-20}" console_size="${LAB_CONSOLE_LIST_SIZE:-0}" rules
+  # The lists' sizes are what the security group's rules can hold: the
+  # allowlist is named by three rules, the console list by one.
+  [[ "$allow_size" =~ ^[1-9][0-9]*$ ]] || die "LAB_ALLOWLIST_SIZE is how many addresses the allowlist holds, at least 1: not '$allow_size'"
+  [[ "$console_size" =~ ^[0-9]+$ ]] || die "LAB_CONSOLE_LIST_SIZE is how many addresses the console list holds, 0 for none: not '$console_size'"
+  rules="$(rules_per_security_group)"
+  [ $((3 * allow_size + console_size)) -le "$rules" ] ||
+    die "3 x LAB_ALLOWLIST_SIZE ($allow_size) + LAB_CONSOLE_LIST_SIZE ($console_size) is $((3 * allow_size + console_size)) rules; a security group holds $rules here"
   # A stack whose first create failed is left in ROLLBACK_COMPLETE, holding
   # nothing, and can only be deleted: do that, and create it again.
   status="$(aws cloudformation describe-stacks --stack-name "$STACK" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
@@ -145,37 +155,38 @@ cmd_infra() {
     params+=("ImageId=$ami")
     say "host image $ami"
   fi
-  # The allowlist's entries are people's, not the template's: kept aside
-  # before an update and put back after it, should the update touch them.
+  # The lists' entries are people's, not the template's: kept aside before
+  # an update and put back after it, should the update touch them. A list
+  # cannot shrink below what it holds, nor go with people still on it.
   if stack_exists; then
-    list="$(output AllowListId)"
-    [ -n "$list" ] && [ "$list" != None ] && before="$(allow_entries "$list")"
+    saved_allow="$(entries_of AllowListId)"
+    saved_console="$(entries_of ConsoleListId)"
+    n="$(grep -c . <<<"$saved_allow" || true)"
+    [ "$n" -le "$allow_size" ] || die "the allowlist holds $n addresses, more than LAB_ALLOWLIST_SIZE ($allow_size): 'lab.sh deny' some first"
+    n="$(grep -c . <<<"$saved_console" || true)"
+    [ "$n" -le "$console_size" ] || die "the console list holds $n addresses, more than LAB_CONSOLE_LIST_SIZE ($console_size): 'lab.sh deny' some first"
   fi
   params+=(
     "InstanceType=${LAB_INSTANCE_TYPE:-t3.small}"
     "DomainName=${LAB_DOMAIN:-}"
     "HostedZoneId=${LAB_HOSTED_ZONE_ID:-}"
+    "AllowListSize=$allow_size"
+    "ConsoleListSize=$console_size"
   )
   aws cloudformation deploy --stack-name "$STACK" --template-file "$TEMPLATE" \
     --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
     --tags Project=fintechlab ManagedBy=fintechlab-simple \
     --parameter-overrides "${params[@]}"
 
-  list="$(output AllowListId)"
-  local now add=() cidr desc
-  now="$(allow_entries "$list")"
-  while IFS=$'\t' read -r cidr desc; do
-    [ -n "$cidr" ] || continue
-    grep -q "^$cidr"$'\t' <<<"$now" || add+=("$cidr" "${desc:-restored by lab.sh infra}")
-  done <<<"$before"
-  # LAB_ALLOWED_CIDRS seeds the list: added when missing, never removed.
+  # LAB_ALLOWED_CIDRS seeds the allowlist: added when missing, never removed.
+  local seed=() cidr
   for cidr in $(csv "${LAB_ALLOWED_CIDRS:-}" | tr , ' '); do
     cidr="$(normalize_cidr "$cidr")" || die "LAB_ALLOWED_CIDRS: $cidr"
-    grep -q "^$cidr"$'\t' <<<"$now" || add+=("$cidr" "$(entry_note "lab.env")")
+    seed+=("$cidr")
   done
-  if [ ${#add[@]} -gt 0 ]; then
-    say "allowlist: adding $(( ${#add[@]} / 2 )) entr$([ ${#add[@]} -eq 2 ] && echo y || echo ies)"
-    modify_allowlist "$list" add "${add[@]}"
+  restore_entries AllowListId "$saved_allow" "${seed[@]}"
+  if [ "$console_size" -gt 0 ]; then
+    restore_entries ConsoleListId "$saved_console"
   fi
   cmd_outputs
   say ""
@@ -185,15 +196,76 @@ cmd_infra() {
 }
 
 # --- the allowlist ------------------------------------------------------------
-# A managed prefix list the template creates and never fills: entries are
+# Managed prefix lists the template creates and never fills: entries are
 # people's, edited here or in the VPC console (Managed prefix lists), and an
-# edit is not drift. The stack's AllowListEditorsPolicyArn output is a policy
-# that lets a role edit this list and nothing else.
+# edit is not drift. The allowlist (AllowListId) opens everything a platform
+# needs; the console list (ConsoleListId, when LAB_CONSOLE_LIST_SIZE makes
+# one) opens the console and the vendors' pages only. The stack's
+# AllowListEditorsPolicyArn output is a policy that lets a role edit these
+# lists and nothing else.
 
 # allow_entries <list>: "cidr<TAB>description" per line.
 allow_entries() {
   aws ec2 get-managed-prefix-list-entries --prefix-list-id "$1" \
     --query 'Entries[].[Cidr,Description]' --output text
+}
+
+# list_id <AllowListId|ConsoleListId>: the list's id, empty when the stack
+# has no such list.
+list_id() {
+  local id
+  id="$(output "$1")"
+  [ "$id" = None ] && id=""
+  printf '%s' "$id"
+}
+
+# list_label <AllowListId|ConsoleListId>: what to call it.
+list_label() { [ "$1" = ConsoleListId ] && echo "console list" || echo allowlist; }
+
+# entries_of <AllowListId|ConsoleListId>: its entries, nothing when absent.
+entries_of() {
+  local id
+  id="$(list_id "$1")"
+  [ -z "$id" ] || allow_entries "$id"
+}
+
+# has_entry <entries> <cidr>: whether the entries hold exactly that CIDR.
+has_entry() { awk -F'\t' -v c="$2" '$1 == c { found = 1 } END { exit !found }' <<<"$1"; }
+
+# list_size <list>: how many entries it holds at most.
+list_size() {
+  aws ec2 describe-managed-prefix-lists --prefix-list-ids "$1" \
+    --query 'PrefixLists[0].MaxEntries' --output text
+}
+
+# rules_per_security_group: the account's VPC quota (60 unless raised).
+rules_per_security_group() {
+  local v
+  v="$(aws service-quotas get-service-quota --service-code vpc --quota-code L-0EA8095F \
+    --query Quota.Value --output text 2>/dev/null || true)"
+  [[ "$v" =~ ^[0-9]+ ]] && echo "${BASH_REMATCH[0]}" || echo 60
+}
+
+# restore_entries <AllowListId|ConsoleListId> <saved entries> [cidr...]: put
+# back what an update of the stack dropped from the list, and add each CIDR
+# given that it lacks.
+restore_entries() {
+  local key="$1" saved="$2" id now add=() cidr desc
+  shift 2
+  id="$(list_id "$key")"
+  [ -n "$id" ] || return 0
+  now="$(allow_entries "$id")"
+  while IFS=$'\t' read -r cidr desc; do
+    [ -n "$cidr" ] || continue
+    has_entry "$now" "$cidr" || add+=("$cidr" "${desc:-restored by lab.sh infra}")
+  done <<<"$saved"
+  for cidr in "$@"; do
+    has_entry "$now" "$cidr" || has_entry "$saved" "$cidr" || add+=("$cidr" "$(entry_note "lab.env")")
+  done
+  if [ ${#add[@]} -gt 0 ]; then
+    say "$(list_label "$key"): adding $(( ${#add[@]} / 2 )) entr$([ ${#add[@]} -eq 2 ] && echo y || echo ies)"
+    modify_allowlist "$id" add "${add[@]}"
+  fi
 }
 
 # normalize_cidr <addr|cidr>: an IPv4 CIDR, /32 for a bare address. Nothing
@@ -248,46 +320,82 @@ else:
   die "the allowlist kept changing under us; try again"
 }
 
+# cmd_allow [--console] [cidr] [note]: onto the allowlist, or with --console
+# onto the console list. An address on the console list that is allowed
+# fully moves to the allowlist; one already on the allowlist reaches the
+# console anyway.
 cmd_allow() {
   need_stack
-  local cidr list now
+  local key=AllowListId other=ConsoleListId cidr list now held count size
+  if [ "${1:-}" = --console ]; then
+    key=ConsoleListId other=AllowListId
+    shift
+  fi
+  list="$(list_id "$key")"
+  [ -n "$list" ] || die "this lab has no console list: set LAB_CONSOLE_LIST_SIZE and run 'lab.sh infra'"
   cidr="${1:-}"
   if [ -z "$cidr" ]; then
     cidr="$(curl -fsS --max-time 5 https://checkip.amazonaws.com)" || die "could not tell your address; give it: lab.sh allow <ip>"
   fi
   cidr="$(normalize_cidr "$cidr")" || exit 1
   [ $# -gt 0 ] && shift
-  list="$(output AllowListId)"
   now="$(allow_entries "$list")"
-  if grep -q "^$cidr"$'\t' <<<"$now"; then
-    say "$cidr is already allowed: $(grep "^$cidr"$'\t' <<<"$now" | cut -f2)"
+  if has_entry "$now" "$cidr"; then
+    say "$cidr is already on the $(list_label "$key"): $(awk -F'\t' -v c="$cidr" '$1 == c { print $2 }' <<<"$now")"
     return 0
   fi
+  held="$(entries_of "$other")"
+  if [ "$key" = ConsoleListId ] && has_entry "$held" "$cidr"; then
+    say "$cidr is on the allowlist, which reaches the console already"
+    return 0
+  fi
+  count="$(grep -c . <<<"$now" || true)"
+  size="$(list_size "$list")"
+  [ "$count" -lt "$size" ] || die "the $(list_label "$key") is full ($count of $size): 'lab.sh deny' one, or resize the lists (LAB_ALLOWLIST_SIZE, LAB_CONSOLE_LIST_SIZE) with 'lab.sh infra'"
   modify_allowlist "$list" add "$cidr" "$(entry_note "$*")"
-  say "allowed $cidr -- in effect within seconds"
+  say "allowed $cidr on the $(list_label "$key") -- in effect within seconds"
+  if has_entry "$held" "$cidr"; then
+    modify_allowlist "$(list_id "$other")" remove "$cidr"
+    say "  (and took it off the $(list_label "$other"))"
+  fi
 }
 
 cmd_deny() {
   [ -n "${1:-}" ] || die "which address? lab.sh allowed lists them"
   need_stack
-  local cidr list
+  local cidr key list found=""
   cidr="$(normalize_cidr "$1")" || exit 1
-  list="$(output AllowListId)"
-  grep -q "^$cidr"$'\t' <<<"$(allow_entries "$list")" || { say "$cidr is not on the allowlist"; return 0; }
-  modify_allowlist "$list" remove "$cidr"
-  say "removed $cidr"
+  for key in AllowListId ConsoleListId; do
+    list="$(list_id "$key")"
+    [ -n "$list" ] && has_entry "$(allow_entries "$list")" "$cidr" || continue
+    modify_allowlist "$list" remove "$cidr"
+    say "removed $cidr from the $(list_label "$key")"
+    found=1
+  done
+  [ -n "$found" ] || say "$cidr is on no list"
 }
 
 cmd_allowed() {
   need_stack
+  show_list AllowListId "the vendors, the console, the lab API and SFTP" \
+    "nobody -- 'lab.sh allow' adds your address; 'lab.sh console' works without one"
+  if [ -n "$(list_id ConsoleListId)" ]; then
+    say ""
+    show_list ConsoleListId "the console and the vendors' pages (8080-8090) only" \
+      "nobody -- 'lab.sh allow --console <ip> <note>' adds someone"
+  fi
+}
+
+# show_list <AllowListId|ConsoleListId> <what it opens> <what to say when empty>
+show_list() {
   local list entries
-  list="$(output AllowListId)"
+  list="$(list_id "$1")"
   entries="$(allow_entries "$list")"
-  say "allowlist $list ($(grep -c . <<<"$entries" || true) of 20):"
+  say "$(list_label "$1") $list ($(grep -c . <<<"$entries" || true) of $(list_size "$list")): $2"
   if [ -n "$entries" ]; then
     printf '%s\n' "$entries" | column -t -s $'\t' | sed 's/^/  /'
   else
-    say "  nobody -- 'lab.sh allow' adds your address; 'lab.sh console' works without one"
+    say "  $3"
   fi
 }
 

@@ -15,10 +15,11 @@ Description: >-
 #     record for it in a hosted zone you name);
 #   - a security group open only to the addresses on the lab's allowlist, a
 #     managed prefix list, on the vendors' surfaces, the console and the lab
-#     API -- never a control port. The template creates the list and never
-#     sets its entries: people add and remove theirs (lab.sh allow, or the
-#     VPC console) and the stack does not drift, since CloudFormation checks
-#     only the properties a template sets;
+#     API -- never a control port -- and, optionally, a second list, the
+#     console list, open on the vendors' surfaces and the console only. The
+#     template creates the lists and never sets their entries: people add and
+#     remove theirs (lab.sh allow, or the VPC console) and the stack does not
+#     drift, since CloudFormation checks only the properties a template sets;
 #   - a private bucket the deploy script hands bundles over through.
 # Nothing in the instance's user data: deploy/host/play.sh prepares the host
 # on the first deploy, so editing it never replaces the instance.
@@ -56,9 +57,31 @@ Parameters:
     Type: String
     Default: ""
     Description: A Route 53 public hosted zone to write DomainName's A record in. Empty writes none.
+  # Each rule that names a prefix list costs the list's size against the
+  # security group's rules (60 by default, the VPC quota "Inbound or outbound
+  # rules per security group"): the allowlist is named by three rules, the
+  # console list by one, so 3 x AllowListSize + ConsoleListSize must fit.
+  # lab.sh infra checks before it asks CloudFormation.
+  AllowListSize:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: >-
+      How many addresses the allowlist holds. They reach everything a
+      platform needs -- the vendors' surfaces, the console, the lab API and
+      SFTP -- and each costs three of the security group's rules.
+  ConsoleListSize:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    Description: >-
+      How many addresses the console list holds; 0 makes none. They reach the
+      vendors' surfaces and the console (8080-8090) only -- the lab API too,
+      through the console's /v1 and its token -- and each costs one rule.
 
 Conditions:
   HasDomain: !Not [!Equals [!Ref DomainName, ""]]
+  HasConsoleList: !Not [!Equals [!Ref ConsoleListSize, "0"]]
   WriteDnsRecord: !And
     - !Condition HasDomain
     - !Not [!Equals [!Ref HostedZoneId, ""]]
@@ -129,15 +152,29 @@ Resources:
   # Who may reach the lab: an allowlist people edit, not a parameter. No
   # Entries here, ever -- the template setting none is what keeps an entry
   # added outside it from being drift. Nothing about the list may change in
-  # the template either (lab.sh infra restores entries around an update
-  # anyway). MaxEntries is what each rule below costs against the security
-  # group's limit (60 by default): three rules, twenty entries.
+  # the template either, but its size (lab.sh infra restores entries around
+  # an update anyway). MaxEntries is what each rule below costs against the
+  # security group's limit: see AllowListSize.
   AllowList:
     Type: AWS::EC2::PrefixList
     Properties:
       PrefixListName: !Sub ${AWS::StackName}-allowed
       AddressFamily: IPv4
-      MaxEntries: 20
+      MaxEntries: !Ref AllowListSize
+
+  # People who only open the console and the vendors' pages: one rule, so a
+  # place costs a third of an allowlist place. The same rules about entries.
+  # After the allowlist, so an update that shrinks it frees the rules this
+  # one takes before taking them (growing the allowlist while shrinking this
+  # one needs two updates).
+  ConsoleList:
+    Type: AWS::EC2::PrefixList
+    Condition: HasConsoleList
+    DependsOn: AllowList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-console
+      AddressFamily: IPv4
+      MaxEntries: !Ref ConsoleListSize
 
   # Attach to a role or permission set whose people may edit the allowlist:
   # this list only, nothing else in the stack or the account.
@@ -152,7 +189,9 @@ Resources:
             Action:
               - ec2:ModifyManagedPrefixList
               - ec2:GetManagedPrefixListEntries
-            Resource: !GetAtt AllowList.Arn
+            Resource:
+              - !GetAtt AllowList.Arn
+              - !If [HasConsoleList, !GetAtt ConsoleList.Arn, !Ref AWS::NoValue]
           - Effect: Allow
             Action: ec2:DescribeManagedPrefixLists
             Resource: "*"
@@ -206,6 +245,19 @@ Resources:
       ToPort: 2222
       SourcePrefixListId: !Ref AllowList
       Description: Worldline SFTP+PGP
+
+  # The console list's one rule: the console and the vendors' pages. Its
+  # people reach the lab API through the console, which forwards /v1.
+  ConsoleIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasConsoleList
+    Properties:
+      GroupId: !Ref SecurityGroup
+      IpProtocol: tcp
+      FromPort: 8080
+      ToPort: 8090
+      SourcePrefixListId: !Ref ConsoleList
+      Description: the vendor surfaces and the console 8090, for the console list
 
   # --- the host -------------------------------------------------------------------
 
@@ -352,6 +404,10 @@ Outputs:
   AllowListId:
     Description: The managed prefix list of who may reach the lab. lab.sh allow / deny edit it.
     Value: !Ref AllowList
+  ConsoleListId:
+    Condition: HasConsoleList
+    Description: The managed prefix list of who may reach the console and the vendors' pages only. lab.sh allow --console / deny edit it.
+    Value: !Ref ConsoleList
   AllowListEditorsPolicyArn:
     Description: Attach to whoever may edit the allowlist.
     Value: !Ref AllowListEditors
