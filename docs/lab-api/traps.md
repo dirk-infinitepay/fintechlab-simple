@@ -463,8 +463,12 @@ when no trap matches.
 
 **`http.request`** (phase 3). Any request on the sim's **vendor** surface,
 never on its control listener, so a trap cannot lock the lab out. Match:
-`method`, `path` (with `*` for one segment), `header.<name>`. Effect:
-`respond` (§4.3). One piece of shared middleware.
+`method`, `path` (with `*` for one segment), and later `header.<name>`.
+Effect: `respond` (§4.3). One piece of shared middleware. *Built
+2026-11-12 on verification* with `method` and `path`; a `header.<name>`
+match is refused until a test needs one. A client that gives up during a
+`delay` does not stop it: the vendor still handles the request once the
+delay ends, and nothing records that the answer went unread.
 
 The platform's next two payment-status reads get a `503`:
 

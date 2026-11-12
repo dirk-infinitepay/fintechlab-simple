@@ -287,6 +287,7 @@ func DefaultCatalogue() *Catalogue {
 			Summary:    "The four checks the platform runs before a merchant may trade, behind one address: Creditsafe bank verification, iban.com, KYC6 screening and LexisNexis identity. Each answers positively by default and each outcome can be flipped, so the unhappy paths are reachable without a real vendor account.",
 			BaseURL:    "http://127.0.0.1:8089",
 			HealthPath: "/health",
+			Activity:   "/sim/activity",
 			Ports:      []string{"8089/http"},
 			Transport:  "HTTP",
 			Auth:       "per vendor: bearer (Creditsafe, LexisNexis) or api key (iban.com, KYC6)",

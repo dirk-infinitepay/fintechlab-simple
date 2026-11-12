@@ -316,6 +316,9 @@ func (s *Store) arm(spec Spec, standing bool) (Trap, error) {
 		if err := validatePath(h, spec.Path); err != nil {
 			return Trap{}, err
 		}
+		if spec.Respond != nil || spec.Delay != "" || spec.Close {
+			return Trap{}, fmt.Errorf("%w: %s's effect is a path; respond, delay and close are for http.request", ErrInvalid, h.Name)
+		}
 	}
 	if h.Effect == EffectRespond {
 		if err := validateRespond(h, spec); err != nil {

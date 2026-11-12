@@ -52,6 +52,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
@@ -316,6 +317,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
 	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
 	ctl.Mux.HandleFunc("POST /sim/creditsafe/companies", a.registerCreditsafeCompany)
+	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(a.traps.Log()))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

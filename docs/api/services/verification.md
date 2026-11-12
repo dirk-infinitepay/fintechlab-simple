@@ -22,7 +22,7 @@ which is minimal, fixed or echoed. Nothing is persisted.
 | Listens | `:8089`, plain HTTP: the vendor routes. Compose service `verification` (`http://verification:8089` on the compose network); host `http://127.0.0.1:8089`.<br>`:9089`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://verification:9089` |
 | Auth | Creditsafe: `POST /creditsafe/authenticate` (username and password) issues a bearer token for its other routes. LexisNexis: `POST /lexisnexis/oauth/token` (client id and secret) issues a bearer token for IDU; IVI carries `org_id`, `api_key` and `policy` in the body. iban.com and KYC6: an `x-api-key` header. Any non-empty credential is accepted: an environment's own login makes the call that environment's, and any other is the default environment's ([Environments](#environments)). A customer's username with another password is `401`. Bearer tokens come from one shared pool, so a token from either issuer opens either vendor's bearer routes, in the environment it was issued to. `/health` and `/sim/*`: none. The control port has none: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set |
 | A platform points here with | `CREDITSAFE_API_URL` (`http://127.0.0.1:8089/creditsafe`), `CREDITSAFE_USERNAME`, `CREDITSAFE_PASSWORD`; `IBAN_COM_BASE_URL` (`…/iban/verify`, the full endpoint), `IBAN_COM_API_KEY`; `KYC6_API_BASE_URL` and `KYC6_MONITOR_API_BASE_URL` (both `…/kyc6`), `KYC6_API_KEY`; `LEXISNEXIS_AUTH_URL` (`…/lexisnexis`), `LEXISNEXIS_IDU_BASE_URL` (`…/lexisnexis/idu`), `LEXISNEXIS_IVI_BASE_URL` (`…/lexisnexis/ivi`), `LEXISNEXIS_CLIENT_ID`, `LEXISNEXIS_CLIENT_SECRET`, `LEXISNEXIS_IVI_API_KEY`. The lab API hands these out at `GET :8097/v1/connect/env/verification` |
-| Activity logs | None. There is no `GET /sim/activity`, so the console card shows no panels. Each request line is logged on stdout |
+| Activity logs | `GET /sim/activity`: the traps log. Each request line is also logged on stdout |
 | Configuration | `LISTEN` (`:8089`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9089`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>Nothing else: no lab clock, no state file. The outcomes, per environment, every issued token and the customers live in memory and reset on restart; the lab API pushes the customers again. Outcomes change only through `POST /sim/outcome`, and go back to their defaults with `POST /sim/reset` |
 | Design record | [integration/verification-vendor-edge.md](../../integration/verification-vendor-edge.md), the package comment in `cmd/verification/main.go`, [catalogue.md](../../catalogue.md) |
 
@@ -518,6 +518,19 @@ Disarms one trap. Answers `200` with `{"trap": <trap>, "cancelled": []}`,
 
 Disarms every trap. Answers `200` with `{"service": "verification",
 "disarmed": 1, "cancelled": []}`.
+
+### `GET /sim/activity`
+
+The traps log, newest first: every trap armed, every request one caught,
+what was done to it, and every disarm. Query: `limit` (positive integer,
+default 100); `env` (the default when left out, `*` for every
+environment's).
+
+```json
+{"logs": [{"name": "traps", "title": "Traps", "total": 2, "kept": 2,
+           "events": [{"seq": 2, "op": "trap.step", "summary": "trp_0001: POST /iban/verify — respond 503", "status": "ok"},
+                      {"seq": 1, "op": "trap.armed", "summary": "trp_0001 armed on http.request — …", "status": "ok"}]}]}
+```
 
 ### `GET /sim/info`
 
