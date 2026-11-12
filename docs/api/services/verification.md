@@ -117,14 +117,14 @@ Answers `200`:
 
 ```json
 {
-  "supplierResponse": {"result": true, "nameMatchResult": "MATCH", "accountNumber": "12345678", "sortCode": "00-00-00"},
+  "supplierResponse": {"result": true, "nameMatchResult": "Full", "accountTypeResult": true, "accountNumber": "12345678", "sortCode": "00-00-00"},
   "request": {"accountNumber": "12345678", "sortCode": "00-00-00", "name": "Southwind Coffee Ltd"}
 }
 ```
 
-`bank-account` outcome: `pass` gives `true`/`MATCH`; `mismatch` (a real
-account in another name) gives `true`/`NOMATCH`; `invalid` gives
-`false`/`NOMATCH`.
+`bank-account` outcome: `pass` gives `true`/`Full`/`true`; `mismatch` (a
+real account in another name) gives `true`/`No Match`/`true`; `invalid`
+gives `false`/`No Match`/`false`, as `result`/`nameMatchResult`/`accountTypeResult`.
 
 ### `GET /creditsafe/companies`
 
@@ -143,14 +143,29 @@ Answers `200` with exactly one hit built from the query, whatever it was
 
 Company report.
 
-Answers `200`:
+Answers `200`. Every report carries a clean credit picture:
 
 ```json
-{"companyId": "GB-0-12345678", "report": {"companySummary": {"companyNumber": "GB-0-12345678", "companyStatus": {"status": "Active"}}}}
+{"companyId": "GB-0-12345678", "report": {
+  "companySummary": {"companyNumber": "GB-0-12345678", "companyStatus": {"status": "Active"},
+                     "creditRating": {"commonValue": "A", "commonDescription": "Very Low Risk"}},
+  "creditScore": {"currentCreditRating": {"commonValue": "A", "commonDescription": "Very Low Risk", "pod": 0.5}},
+  "negativeInformation": {"ccjSummary": {"numberOfExact": 0, "numberOfPossible": 0, "numberOfSatisfied": 0}}}}
 ```
 
 `companyNumber` echoes the path id, not the registration number. `company`
-outcome `dissolved` gives `"status": "Dissolved"`.
+outcome `dissolved` gives Creditsafe's common status for a company that has
+stopped trading, `{"status": "NonActive", "providerStatus": "Dissolved"}`.
+
+A company registered with
+[`POST /sim/creditsafe/companies`](#post-simcreditsafecompanies) in the
+caller's environment also carries what was registered, where Creditsafe
+puts it: `companySummary.businessName`, `companySummary.companyRegistrationNumber`,
+`companySummary.country`; `companyIdentification.basicInformation` with
+`registeredCompanyName`, `companyRegistrationDate` and
+`contactAddress.simpleValue`; and each person, as registered, under
+`directors.currentDirectors`, `shareCapitalStructure.shareHolders` and
+`additionalInformation.personsWithSignificantControl.activePSC`.
 
 ### `GET /creditsafe/monitoring/portfolios`
 
@@ -402,6 +417,32 @@ does. `400` for an unknown check or outcome, which changes nothing:
 `400` `an outcome is set in one environment, not in all of them` for
 `env=*`; `404` for an environment this service was never given.
 
+### `POST /sim/creditsafe/companies`
+
+Registers a company in the environment the call names (`?env=` or
+`Lab-Environment`; the default without either), so its Creditsafe report
+([`GET /creditsafe/companies/{id}`](#get-creditsafecompaniesid)) carries
+these details. Registering the same `country` and `regNo` again replaces
+them.
+
+Body, decoded strictly (an unknown field is a 400):
+
+```json
+{"country": "GB", "regNo": "29210000", "businessName": "Southwind Coffee Ltd",
+ "registrationDate": "2015-04-01T00:00:00Z", "address": "1 Test Street London SW1A 1AA",
+ "directors": [{"name": "Ada Lovelace"}],
+ "shareholders": [{"name": "Ada Lovelace", "percentSharesHeld": 100, "shareholderType": "Person"}],
+ "personsWithSignificantControl": [{"name": "Ada Lovelace", "countryOfResidence": "United Kingdom"}]}
+```
+
+Each person needs a `name`; any other field is Creditsafe's own and is
+served as given.
+
+Answers `200` with `{"env": "default", "id": "GB-0-29210000", "company": {…}}`.
+`400` without `country` or `regNo`, for a person with no `name`, or for
+`env=*`; `404` for an
+environment this service was never given.
+
 ### `GET /sim/info`
 
 Who this is and what it can do, as every service answers it
@@ -425,19 +466,21 @@ token is something the platform obtained once and caches, so `flow` keeps
 it.
 
 - **`flow` clears**: the outcomes, back to the defaults in the table under
-  [Vendor surface](#vendor-surface).
+  [Vendor surface](#vendor-surface), and the registered Creditsafe
+  companies.
 - **`flow` keeps**: every bearer token issued, so a platform holding one
   is not refused mid-session; and the Creditsafe portfolio id counter.
 - **`all`** is first start: the outcomes, every token issued in the
   environment (a held one is `401` `unknown or expired token` until the
   client authenticates again), and its portfolio ids count from 1 again.
 
-`cleared` counts `outcomes` that were flipped, and with `all`, `tokens`
+`cleared` counts `outcomes` that were flipped and `companies` that were
+registered, and with `all`, `tokens`
 and `portfolios` created. Another environment's outcomes and tokens are
 left alone.
 
 ```json
-{"service": "verification", "scope": "flow", "env": "default", "cleared": {"outcomes": 2},
+{"service": "verification", "scope": "flow", "env": "default", "cleared": {"companies": 1, "outcomes": 2},
  "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
 ```
 
