@@ -752,7 +752,7 @@ working:
 | `LAB_API_TOKEN` | unset | ask every caller but `GET /health` for `Authorization: Bearer <it>` |
 | `CONSOLE_URL_<SERVICE>` | the published `127.0.0.1` port | where to reach a peer (`CONSOLE_URL_BANKING_CIRCLE`, etc.) |
 | `CONSOLE_BROWSE_HOST` | `127.0.0.1` | the host the published ports are on, for the "open in a browser" links |
-| `CONSOLE_CONNECT_NAMES` | unset | services the platform reaches at `https://<service>.<CONSOLE_CONNECT_HOST>` (`api` is the lab API), through a cloud lab's HTTPS front: the `.env` downloads hand those out instead of `host:port`, for `CONSOLE_CONNECT_HOST` only. Set by `deploy/pod/render` ([deploy-cloud.md](deploy-cloud.md#the-console-on-https)) |
+| `CONSOLE_CONNECT_NAMES` | unset | services the platform reaches at `https://<service>.<CONSOLE_CONNECT_HOST>` (`lab-api` is the lab API), through a cloud lab's HTTPS front: the `.env` downloads hand those out instead of `host:port`, for `CONSOLE_CONNECT_HOST` only. Set by `deploy/pod/render` ([deploy-cloud.md](deploy-cloud.md#the-console-on-https)) |
 | `CONSOLE_STATE_FILE` | `console-data/registry.json` | the merchant registry |
 | `CONSOLE_PROBE_INTERVAL` | `5s` | how often to health-check |
 | `CONSOLE_BC_DELIVERY_CONFIG` | `config/banking-circle.json` | the delivery table to display |

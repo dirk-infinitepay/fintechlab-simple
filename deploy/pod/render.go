@@ -66,7 +66,7 @@ type Options struct {
 	SeederImage string
 	// HTTPSHost, when set, serves the console at https://<HTTPSHost>, every
 	// vendor port's service at https://<service>.<HTTPSHost> and the lab API
-	// at https://api.<HTTPSHost>: a front container (FrontImage, Caddy) on
+	// at https://lab-api.<HTTPSHost>: a front container (FrontImage, Caddy) on
 	// :443 that gets a Let's Encrypt certificate for each name and renews
 	// it, and on :80 answers the ACME HTTP challenge and redirects the rest
 	// to https. Let's Encrypt has to reach :80 from the internet; :443 is
@@ -245,8 +245,10 @@ const (
 	frontVolume    = "front-data"
 	frontClaim     = "fintechlab-front-data"
 	consolePort    = "8090"
-	// labAPIName is the lab API's name under the host: api.<host>.
-	labAPIName = "api"
+	// labAPIName is the lab API's name under the host, its container's:
+	// lab-api.<host>. Not api.<host>: Let's Encrypt refuses that one under
+	// a name this deep, as a sign of runaway on-demand issuance.
+	labAPIName = "lab-api"
 	// The vendors' own ports: each container publishing one is served at
 	// <container>.<host>, on 443. The console, 8090, is the host itself.
 	vendorPortLow, vendorPortHigh = 8080, 8089

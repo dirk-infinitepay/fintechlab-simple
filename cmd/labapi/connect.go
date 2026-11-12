@@ -85,7 +85,7 @@ func (a *app) connect(w http.ResponseWriter, r *http.Request) {
 
 // labURL is the lab API's address for a platform that reaches the lab at
 // host: LAB_API_PUBLIC_PORT (default 8097) on that host, or
-// https://api.<host> when the lab's front serves it by name.
+// https://lab-api.<host> when the lab's front serves it by name.
 func labURL(host string, named []string) string {
 	if slices.Contains(named, kitLabAPIName) {
 		return "https://" + kitLabAPIName + "." + host
@@ -94,9 +94,9 @@ func labURL(host string, named []string) string {
 }
 
 // kitLabAPIName is the lab API's own name among CONSOLE_CONNECT_NAMES.
-const kitLabAPIName = "api"
+const kitLabAPIName = "lab-api"
 
-// kitNamePattern is one name the front serves: a service id, or "api".
+// kitNamePattern is one name the front serves: a container's name.
 var kitNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // kitNames are the services a platform reaching the lab at host reaches by

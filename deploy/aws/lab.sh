@@ -466,11 +466,11 @@ DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' ROTATE_TOKEN='
     check_https "b4b.$https"
     say "console:  https://$https   (and http://$host:8090; from the allowlists -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
     say "vendors:  https://<service>.$https -- b4b, banking-circle (mTLS), verification, ...; SFTP stays $host:2222"
-    say "lab API:  https://api.$https/v1 (and http://$host:8097/v1) with its token ('lab.sh token')"
+    say "lab API:  https://lab-api.$https/v1 (and http://$host:8097/v1) with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   else
     say "console:  http://$host:8090   (from the allowlist -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
+    say "lab API:  http://$host:8097/v1 with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   fi
-  say "lab API:  http://$host:8097/v1 with its token ('lab.sh token'): FINTECH_SIM_LAB_URL, FINTECH_SIM_LAB_TOKEN"
   say "platform: 'lab.sh env' downloads its .env, addressed to $host"
   say "check:    'lab.sh e2e' runs the e2e suite inside the pod"
   [ "${REGENERATE_KEYS:-}" = true ] && say "new keys: every copy a platform held stops working -- download its .env again"

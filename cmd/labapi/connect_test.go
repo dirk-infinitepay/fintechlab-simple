@@ -92,7 +92,7 @@ func TestADeployedLabHandsOutItsOwnAddressNotTheTunnels(t *testing.T) {
 // and the lab API's own address too. Any other host has no such names.
 func TestADeployedLabsFrontNamesAreHandedOutForItsOwnHostOnly(t *testing.T) {
 	t.Setenv("CONSOLE_CONNECT_HOST", "lab.example.test")
-	t.Setenv("CONSOLE_CONNECT_NAMES", "api,b4b,banking-circle, ../evil")
+	t.Setenv("CONSOLE_CONNECT_NAMES", "b4b,banking-circle,lab-api, ../evil")
 	a := testApp(t, nil)
 	a.cat.Services = append(a.cat.Services,
 		console.Service{ID: "b4b", Name: "B4B", Kind: console.KindVendor, Ports: []string{"8086/http"}},
@@ -110,10 +110,10 @@ func TestADeployedLabsFrontNamesAreHandedOutForItsOwnHostOnly(t *testing.T) {
 			t.Errorf("the file has no %q:\n%s", strings.TrimSpace(want), body)
 		}
 	}
-	if got := kitNames("lab.example.test"); strings.Join(got, ",") != "api,b4b,banking-circle" {
+	if got := kitNames("lab.example.test"); strings.Join(got, ",") != "b4b,banking-circle,lab-api" {
 		t.Errorf("kitNames = %q: a name that is not a service id was kept, or one was lost", got)
 	}
-	if got := labURL("lab.example.test", kitNames("lab.example.test")); got != "https://api.lab.example.test" {
+	if got := labURL("lab.example.test", kitNames("lab.example.test")); got != "https://lab-api.lab.example.test" {
 		t.Errorf("the lab API's address in an environment's kit is %q", got)
 	}
 

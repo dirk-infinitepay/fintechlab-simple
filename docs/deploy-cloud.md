@@ -220,7 +220,8 @@ renderer writes (`deploy/pod/render.go`). It
 - serves every vendor at a name of its own on the same 443:
   `https://b4b.<LAB_DOMAIN>`, `https://banking-circle.<LAB_DOMAIN>` and so
   on — each container with a vendor port (8080–8089) by its name — and the
-  lab API at `https://api.<LAB_DOMAIN>`, which asks for its token as on
+  lab API at `https://lab-api.<LAB_DOMAIN>` (Let's Encrypt refuses
+  `api.` under a name this deep), which asks for its token as on
   `:8097`. The stack's wildcard record, `*.<LAB_DOMAIN>`, points them at the
   lab; each name gets its own certificate;
 - does Banking Circle's mutual TLS at the edge: it asks the caller for a

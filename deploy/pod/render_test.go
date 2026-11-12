@@ -328,10 +328,10 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 		cf := c.Env[0].Value
 		for _, want := range []string{
 			"lab.example.test {\n\treverse_proxy 127.0.0.1:8090\n}", "admin off", "disable_tlsalpn_challenge",
-			// every vendor port's container, by its own name, and the lab API as api
+			// every vendor port's container, by its own name, and the lab API by its
 			"b4b.lab.example.test {\n\treverse_proxy 127.0.0.1:8086\n}",
 			"verification.lab.example.test {\n\treverse_proxy 127.0.0.1:8089\n}",
-			"api.lab.example.test {\n\treverse_proxy 127.0.0.1:8097\n}",
+			"lab-api.lab.example.test {\n\treverse_proxy 127.0.0.1:8097\n}",
 			// Banking Circle: the caller's client certificate checked at the edge,
 			// the lab's own presented to the sim, which speaks TLS
 			"banking-circle.lab.example.test {\n\ttls {\n\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file /keys/certs/ca.pem",
@@ -346,7 +346,7 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 		if len(c.Command) != 3 || !strings.Contains(c.Command[2], `"$CADDYFILE"`) || !strings.Contains(c.Command[2], "exec caddy run") {
 			t.Errorf("the front does not run its Caddyfile: %q", c.Command)
 		}
-		for _, never := range []string{"console.lab.example.test", "clock.lab", "receiver.lab", "lab-api.lab", ":8095", ":8443"} {
+		for _, never := range []string{"console.lab.example.test", "clock.lab", "receiver.lab", "\napi.lab", ":8095", ":8443"} {
 			if strings.Contains(cf, never) {
 				t.Errorf("the Caddyfile serves %q, which is not a vendor's own surface:\n%s", never, cf)
 			}
@@ -409,7 +409,7 @@ func TestTheFrontTellsTheLabAPIItsNamesAndFollowsBCMTLS(t *testing.T) {
 			told = c
 		}
 	}
-	if !strings.Contains(told, `"aci,api,b4b,bank,banking-circle,notifier,payment-api,settlement,verification,verify,worldline"`) {
+	if !strings.Contains(told, `"aci,b4b,bank,banking-circle,lab-api,notifier,payment-api,settlement,verification,verify,worldline"`) {
 		t.Errorf("the lab API is told %q, want every name the front serves", told)
 	}
 
