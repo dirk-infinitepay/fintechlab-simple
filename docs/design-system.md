@@ -758,7 +758,9 @@ agent reads before calling anything.
 
 The home view of an app that drives a system: participants as boxes across
 the top, lifelines down, one arrow per hop, lighting as its own traffic
-arrives.
+arrives. The system under test is the first box, on the left: nearly every
+hop starts or ends at it, so the eye reads each arrow out from it, and the
+rest follow in the order the money meets them.
 
 **Hand-drawn SVG, not a diagram library.** Two reasons, and the second is
 the deciding one. A CDN breaks the first non-negotiable in this document,

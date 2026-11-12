@@ -1703,7 +1703,7 @@ function flowDelta(id, count) {
    diagram ends up shouting over the prose around it. */
 const FLOW_W = 1000;         // the canvas for five participants; more widen it
 const FLOW_GAP = 202;        // lifeline to lifeline, so neighbouring boxes never touch
-const FLOW_PAD = 96;         // half a box, so the outer lifelines sit inside
+const FLOW_PAD = 100;        // half the widest box (the system under test's, first), so the outer boxes sit inside
 const FLOW_BOX_W = 178;
 const FLOW_SUT_W = 196;      // the system under test's box: wider, still clear of its neighbours
 const FLOW_SUT = 'platform'; // the participant being tested; the rest are the world it talks to

@@ -271,9 +271,9 @@ Dashboard polls it every second and diffs the counts between polls.
 `errors`.
 
 ```json
-{"participants": [{"id": "worldline", "label": "Worldline", "role": "acquirer",
-                   "kind": "vendor", "status": "up",
-                   "stats": [{"label": "files collected", "value": "0"}, …]}, …],
+{"participants": [{"id": "platform", "label": "Platform", "role": "system under test",
+                   "kind": "platform", "status": "up",
+                   "stats": [{"label": "runs", "value": "0"}, …]}, …],
  "steps": [{"id": "payouts", "from": "platform", "to": "b4b", "label": "create payouts",
             "note": "one per merchant settlement", "multi": true, "count": 256, "capped": true,
             "failed": 0, "refused": 0, "last_at": "…", "last_summary": "…",
@@ -286,8 +286,8 @@ Dashboard polls it every second and diffs the counts between polls.
              "steps": ["notification batches"], "count": 209}]}
 ```
 
-- Participants: `worldline`, `platform`, `b4b`, `banking-circle`, `bank`,
-  `receiver`. The platform's id is always `platform`, labelled with the
+- Participants, in this order, left to right: `platform`, `worldline`,
+  `b4b`, `banking-circle`, `bank`, `receiver`. The platform's id is always `platform`, labelled with the
   settling plugin's name. `receiver` and its arrow are left out while its
   card is hidden (the default), and counted under `hidden`.
 - Step ids, in order: `pull`, `collect`, `ingest`, `fund`, `payouts`,

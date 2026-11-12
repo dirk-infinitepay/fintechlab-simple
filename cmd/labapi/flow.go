@@ -436,21 +436,23 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 		}
 	}
 
+	// The system under test first, on the left (design-system.md, Sequence
+	// diagram): nearly every hop starts or ends at it.
 	return []flowParticipant{
-		{
-			ID: "worldline", Label: label("worldline", "Worldline"), Role: "acquirer",
-			Kind: "vendor", Status: state("worldline"), Error: errs["worldline"],
-			Stats: []flowStat{
-				{Label: "files collected", Value: itoa(len(wl.find("sftp", "sftp.download")))},
-				{Label: "sessions", Value: itoa(len(wl.find("sftp", "sftp.session")))},
-			},
-		},
 		{
 			ID: "platform", Label: label(platID, "Platform"), Role: "system under test",
 			Kind: "platform", Status: state(platID), Error: errs[platID],
 			Stats: []flowStat{
 				{Label: "runs", Value: itoa64(at(platID).total(runsLog))},
 				{Label: "callbacks taken", Value: itoa(len(b4b.find("callbacks", "callback")))},
+			},
+		},
+		{
+			ID: "worldline", Label: label("worldline", "Worldline"), Role: "acquirer",
+			Kind: "vendor", Status: state("worldline"), Error: errs["worldline"],
+			Stats: []flowStat{
+				{Label: "files collected", Value: itoa(len(wl.find("sftp", "sftp.download")))},
+				{Label: "sessions", Value: itoa(len(wl.find("sftp", "sftp.session")))},
 			},
 		},
 		{
