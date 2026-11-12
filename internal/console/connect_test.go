@@ -90,6 +90,43 @@ func TestKitsCarryTheKeysTheLabIsRunningWith(t *testing.T) {
 	}
 }
 
+// A cloud lab's front serves some services at a name of their own: those
+// are https://<service>.<host> on 443, and only those; SFTP stays on the
+// host.
+func TestANamedServiceIsReachedAtItsOwnName(t *testing.T) {
+	dir, _ := keysFixture(t)
+	cat := DefaultCatalogue()
+	named := []string{"b4b", "banking-circle", "verify"}
+
+	b4b, _ := KitFor(cat, "lab.example.test", dir, "b4b", named...)
+	if got := envOf(b4b)["B4B_API_BASE_URL"].Value; got != "https://b4b.lab.example.test" {
+		t.Errorf("B4B_API_BASE_URL %q", got)
+	}
+	bc, _ := KitFor(cat, "lab.example.test", dir, "banking-circle", named...)
+	env := envOf(bc)
+	for _, k := range []string{"BC_API_BASE_URL", "BC_AUTH_BASE_URL"} {
+		if got := env[k].Value; got != "https://banking-circle.lab.example.test" {
+			t.Errorf("%s %q", k, got)
+		}
+	}
+	if !strings.Contains(bc.Note, "public certificate") {
+		t.Errorf("Banking Circle's note still asks to trust the lab's CA for a public name: %q", bc.Note)
+	}
+	vf, _ := KitFor(cat, "lab.example.test", dir, "verify", named...)
+	if got := envOf(vf)["VERIFICATION_SERVICE_API_URL"].Value; got != "https://verify.lab.example.test/api/v1/verification" {
+		t.Errorf("VERIFICATION_SERVICE_API_URL %q: a path must survive the name", got)
+	}
+	// Not named: host:port as ever.
+	vn, _ := KitFor(cat, "lab.example.test", dir, "verification", named...)
+	if got := envOf(vn)["CREDITSAFE_API_URL"].Value; got != "http://lab.example.test:8089/creditsafe" {
+		t.Errorf("CREDITSAFE_API_URL %q", got)
+	}
+	wl, _ := KitFor(cat, "lab.example.test", dir, "worldline", named...)
+	if got := envOf(wl)["WORLDLINE_SFTP_HOST"].Value; got != "lab.example.test" {
+		t.Errorf("WORLDLINE_SFTP_HOST %q: SFTP is not behind the front", got)
+	}
+}
+
 func TestAnIPv6HostIsBracketedInURLsButNotInTheSFTPHost(t *testing.T) {
 	dir, _ := keysFixture(t)
 	cat := DefaultCatalogue()

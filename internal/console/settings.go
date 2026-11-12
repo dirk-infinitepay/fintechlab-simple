@@ -112,6 +112,7 @@ func SettingGroups() []SettingGroup {
 		{"CONSOLE_PROBE_INTERVAL", "How often to health-check every service."},
 		{"CONSOLE_BROWSE_HOST", "The host the published ports are on, for the \"open in a browser\" links -- inside compose the lab API reaches peers by service name, which means nothing in your browser."},
 		{"CONSOLE_CONNECT_HOST", "The address a platform reaches this lab at, for the Connect your platform downloads. Set on a deployed lab, so the .env is right even through an SSH or SSM tunnel; unset, the downloads follow the host the request came in on."},
+		{"CONSOLE_CONNECT_NAMES", "The services a platform reaches by a name of their own, https://<service>.<CONSOLE_CONNECT_HOST> (\"api\" is the lab API): a cloud lab's HTTPS front serves them, and the downloads hand those out instead of host:port. Set by the renderer; unset, every download is host:port."},
 		{"CONSOLE_BC_DELIVERY_CONFIG", "The delivery table to fall back to when banking-circle cannot be asked what it is running."},
 		{"CONSOLE_URL_WORLDLINE", "Where to reach the acquirer. Every service has one of these; the lab API steers each on its port plus 1000, the control port, with no vendor login (CONSOLE_CONTROL_URL_<ID> overrides it). \"off\" means this deployment does not run that service, and it is left out."},
 		{"CONSOLE_URL_CLOCK", "Where to reach the lab clock. \"off\" on a lab deployed without one (the cloud profile), which is then on the real time."},

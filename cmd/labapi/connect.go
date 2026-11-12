@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -69,7 +70,8 @@ func (a *app) connect(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	ke, err := a.kitEnvFor(r, labURL(host))
+	named := kitNames(host)
+	ke, err := a.kitEnvFor(r, labURL(host, named))
 	if err != nil {
 		httputilx.Error(w, 500, err.Error())
 		return
@@ -77,14 +79,42 @@ func (a *app) connect(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"host": host,
 		"env":  scopeOf(r.Context()),
-		"kits": ke.Apply(console.Kits(a.cat, host, a.keysDir)),
+		"kits": ke.Apply(console.Kits(a.cat, host, a.keysDir, named...)),
 	})
 }
 
 // labURL is the lab API's address for a platform that reaches the lab at
-// host: LAB_API_PUBLIC_PORT (default 8097) on that host.
-func labURL(host string) string {
+// host: LAB_API_PUBLIC_PORT (default 8097) on that host, or
+// https://api.<host> when the lab's front serves it by name.
+func labURL(host string, named []string) string {
+	if slices.Contains(named, kitLabAPIName) {
+		return "https://" + kitLabAPIName + "." + host
+	}
 	return "http://" + net.JoinHostPort(host, env("LAB_API_PUBLIC_PORT", "8097"))
+}
+
+// kitLabAPIName is the lab API's own name among CONSOLE_CONNECT_NAMES.
+const kitLabAPIName = "api"
+
+// kitNamePattern is one name the front serves: a service id, or "api".
+var kitNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+
+// kitNames are the services a platform reaching the lab at host reaches by
+// a name of their own, https://<service>.<host>: CONSOLE_CONNECT_NAMES,
+// which deploy/pod/render.go sets on a cloud lab whose HTTPS front serves
+// them. Only for CONSOLE_CONNECT_HOST, the name they live under; any other
+// host (?host=, a tunnel's 127.0.0.1) keeps host:port.
+func kitNames(host string) []string {
+	if h := strings.TrimSpace(os.Getenv("CONSOLE_CONNECT_HOST")); h == "" || !strings.EqualFold(h, host) {
+		return nil
+	}
+	var out []string
+	for _, n := range strings.Split(os.Getenv("CONSOLE_CONNECT_NAMES"), ",") {
+		if n = strings.TrimSpace(n); kitNamePattern.MatchString(n) {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func (a *app) connectEnv(w http.ResponseWriter, r *http.Request) {
@@ -95,18 +125,19 @@ func (a *app) connectEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	// An environment's kit carries its own logins (environments.md §5);
 	// the default's is the lab's as it always was.
-	ke, err := a.kitEnvFor(r, labURL(host))
+	named := kitNames(host)
+	ke, err := a.kitEnvFor(r, labURL(host, named))
 	if err != nil {
 		httputilx.Error(w, 500, err.Error())
 		return
 	}
-	kits := ke.Apply(console.Kits(a.cat, host, a.keysDir))
+	kits := ke.Apply(console.Kits(a.cat, host, a.keysDir, named...))
 	name := "fintechlab.env"
 	if ke != nil {
 		name = "fintechlab-" + ke.Env + ".env"
 	}
 	if id := r.PathValue("service"); id != "" {
-		k, ok := console.KitFor(a.cat, host, a.keysDir, id)
+		k, ok := console.KitFor(a.cat, host, a.keysDir, id, named...)
 		if !ok {
 			httputilx.Error(w, 404, id+" has nothing a platform needs to connect")
 			return

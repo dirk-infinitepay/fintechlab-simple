@@ -93,8 +93,16 @@ var ErrNoSuchFile = errors.New("no such file in this kit")
 // host, reading key material from keysDir. A key that has not been
 // generated yet is reported on its variable, not fatal: the rest of the
 // file is still right.
-func Kits(cat *Catalogue, host, keysDir string) []Kit {
-	b := kitBuilder{cat: cat, host: host, dir: keysDir}
+//
+// named are the services the platform reaches by a name of their own,
+// https://<service>.<host> on 443 -- a cloud lab's HTTPS front, with a
+// public certificate (deploy/pod/render.go) -- rather than at host:port.
+// The rest keep host:port.
+func Kits(cat *Catalogue, host, keysDir string, named ...string) []Kit {
+	b := kitBuilder{cat: cat, host: host, dir: keysDir, named: map[string]bool{}}
+	for _, n := range named {
+		b.named[n] = true
+	}
 	var out []Kit
 	for _, k := range []Kit{b.worldline(), b.b4b(), b.bankingCircle(), b.aci(), b.verification(), b.verify()} {
 		if _, ok := cat.Get(k.Service); ok {
@@ -105,8 +113,8 @@ func Kits(cat *Catalogue, host, keysDir string) []Kit {
 }
 
 // KitFor is one service's kit.
-func KitFor(cat *Catalogue, host, keysDir, service string) (Kit, bool) {
-	for _, k := range Kits(cat, host, keysDir) {
+func KitFor(cat *Catalogue, host, keysDir, service string, named ...string) (Kit, bool) {
+	for _, k := range Kits(cat, host, keysDir, named...) {
 		if k.Service == service {
 			return k, true
 		}
@@ -126,9 +134,10 @@ func KitFilePath(k Kit, keysDir, name string) (string, error) {
 }
 
 type kitBuilder struct {
-	cat  *Catalogue
-	host string
-	dir  string
+	cat   *Catalogue
+	host  string
+	dir   string
+	named map[string]bool
 }
 
 // published is one of a service's ports as the catalogue lists it
@@ -148,6 +157,9 @@ func (b kitBuilder) published(service, kind string) (scheme, port string) {
 }
 
 func (b kitBuilder) url(service, kind, path string) string {
+	if b.named[service] {
+		return "https://" + service + "." + b.host + path
+	}
 	scheme, port := b.published(service, kind)
 	return scheme + "://" + net.JoinHostPort(b.host, port) + path
 }
@@ -235,9 +247,13 @@ func (b kitBuilder) b4b() Kit {
 
 func (b kitBuilder) bankingCircle() Kit {
 	api := b.url("banking-circle", "https", "")
+	note := "HTTPS with a mutual-TLS client certificate, then Basic → Bearer. The server certificate is signed by the lab's own CA, which Node has to be told to trust: NODE_EXTRA_CA_CERTS is a path, so download the CA and point it there."
+	if b.named["banking-circle"] {
+		note = "HTTPS with a mutual-TLS client certificate, then Basic → Bearer. Its address has a public certificate, so the lab's CA needs no trusting there; it signs the client certificate below, which the lab checks."
+	}
 	return Kit{
 		Service: "banking-circle", Title: "Banking Circle",
-		Note: "HTTPS with a mutual-TLS client certificate, then Basic → Bearer. The server certificate is signed by the lab's own CA, which Node has to be told to trust: NODE_EXTRA_CA_CERTS is a path, so download the CA and point it there.",
+		Note: note,
 		Vars: []KitVar{
 			{Key: "BC_AUTH_BASE_URL", Value: api},
 			{Key: "BC_API_BASE_URL", Value: api},

@@ -51,7 +51,7 @@ func main() {
 	flag.StringVar(&o.ImagePrefix, "image-prefix", "", "registry/path the images are under (default localhost/fintechlab)")
 	flag.StringVar(&o.Version, "version", "", "image tag (default v1)")
 	flag.StringVar(&o.SeederImage, "seeder-image", "", "the platform's seeder image, added to the pod as its seeder (empty: none)")
-	flag.StringVar(&o.HTTPSHost, "https-host", "", "serve the console at https://<name> through a front container with a Let's Encrypt certificate (empty: none)")
+	flag.StringVar(&o.HTTPSHost, "https-host", "", "serve the console at https://<name>, each vendor at https://<service>.<name> and the lab API at https://api.<name>, through a front container with Let's Encrypt certificates (empty: none)")
 	flag.StringVar(&o.FrontImage, "front-image", "", "the front's image (Caddy), with -https-host")
 	flag.Parse()
 

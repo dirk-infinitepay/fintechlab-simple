@@ -37,7 +37,7 @@ anything it was not asked to.
 | Lab clock | the `clock` container; every vendor follows it | none: every vendor is on the real time |
 | `/v1/clock` | the clock; the console's card, controls, *Move it* | `{"absent": true}` and the real time; a move or a hold is a `501` (`CONSOLE_URL_CLOCK=off` on the lab API) |
 | Lab API token | none unless you set `LAB_API_TOKEN` | always: made on the host at the first deploy, kept with the lab's state |
-| `.env` downloads | addressed to the host the request came in on | addressed to the lab's public host (`CONSOLE_CONNECT_HOST`), even through a tunnel |
+| `.env` downloads | addressed to the host the request came in on | addressed to the lab's public host (`CONSOLE_CONNECT_HOST`), even through a tunnel; with a name, each vendor at `https://<service>.<LAB_DOMAIN>` |
 | Certificates | `localhost`, `127.0.0.1`, the lab names | the same, plus the public host (`CERT_EXTRA_SANS`) |
 | Webhook allowlists | lab names, `host.containers.internal` | the same, plus the platform's hosts (`LAB_WEBHOOK_ALLOW`) |
 
@@ -72,7 +72,7 @@ drives it with nothing but the AWS CLI (no CDK bootstrap, no state backend).
 | --- | --- |
 | VPC, one public subnet, internet gateway | the lab's own network: nothing in it depends on, peers with, or blocks deleting anyone else's |
 | Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist); optionally a fourth, 8080-8090 only, open to a second list, the console list. Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
-| HTTPS console (with `LAB_DOMAIN`) | a second security group: 443 for both lists, 80 for anyone. The pod's front — Caddy, unchanged, its config in the rendered manifest — gets a Let's Encrypt certificate for the name over 80, renews it, redirects the rest of 80 to https and forwards 443 to the console. Its certificates live on the `fintechlab-front-data` volume, so a deploy does not ask for them again. See [The console on https](#the-console-on-https) |
+| HTTPS console and vendor names (with `LAB_DOMAIN`) | a second security group: 443 for both lists, 80 for anyone, and a wildcard record for `*.<LAB_DOMAIN>`. The pod's front — Caddy, unchanged, its config in the rendered manifest — gets a Let's Encrypt certificate for the name over 80, renews it, redirects the rest of 80 to https and forwards 443 to the console. Its certificates live on the `fintechlab-front-data` volume, so a deploy does not ask for them again. See [The console on https](#the-console-on-https) |
 | EC2 host, Ubuntu 24.04, `t3.small` | SSM only: no key pair, no port 22. IMDSv2 with hop limit 1, so no container can act as the host's role, which can only be managed by SSM anyway |
 | Data volume (20 GiB) | podman's storage. A replaced host — a new image, a new type — keeps every key the platform holds |
 | Elastic IP | the lab's one stable address; optionally a Route 53 record for `LAB_DOMAIN` |
@@ -217,14 +217,31 @@ renderer writes (`deploy/pod/render.go`). It
 - forwards everything on 443 to the console on `:8090`, so `/v1` is the lab
   API there too: the admin token added to a call that brings none, a
   caller's own token kept;
+- serves every vendor at a name of its own on the same 443:
+  `https://b4b.<LAB_DOMAIN>`, `https://banking-circle.<LAB_DOMAIN>` and so
+  on — each container with a vendor port (8080–8089) by its name — and the
+  lab API at `https://api.<LAB_DOMAIN>`, which asks for its token as on
+  `:8097`. The stack's wildcard record, `*.<LAB_DOMAIN>`, points them at the
+  lab; each name gets its own certificate;
+- does Banking Circle's mutual TLS at the edge: it asks the caller for a
+  client certificate and checks it against the lab's CA — as the sim's
+  `BC_MTLS` says: `require`, `optional` or `off` — then calls the sim over
+  TLS with the lab's own client certificate. To the platform it is what
+  `:8085` is, a client certificate and then Basic → Bearer, with a public
+  server certificate in place of the lab CA's;
 - keeps its account and certificates on the `fintechlab-front-data`
   volume, so a deploy does not ask for them again (Let's Encrypt allows five
   of the same certificate a week).
 
+The `.env` downloads hand out those names (`CONSOLE_CONNECT_NAMES`, set by
+the renderer) for the lab's own host; any other host, a tunnel's
+`127.0.0.1` included, gets `host:port`. Every port stays where it was, so a
+platform moves to the names when it likes. Worldline's SFTP is not HTTP and
+stays on `<LAB_DOMAIN>:2222`.
+
 The name must point at the lab before the deploy: Let's Encrypt checks it
 from outside. `lab.sh deploy` checks `https://<LAB_DOMAIN>` at the end;
-`lab.sh logs front` shows how a certificate is going. The vendors' ports
-stay direct: Banking Circle's mTLS ends at the lab, and SFTP is not HTTP.
+`lab.sh logs front` shows how a certificate is going.
 
 A link that anyone in the company can open, behind the company's sign-in,
 is still a load balancer with an OIDC action in front of `:8090`; this one

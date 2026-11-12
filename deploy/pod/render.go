@@ -15,7 +15,10 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"path"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -61,14 +64,19 @@ type Options struct {
 	// own image, on the lab API's data volume at the same path, which the
 	// lab API reaches at LAB_SEEDER_URL. Empty: a lab without one.
 	SeederImage string
-	// HTTPSHost, when set, serves the console at https://<HTTPSHost>: a
-	// front container (FrontImage, Caddy) on :443 that forwards to the
-	// console, gets a Let's Encrypt certificate for the name and renews it,
-	// and on :80 answers the ACME HTTP challenge and redirects the rest to
-	// https. Let's Encrypt has to reach :80 from the internet; :443 is for
-	// whoever may reach the console. The certificates are kept on the
-	// front-data volume, so a new deploy does not ask for them again.
-	// Empty: no front, the console on :8090 only.
+	// HTTPSHost, when set, serves the console at https://<HTTPSHost>, every
+	// vendor port's service at https://<service>.<HTTPSHost> and the lab API
+	// at https://api.<HTTPSHost>: a front container (FrontImage, Caddy) on
+	// :443 that gets a Let's Encrypt certificate for each name and renews
+	// it, and on :80 answers the ACME HTTP challenge and redirects the rest
+	// to https. Let's Encrypt has to reach :80 from the internet; :443 is
+	// for whoever may reach the console. A TLS sim (Banking Circle) is
+	// called over TLS with the lab's client certificate, and the front asks
+	// the caller for one as the sim's BC_MTLS says. The certificates are
+	// kept on the front-data volume, so a new deploy does not ask for them
+	// again. When HTTPSHost is PublicHost, the lab API is told the names
+	// (CONSOLE_CONNECT_NAMES) and hands them out in the .env downloads.
+	// Empty: no front; every surface on its own port only.
 	HTTPSHost string
 	// FrontImage is the front's image, required with HTTPSHost and
 	// ignored without it.
@@ -149,7 +157,7 @@ func Render(src []byte, o Options) ([]byte, error) {
 		}
 	}
 	if o.HTTPSHost != "" {
-		if err := m.front(o.HTTPSHost, o.FrontImage); err != nil {
+		if err := m.front(o.HTTPSHost, o.FrontImage, o.HTTPSHost == o.PublicHost); err != nil {
 			return nil, err
 		}
 	}
@@ -230,22 +238,141 @@ func (m *manifest) seeder(image string) error {
 	return nil
 }
 
-// The front: what it is called in the pod, where the console it forwards to
-// listens, and the volume its certificates live on.
+// The front: what it is called in the pod, the volume its certificates
+// live on, and what it serves.
 const (
 	frontContainer = "front"
 	frontVolume    = "front-data"
 	frontClaim     = "fintechlab-front-data"
 	consolePort    = "8090"
+	// labAPIName is the lab API's name under the host: api.<host>.
+	labAPIName = "api"
+	// The vendors' own ports: each container publishing one is served at
+	// <container>.<host>, on 443. The console, 8090, is the host itself.
+	vendorPortLow, vendorPortHigh = 8080, 8089
+	// namesVar tells the lab API which names the front serves, so the
+	// .env downloads hand those out (cmd/labapi/connect.go).
+	namesVar = "CONSOLE_CONNECT_NAMES"
 )
 
 // dnsName is a host name a public CA issues for: two labels or more.
 var dnsName = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
+// frontSite is one name the front serves under the host, and where to.
+type frontSite struct {
+	name, port string
+	// tls: the upstream speaks TLS, with a certificate from the lab's CA
+	// (caFile) that names the container. clientAuth is what the front
+	// asks of a caller before forwarding -- "require", "optional" or
+	// "off" -- the upstream's own setting, enforced at the edge now that
+	// the caller's certificate stops there. The front presents the lab's
+	// client certificate (beside caFile, ca/generate.sh) to the upstream.
+	tls        bool
+	caFile     string
+	clientAuth string
+	keysMount  *yaml.Node // the upstream's mount that holds caFile
+}
+
+// frontSites is every name the front serves under the host: each vendor
+// port's container, and the lab API as api.
+func (m *manifest) frontSites() ([]frontSite, error) {
+	var sites []frontSite
+	for _, c := range items(get(m.spec, "containers")) {
+		name := scalar(get(c, "name"))
+		for _, p := range items(get(c, "ports")) {
+			n, err := strconv.Atoi(scalar(get(p, "containerPort")))
+			if err != nil || n < vendorPortLow || n > vendorPortHigh {
+				continue
+			}
+			site := frontSite{name: name, port: strconv.Itoa(n)}
+			if _, ok := env(c, "TLS_CERT"); ok {
+				ca, _ := env(c, "CA_FILE")
+				if ca == "" {
+					return nil, fmt.Errorf("manifest: %s serves TLS on %d but names no CA_FILE for the front to trust", name, n)
+				}
+				site.tls, site.caFile, site.clientAuth = true, ca, "off"
+				if mode, ok := env(c, "BC_MTLS"); ok {
+					if site.clientAuth, err = clientAuthOf(mode); err != nil {
+						return nil, fmt.Errorf("%s: %w", name, err)
+					}
+				}
+				for _, vm := range items(get(c, "volumeMounts")) {
+					if mp := scalar(get(vm, "mountPath")); mp != "" && strings.HasPrefix(ca, strings.TrimSuffix(mp, "/")+"/") {
+						site.keysMount = vm
+					}
+				}
+				if site.keysMount == nil {
+					return nil, fmt.Errorf("manifest: %s's CA_FILE %s is on no volume it mounts", name, ca)
+				}
+			}
+			sites = append(sites, site)
+		}
+	}
+	api := m.find("lab-api")
+	if api == nil {
+		return nil, fmt.Errorf("manifest: no lab-api container for the front to serve as %s", labAPIName)
+	}
+	port := scalar(get(firstOf(get(api, "ports")), "containerPort"))
+	if port == "" {
+		return nil, fmt.Errorf("manifest: lab-api publishes no port for the front to serve")
+	}
+	sites = append(sites, frontSite{name: labAPIName, port: port})
+	sort.Slice(sites, func(i, j int) bool { return sites[i].name < sites[j].name })
+	return sites, nil
+}
+
+// clientAuthOf is BC_MTLS's value as the front's client_auth mode, read as
+// cmd/bankingcircle reads it.
+func clientAuthOf(mode string) (string, error) {
+	switch mode {
+	case "off", "false", "none":
+		return "off", nil
+	case "optional", "verify-if-given":
+		return "optional", nil
+	case "require", "required", "true", "":
+		return "require", nil
+	}
+	return "", fmt.Errorf("BC_MTLS=%q, want off, optional or require", mode)
+}
+
+func firstOf(seq *yaml.Node) *yaml.Node {
+	if list := items(seq); len(list) > 0 {
+		return list[0]
+	}
+	return nil
+}
+
+// caddyfile is the front's whole configuration: the console at host, and
+// every site at <name>.<host>.
+func caddyfile(host string, sites []frontSite) string {
+	var b strings.Builder
+	// admin off: nothing else in the pod may reconfigure it. Only the HTTP
+	// challenge: :443 is not open to Let's Encrypt, only to the lab's lists.
+	b.WriteString("{\n\tadmin off\n\tcert_issuer acme {\n\t\tdisable_tlsalpn_challenge\n\t}\n}\n")
+	fmt.Fprintf(&b, "\n%s {\n\treverse_proxy 127.0.0.1:%s\n}\n", host, consolePort)
+	for _, s := range sites {
+		if !s.tls {
+			fmt.Fprintf(&b, "\n%s.%s {\n\treverse_proxy 127.0.0.1:%s\n}\n", s.name, host, s.port)
+			continue
+		}
+		fmt.Fprintf(&b, "\n%s.%s {\n", s.name, host)
+		if mode := map[string]string{"require": "require_and_verify", "optional": "verify_if_given"}[s.clientAuth]; mode != "" {
+			fmt.Fprintf(&b, "\ttls {\n\t\tclient_auth {\n\t\t\tmode %s\n\t\t\ttrust_pool file %s\n\t\t}\n\t}\n", mode, s.caFile)
+		}
+		dir := path.Dir(s.caFile)
+		fmt.Fprintf(&b, "\treverse_proxy https://127.0.0.1:%s {\n\t\ttransport http {\n\t\t\ttls_server_name %s\n\t\t\ttls_trust_pool file %s\n\t\t\ttls_client_auth %s %s\n\t\t}\n\t}\n}\n",
+			s.port, s.name, s.caFile, path.Join(dir, "client.pem"), path.Join(dir, "client-key.pem"))
+	}
+	return b.String()
+}
+
 // front adds the HTTPS front: a Caddy container on :80 and :443 that serves
-// host with a Let's Encrypt certificate and forwards to the console. Its
-// Caddyfile travels in its environment: the image is Caddy's own, unchanged.
-func (m *manifest) front(host, image string) error {
+// the console at host and every vendor at <service>.<host>, each with a
+// Let's Encrypt certificate. Its Caddyfile travels in its environment: the
+// image is Caddy's own, unchanged. With names, the lab API is told which
+// names the front serves, so the .env downloads hand them out -- only when
+// host is the lab's public host, the one the downloads are addressed to.
+func (m *manifest) front(host, image string, names bool) error {
 	switch {
 	case image == "":
 		return fmt.Errorf("HTTPS host %q: give the front's image too", host)
@@ -256,10 +383,10 @@ func (m *manifest) front(host, image string) error {
 	case m.find("console") == nil:
 		return fmt.Errorf("manifest: no console container for the front to serve")
 	}
-	// admin off: nothing else in the pod may reconfigure it. Only the HTTP
-	// challenge: :443 is not open to Let's Encrypt, only to the lab's lists.
-	caddyfile := "{\n\tadmin off\n\tcert_issuer acme {\n\t\tdisable_tlsalpn_challenge\n\t}\n}\n\n" +
-		host + " {\n\treverse_proxy 127.0.0.1:" + consolePort + "\n}\n"
+	sites, err := m.frontSites()
+	if err != nil {
+		return err
+	}
 	type envVar struct {
 		Name  string `yaml:"name"`
 		Value string `yaml:"value"`
@@ -271,6 +398,19 @@ func (m *manifest) front(host, image string) error {
 	type mount struct {
 		Name      string `yaml:"name"`
 		MountPath string `yaml:"mountPath"`
+		ReadOnly  bool   `yaml:"readOnly,omitempty"`
+	}
+	mounts := []mount{{frontVolume, "/data", false}}
+	seen := map[string]bool{}
+	for _, s := range sites {
+		if s.keysMount == nil {
+			continue
+		}
+		vm := mount{scalar(get(s.keysMount, "name")), scalar(get(s.keysMount, "mountPath")), true}
+		if !seen[vm.Name] {
+			seen[vm.Name] = true
+			mounts = append(mounts, vm)
+		}
 	}
 	c := struct {
 		Name         string   `yaml:"name"`
@@ -285,8 +425,8 @@ func (m *manifest) front(host, image string) error {
 		Command: []string{"sh", "-c",
 			`printf '%s' "$CADDYFILE" > /etc/caddy/Caddyfile && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile`},
 		Ports:        []port{{80, 80}, {443, 443}},
-		Env:          []envVar{{"CADDYFILE", caddyfile}},
-		VolumeMounts: []mount{{frontVolume, "/data"}},
+		Env:          []envVar{{"CADDYFILE", caddyfile(host, sites)}},
+		VolumeMounts: mounts,
 	}
 	node, err := toNode(c)
 	if err != nil {
@@ -308,6 +448,20 @@ func (m *manifest) front(host, image string) error {
 		return fmt.Errorf("manifest: no volumes")
 	}
 	volumes.Content = append(volumes.Content, vol)
+
+	if names {
+		list := make([]string, 0, len(sites))
+		for _, s := range sites {
+			list = append(list, s.name)
+		}
+		readers := m.readers(browseHostVar)
+		if len(readers) == 0 {
+			return fmt.Errorf("manifest: no container reads %s, so nothing would hand out the front's names", browseHostVar)
+		}
+		for _, c := range readers {
+			setEnv(c, namesVar, strings.Join(list, ","))
+		}
+	}
 	return nil
 }
 

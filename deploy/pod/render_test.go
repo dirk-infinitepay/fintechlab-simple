@@ -268,7 +268,7 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := Render(src, Options{Profile: ProfileCloud, HTTPSHost: "lab.example.test", FrontImage: "docker.io/library/caddy:2.10.2"})
+	out, err := Render(src, Options{Profile: ProfileCloud, PublicHost: "lab.example.test", HTTPSHost: "lab.example.test", FrontImage: "docker.io/library/caddy:2.10.2"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,6 +289,7 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 				VolumeMounts []struct {
 					Name      string `yaml:"name"`
 					MountPath string `yaml:"mountPath"`
+					ReadOnly  bool   `yaml:"readOnly"`
 				} `yaml:"volumeMounts"`
 			} `yaml:"containers"`
 			Volumes []struct {
@@ -325,7 +326,19 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 			t.Fatalf("the front's environment is %+v, want its Caddyfile alone", c.Env)
 		}
 		cf := c.Env[0].Value
-		for _, want := range []string{"lab.example.test {", "reverse_proxy 127.0.0.1:8090", "admin off", "disable_tlsalpn_challenge"} {
+		for _, want := range []string{
+			"lab.example.test {\n\treverse_proxy 127.0.0.1:8090\n}", "admin off", "disable_tlsalpn_challenge",
+			// every vendor port's container, by its own name, and the lab API as api
+			"b4b.lab.example.test {\n\treverse_proxy 127.0.0.1:8086\n}",
+			"verification.lab.example.test {\n\treverse_proxy 127.0.0.1:8089\n}",
+			"api.lab.example.test {\n\treverse_proxy 127.0.0.1:8097\n}",
+			// Banking Circle: the caller's client certificate checked at the edge,
+			// the lab's own presented to the sim, which speaks TLS
+			"banking-circle.lab.example.test {\n\ttls {\n\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file /keys/certs/ca.pem",
+			"reverse_proxy https://127.0.0.1:8085",
+			"tls_server_name banking-circle",
+			"tls_client_auth /keys/certs/client.pem /keys/certs/client-key.pem",
+		} {
 			if !strings.Contains(cf, want) {
 				t.Errorf("the Caddyfile has no %q:\n%s", want, cf)
 			}
@@ -333,8 +346,14 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 		if len(c.Command) != 3 || !strings.Contains(c.Command[2], `"$CADDYFILE"`) || !strings.Contains(c.Command[2], "exec caddy run") {
 			t.Errorf("the front does not run its Caddyfile: %q", c.Command)
 		}
-		if len(c.VolumeMounts) != 1 || c.VolumeMounts[0].Name != "front-data" || c.VolumeMounts[0].MountPath != "/data" {
-			t.Errorf("the front keeps its certificates in %+v, want front-data at /data", c.VolumeMounts)
+		for _, never := range []string{"console.lab.example.test", "clock.lab", "receiver.lab", "lab-api.lab", ":8095", ":8443"} {
+			if strings.Contains(cf, never) {
+				t.Errorf("the Caddyfile serves %q, which is not a vendor's own surface:\n%s", never, cf)
+			}
+		}
+		if len(c.VolumeMounts) != 2 || c.VolumeMounts[0].Name != "front-data" || c.VolumeMounts[0].MountPath != "/data" ||
+			c.VolumeMounts[1].Name != "keys" || c.VolumeMounts[1].MountPath != "/keys" || !c.VolumeMounts[1].ReadOnly {
+			t.Errorf("the front mounts %+v, want front-data at /data and the keys read-only at /keys", c.VolumeMounts)
 		}
 	}
 	if !found {
@@ -363,5 +382,58 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 		if _, err := Render(src, bad); err == nil {
 			t.Errorf("Render(%+v) = nil error, want a refusal", bad)
 		}
+	}
+}
+
+func TestTheFrontTellsTheLabAPIItsNamesAndFollowsBCMTLS(t *testing.T) {
+	src, err := os.ReadFile("fintechlab.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := func(out []byte) string {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "CONSOLE_CONNECT_NAMES") {
+				return line
+			}
+		}
+		return ""
+	}
+	o := Options{Profile: ProfileCloud, PublicHost: "lab.example.test", HTTPSHost: "lab.example.test", FrontImage: "caddy:2"}
+	out, err := Render(src, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var told string
+	for _, c := range strings.Split(string(out), "- name: ") {
+		if strings.HasPrefix(c, "CONSOLE_CONNECT_NAMES") {
+			told = c
+		}
+	}
+	if !strings.Contains(told, `"aci,api,b4b,bank,banking-circle,notifier,payment-api,settlement,verification,verify,worldline"`) {
+		t.Errorf("the lab API is told %q, want every name the front serves", told)
+	}
+
+	// Under another public host the names would point nowhere: not told.
+	o.PublicHost = "203.0.113.7"
+	out, _ = Render(src, o)
+	if names(out) != "" {
+		t.Errorf("a front under %s told the lab API its names for %s", o.HTTPSHost, o.PublicHost)
+	}
+
+	// The front enforces what Banking Circle would: BC_MTLS off asks no
+	// certificate of the caller, optional checks one when given.
+	for mode, want := range map[string]string{"off": "", "optional": "mode verify_if_given", "require": "mode require_and_verify"} {
+		o := Options{Profile: ProfileCloud, HTTPSHost: "lab.example.test", FrontImage: "caddy:2", Set: []string{"banking-circle.BC_MTLS=" + mode}}
+		out, err := Render(src, o)
+		if err != nil {
+			t.Fatal(mode, err)
+		}
+		hasAuth := strings.Contains(string(out), "client_auth {")
+		if want == "" && hasAuth || want != "" && !strings.Contains(string(out), want) {
+			t.Errorf("BC_MTLS=%s: the front's client_auth is wrong:\n%s", mode, out)
+		}
+	}
+	if _, err := Render(src, Options{HTTPSHost: "lab.example.test", FrontImage: "caddy:2", Set: []string{"banking-circle.BC_MTLS=sometimes"}}); err == nil {
+		t.Error("a BC_MTLS the sim would refuse was rendered")
 	}
 }

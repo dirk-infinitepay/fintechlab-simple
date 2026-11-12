@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/webduvet/fintechlab-simple/internal/console"
 )
 
 func withKeys(t *testing.T, a *app) {
@@ -82,6 +84,45 @@ func TestADeployedLabHandsOutItsOwnAddressNotTheTunnels(t *testing.T) {
 	w = get(t, a, "127.0.0.1:8090", "/api/connect/env/worldline?host=10.0.0.5")
 	if !strings.Contains(w.Body.String(), "\nWORLDLINE_SFTP_HOST=10.0.0.5\n") {
 		t.Errorf("?host= did not win over CONSOLE_CONNECT_HOST")
+	}
+}
+
+// A cloud lab's front serves its vendors by name (CONSOLE_CONNECT_NAMES,
+// set by the renderer): the file for the lab's own host hands those out,
+// and the lab API's own address too. Any other host has no such names.
+func TestADeployedLabsFrontNamesAreHandedOutForItsOwnHostOnly(t *testing.T) {
+	t.Setenv("CONSOLE_CONNECT_HOST", "lab.example.test")
+	t.Setenv("CONSOLE_CONNECT_NAMES", "api,b4b,banking-circle, ../evil")
+	a := testApp(t, nil)
+	a.cat.Services = append(a.cat.Services,
+		console.Service{ID: "b4b", Name: "B4B", Kind: console.KindVendor, Ports: []string{"8086/http"}},
+		console.Service{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, Ports: []string{"8085/https+mtls"}},
+	)
+	withKeys(t, a)
+
+	body := get(t, a, "127.0.0.1:8090", "/v1/connect/env").Body.String()
+	for _, want := range []string{
+		"\nB4B_API_BASE_URL=https://b4b.lab.example.test\n",
+		"\nBC_API_BASE_URL=https://banking-circle.lab.example.test\n",
+		"\nWORLDLINE_SFTP_HOST=lab.example.test\n",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the file has no %q:\n%s", strings.TrimSpace(want), body)
+		}
+	}
+	if got := kitNames("lab.example.test"); strings.Join(got, ",") != "api,b4b,banking-circle" {
+		t.Errorf("kitNames = %q: a name that is not a service id was kept, or one was lost", got)
+	}
+	if got := labURL("lab.example.test", kitNames("lab.example.test")); got != "https://api.lab.example.test" {
+		t.Errorf("the lab API's address in an environment's kit is %q", got)
+	}
+
+	body = get(t, a, "127.0.0.1:8090", "/v1/connect/env?host=10.0.0.5").Body.String()
+	if !strings.Contains(body, "\nB4B_API_BASE_URL=http://10.0.0.5:8086\n") {
+		t.Errorf("another host was given the front's names:\n%s", body)
+	}
+	if got := labURL("10.0.0.5", kitNames("10.0.0.5")); got != "http://10.0.0.5:8097" {
+		t.Errorf("the lab API's address for another host is %q", got)
 	}
 }
 

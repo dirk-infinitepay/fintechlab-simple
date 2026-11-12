@@ -399,8 +399,8 @@ show_list() {
   fi
 }
 
-# check_https <name>: whether the console answers on https://<name>, from
-# here. A first deploy waits for Let's Encrypt, which takes seconds; an
+# check_https <name>: whether https://<name>/health answers (the console, or
+# a vendor at its own name), from here. A first deploy waits for Let's Encrypt, which takes seconds; an
 # address on neither list cannot tell, and says so.
 check_https() {
   local i code
@@ -463,7 +463,10 @@ DATA_VOLUME_ID='$vol' REGENERATE_KEYS='${REGENERATE_KEYS:-false}' ROTATE_TOKEN='
   say ""
   if [ -n "$https" ]; then
     check_https "$https"
+    check_https "b4b.$https"
     say "console:  https://$https   (and http://$host:8090; from the allowlists -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
+    say "vendors:  https://<service>.$https -- b4b, banking-circle (mTLS), verification, ...; SFTP stays $host:2222"
+    say "lab API:  https://api.$https/v1 (and http://$host:8097/v1) with its token ('lab.sh token')"
   else
     say "console:  http://$host:8090   (from the allowlist -- 'lab.sh allow' adds you; otherwise 'lab.sh console')"
   fi
