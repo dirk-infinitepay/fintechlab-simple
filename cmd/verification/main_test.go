@@ -71,8 +71,8 @@ func TestEveryCheckPassesByDefault(t *testing.T) {
 	if sup["result"] != true {
 		t.Errorf("creditsafe result = %v, want true", sup["result"])
 	}
-	if sup["nameMatchResult"] != "MATCH" {
-		t.Errorf("creditsafe nameMatchResult = %v, want MATCH", sup["nameMatchResult"])
+	if sup["nameMatchResult"] != "Full" || sup["accountTypeResult"] != true {
+		t.Errorf("creditsafe nameMatchResult = %v, accountTypeResult = %v, want Full and true", sup["nameMatchResult"], sup["accountTypeResult"])
 	}
 
 	// iban.com: the base URL is the endpoint, keyed by header.
@@ -148,6 +148,15 @@ func TestOutcomesAreFlippable(t *testing.T) {
 		t.Errorf("an invalid account should not verify: %v", sup)
 	}
 
+	if err := a.outcomes(tenant.Default).set(checkCompany, "dissolved"); err != nil {
+		t.Fatal(err)
+	}
+	_, out = call(t, a, a.bearer(a.creditsafeCompany), http.MethodGet, "/creditsafe/companies/GB-0-1", "", bearerHdr(cs))
+	if at(out, "report.companySummary.companyStatus.status") != "NonActive" ||
+		at(out, "report.companySummary.companyStatus.providerStatus") != "Dissolved" {
+		t.Errorf("a dissolved company is NonActive in Creditsafe's common status: %v", at(out, "report.companySummary.companyStatus"))
+	}
+
 	if err := a.outcomes(tenant.Default).set(checkScreening, "hit"); err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +174,94 @@ func TestOutcomesAreFlippable(t *testing.T) {
 	if nested(out, "data", "assessment")["result"] != "FAIL" {
 		t.Errorf("identity should fail: %v", out)
 	}
+}
+
+// TestARegisteredCompanyIsInItsReport: the details a test registers are
+// where the platform's Creditsafe client reads them, and every report
+// carries a clean credit picture.
+func TestARegisteredCompanyIsInItsReport(t *testing.T) {
+	a := newApp()
+	svc, ctl := surfaces(t, a)
+	w := serve(ctl.Handler(), http.MethodPost, "/sim/creditsafe/companies", `{"country":"GB","regNo":"29210000",
+		"businessName":"Southwind Coffee Ltd","registrationDate":"2015-04-01T00:00:00Z","address":"1 Test Street London SW1A 1AA",
+		"directors":[{"name":"Ada Lovelace"}],"shareholders":[{"name":"Ada Lovelace","percentSharesHeld":100,"shareholderType":"Person"}],
+		"personsWithSignificantControl":[{"name":"Ada Lovelace","countryOfResidence":"United Kingdom"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("register: %d %s", w.Code, w.Body)
+	}
+	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
+	var hits struct {
+		Companies []struct{ ID string } `json:"companies"`
+	}
+	if err := json.Unmarshal(get(svc, "/creditsafe/companies?countries=GB&regNo=29210000", cs).Body.Bytes(), &hits); err != nil || len(hits.Companies) != 1 {
+		t.Fatalf("search found %v", hits)
+	}
+
+	out := decoded(t, get(svc, "/creditsafe/companies/"+hits.Companies[0].ID, cs))
+
+	for path, want := range map[string]any{
+		"report.companySummary.businessName":                                       "Southwind Coffee Ltd",
+		"report.companySummary.companyRegistrationNumber":                          "29210000",
+		"report.companySummary.creditRating.commonValue":                           "A",
+		"report.companyIdentification.basicInformation.companyRegistrationDate":    "2015-04-01T00:00:00Z",
+		"report.companyIdentification.basicInformation.contactAddress.simpleValue": "1 Test Street London SW1A 1AA",
+		"report.creditScore.currentCreditRating.pod":                               0.5,
+		"report.negativeInformation.ccjSummary.numberOfExact":                      float64(0),
+	} {
+		if got := at(out, path); got != want {
+			t.Errorf("%s = %v, want %v", path, got, want)
+		}
+	}
+	for _, path := range []string{"report.directors.currentDirectors", "report.shareCapitalStructure.shareHolders",
+		"report.additionalInformation.personsWithSignificantControl.activePSC"} {
+		people, _ := at(out, path).([]any)
+		if len(people) != 1 || people[0].(map[string]any)["name"] != "Ada Lovelace" {
+			t.Errorf("%s = %v, want Ada Lovelace", path, people)
+		}
+	}
+	shareholders, _ := at(out, "report.shareCapitalStructure.shareHolders").([]any)
+	if len(shareholders) == 1 && shareholders[0].(map[string]any)["percentSharesHeld"] != float64(100) {
+		t.Errorf("a shareholder's own fields are served as registered: %v", shareholders[0])
+	}
+	if w := serve(ctl.Handler(), http.MethodPost, "/sim/creditsafe/companies", `{"country":"GB","regNo":"1","directors":[{"role":"Director"}]}`); w.Code != http.StatusBadRequest {
+		t.Errorf("a director with no name: %d, want 400", w.Code)
+	}
+
+	out = decoded(t, get(svc, "/creditsafe/companies/GB-0-unregistered", cs))
+	if name := at(out, "report.companySummary.businessName"); name != nil {
+		t.Errorf("a company nobody registered has no name, got %v", name)
+	}
+}
+
+// get sends a bearer-authenticated GET through the vendor routes.
+func get(h http.Handler, path, tok string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func decoded(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	return out
+}
+
+// at reads a dotted path through decoded JSON objects.
+func at(m map[string]any, path string) any {
+	var current any = m
+	for _, key := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current = object[key]
+	}
+	return current
 }
 
 // TestUnknownOutcomeIsRefused: a typo that silently did nothing would leave
@@ -268,6 +365,8 @@ func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
 	a := newApp()
 	cs := token(t, a, a.creditsafeAuthenticate, "/creditsafe/authenticate", `{"username":"u","password":"p"}`)
 	call(t, a, a.creditsafeCreatePortfolio, http.MethodPost, "/x", `{"name":"p"}`, bearerHdr(cs))
+	_, ctl := surfaces(t, a)
+	serve(ctl.Handler(), http.MethodPost, "/sim/creditsafe/companies", `{"country":"GB","regNo":"1"}`)
 	for check, outcome := range map[string]string{checkScreening: "hit", checkIdentity: "fail"} {
 		if err := a.outcomes(tenant.Default).set(check, outcome); err != nil {
 			t.Fatal(err)
@@ -275,8 +374,8 @@ func TestFlowResetPutsOutcomesBackAndKeepsTokens(t *testing.T) {
 	}
 
 	cleared, kept := resetVia(t, a, "flow")
-	if len(cleared) != 1 || cleared["outcomes"] != 2 {
-		t.Errorf("cleared = %v, want two outcomes back to their defaults", cleared)
+	if len(cleared) != 2 || cleared["outcomes"] != 2 || cleared["companies"] != 1 {
+		t.Errorf("cleared = %v, want two outcomes back to their defaults and the company gone", cleared)
 	}
 	if strings.Join(kept, ",") != "tokens,portfolios" {
 		t.Errorf("kept = %v", kept)
