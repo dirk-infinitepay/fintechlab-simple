@@ -52,10 +52,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
 	"github.com/webduvet/fintechlab-simple/internal/simctl"
 	"github.com/webduvet/fintechlab-simple/internal/tenant"
+	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
 // outcomes holds the answer each vendor currently gives. One lock, because
@@ -146,6 +148,10 @@ type app struct {
 	mu   sync.Mutex
 	envs map[string]*envState
 
+	// traps answer the platform's requests instead of the vendors, when a
+	// test arms one (docs/lab-api/traps.md §9.7).
+	traps *trap.Store
+
 	// tokens are the bearer tokens this service has issued, each to the
 	// environment whose login asked for it (an issued). Each vendor
 	// authenticates differently and they are checked, because a client
@@ -204,7 +210,7 @@ type issued struct {
 }
 
 func newApp() *app {
-	a := &app{customers: tenant.NewCustomers(), envs: map[string]*envState{}}
+	a := &app{customers: tenant.NewCustomers(), envs: map[string]*envState{}, traps: trap.NewStore("verification", trap.HTTPRequestHook())}
 	a.customers.OnDelete = a.forget
 	return a
 }
@@ -261,6 +267,7 @@ func (a *app) dropTokens(scope string) int {
 // forget is a customer's removal: its outcomes and its tokens go with it.
 func (a *app) forget(env string) error {
 	a.dropTokens(env)
+	a.traps.ResetIn(env)
 	a.mu.Lock()
 	delete(a.envs, env)
 	a.mu.Unlock()
@@ -287,7 +294,7 @@ func main() {
 	}
 	ctl.Start()
 	log.Printf("verification listening on %s — every check passes by default; POST /sim/outcome on %s to change one", addr, ctl.Addr())
-	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+	log.Fatal(http.ListenAndServe(addr, logReq(a.faults(mux))))
 }
 
 // routes is verification's two surfaces: the four vendors on addr, and the
@@ -302,6 +309,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 		Scopes:    []string{simctl.ScopeFlow, simctl.ScopeAll},
 		Reset:     a.reset,
 		Customers: a.customers,
+		Traps:     a.traps,
 	}, simctl.ControlAddr(addr))
 	if err != nil {
 		return nil, nil, err
@@ -310,6 +318,7 @@ func (a *app) routes(addr string) (*http.ServeMux, *simctl.Control, error) {
 	ctl.Mux.HandleFunc("GET /sim/outcome", a.readOutcomes)
 	ctl.Mux.HandleFunc("POST /sim/outcome", a.setOutcome)
 	ctl.Mux.HandleFunc("POST /sim/creditsafe/companies", a.registerCreditsafeCompany)
+	ctl.Mux.HandleFunc("GET /sim/activity", activity.Handler(a.traps.Log()))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -461,6 +470,35 @@ func (a *app) registerCreditsafeCompany(w http.ResponseWriter, r *http.Request) 
 	a.in(env).companies.Store(id, company)
 	log.Printf("verification: Creditsafe company %s registered in environment %s", id, env)
 	httputilx.WriteJSON(w, 200, map[string]any{"env": env, "id": id, "company": company})
+}
+
+// faults lets an http.request trap answer a vendor request first, in the
+// environment the request's credentials name: its bearer token's, or its
+// x-api-key's. A login sent in the body (authenticate, oauth/token, IVI) is
+// the default environment's here.
+func (a *app) faults(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" || strings.HasPrefix(r.URL.Path, "/sim/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if a.traps.Intercept(w, r, a.envOfCredentials(r)) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (a *app) envOfCredentials(r *http.Request) string {
+	if tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); tok != r.Header.Get("Authorization") {
+		if v, ok := a.tokens.Load(tok); ok {
+			return v.(issued).env
+		}
+	}
+	if key := r.Header.Get("x-api-key"); key != "" {
+		return a.byKey(key)
+	}
+	return tenant.Default
 }
 
 // --- auth ---------------------------------------------------------------
