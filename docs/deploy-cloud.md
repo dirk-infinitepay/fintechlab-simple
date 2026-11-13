@@ -281,8 +281,10 @@ applies to it.
   file over SSM.
 - **The lab's address and token.** A platform that registers its card,
   follows the lab or calls its hooks does it on the lab API:
-  `FINTECH_SIM_LAB_URL=http://<PublicHost>:8097` (the stack's `LabApiUrl`
-  output) and `FINTECH_SIM_LAB_TOKEN` from `make aws-token`
+  `FINTECH_SIM_LAB_URL` from the stack's `LabApiUrl` output
+  (`https://lab-api.<LAB_DOMAIN>` on a lab with a domain,
+  `http://<PublicHost>:8097` without one) and `FINTECH_SIM_LAB_TOKEN` from
+  `make aws-token`
   ([plugins.md](plugins.md#reaching-the-platform)).
 - **Its outbound addresses.** The platform reaches the lab from its NAT
   gateways' Elastic IPs: `deploy/aws/lab.sh allow <ip> "platform NAT"` for each.
@@ -328,7 +330,7 @@ too, as it drives a local one:
    host; the keys come from the lab's *Connect your platform* files (the
    `.env` from `make aws-env`, or `/v1/connect/files/…` into a keys
    directory laid out like `keys/`); the lab itself is
-   `FINTECH_SIM_LAB_URL=http://<PublicHost>:8097` with the token from
+   `FINTECH_SIM_LAB_URL` = the stack's `LabApiUrl` with the token from
    `make aws-token`. Nothing reaches Banking Circle's bridge (`:8095`): the
    platform asks its own Banking Circle app, as it does deployed.
 

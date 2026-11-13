@@ -464,10 +464,14 @@ Outputs:
       - !Sub https://${DomainName}
       - !Sub http://${Address.PublicIp}:8090
   LabApiUrl:
-    Description: The platform's FINTECH_SIM_LAB_URL. lab.sh token prints the token it asks for.
-    Value: !Sub
-      - http://${Host}:8097
-      - Host: !If [HasDomain, !Ref DomainName, !GetAtt Address.PublicIp]
+    Description: >-
+      The platform's FINTECH_SIM_LAB_URL. lab.sh token prints the token it
+      asks for. https once a deploy's front has its certificate; http on
+      8097 as well.
+    Value: !If
+      - HasDomain
+      - !Sub https://lab-api.${DomainName}
+      - !Sub http://${Address.PublicIp}:8097
   DataVolumeId:
     Value: !Ref DataVolume
   AllowListId:
