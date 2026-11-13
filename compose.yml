@@ -468,18 +468,41 @@ services:
   # nothing more -- every button it offers is one call to a service's own
   # public API, so nothing in this lab can only be reached through a UI and
   # the console being down is never why a scenario cannot run.
-  # The four external checks the platform runs before it will move a
-  # merchant's money. One process, four path prefixes — nothing is shared
-  # between them except the address. Every check passes; POST /sim/outcome
-  # to make one fail.
-  verification:
+  # The vendors the platform's verification service calls before it will
+  # move a merchant's money, one sim each (internal/vendorsim). Every check
+  # passes; POST /sim/outcome on a sim's control port to make one fail.
+  creditsafe:
     build:
       context: .
-      dockerfile: docker/Dockerfile.verification
+      dockerfile: docker/Dockerfile.creditsafe
     ports:
-      - "8089:8089"
+      - "8091:8091"
     environment:
-      LISTEN: ":8089"
+      LISTEN: ":8091"
+  kyc6:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.kyc6
+    ports:
+      - "8092:8092"
+    environment:
+      LISTEN: ":8092"
+  lexisnexis:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.lexisnexis
+    ports:
+      - "8093:8093"
+    environment:
+      LISTEN: ":8093"
+  iban-com:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.iban-com
+    ports:
+      - "8094:8094"
+    environment:
+      LISTEN: ":8094"
 
 
   # The lab's one API (/v1): every lab-level call the console page, a
@@ -513,7 +536,10 @@ services:
       CONSOLE_URL_BANKING_CIRCLE: https://banking-circle:8085
       CONSOLE_URL_ACI: http://aci:8087
       CONSOLE_URL_VERIFY: http://verify:8088
-      CONSOLE_URL_VERIFICATION: http://verification:8089
+      CONSOLE_URL_CREDITSAFE: http://creditsafe:8091
+      CONSOLE_URL_KYC6: http://kyc6:8092
+      CONSOLE_URL_LEXISNEXIS: http://lexisnexis:8093
+      CONSOLE_URL_IBAN_COM: http://iban-com:8094
       CONSOLE_URL_SETTLEMENT: http://settlement:8083
       CONSOLE_URL_RECEIVER: https://receiver:8443
       CONSOLE_URL_PAYMENT_API: http://payment-api:8080

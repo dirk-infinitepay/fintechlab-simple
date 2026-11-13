@@ -259,7 +259,7 @@ LAB_VERSION ?= v1
 IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
-POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification lab-api console
+POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify creditsafe kyc6 lexisnexis iban-com lab-api console
 # The platform's seeder, an image built in the platform's own repository
 # (lightyear: pnpm nx run lab-seeder:container:podman makes
 # localhost/lightyear/lab-seeder:dev), added to the pod when

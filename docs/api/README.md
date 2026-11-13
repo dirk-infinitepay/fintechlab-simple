@@ -326,7 +326,10 @@ example, is Banking Circle's.
 | [services/aci.md](services/aci.md) | ACI | vendor | `:8087` |
 | [services/bank.md](services/bank.md) | business bank | vendor (the far end) | `:8081` |
 | [services/verify.md](services/verify.md) | AML decision | stand-in | `:8088` |
-| [services/verification.md](services/verification.md) | verification vendors | vendor | `:8089` |
+| [services/creditsafe.md](services/creditsafe.md) | Creditsafe | vendor | `:8091` |
+| [services/kyc6.md](services/kyc6.md) | KYC6 | vendor | `:8092` |
+| [services/lexisnexis.md](services/lexisnexis.md) | LexisNexis | vendor | `:8093` |
+| [services/iban-com.md](services/iban-com.md) | iban.com | vendor | `:8094` |
 | [services/clock.md](services/clock.md) | lab clock | lab | `:8096` |
 | [services/settlement.md](services/settlement.md) | settlement | platform stand-in | `:8083` |
 | [services/receiver.md](services/receiver.md) | webhook receiver | platform stand-in | `:8443` HTTPS |

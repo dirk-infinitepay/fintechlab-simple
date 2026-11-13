@@ -251,7 +251,7 @@ const (
 	labAPIName = "lab-api"
 	// The vendors' own ports: each container publishing one is served at
 	// <container>.<host>, on 443. The console, 8090, is the host itself.
-	vendorPortLow, vendorPortHigh = 8080, 8089
+	vendorPortLow, vendorPortHigh = 8080, 8094
 	// namesVar tells the lab API which names the front serves, so the
 	// .env downloads hand those out (cmd/labapi/connect.go).
 	namesVar = "CONSOLE_CONNECT_NAMES"
@@ -283,7 +283,7 @@ func (m *manifest) frontSites() ([]frontSite, error) {
 		name := scalar(get(c, "name"))
 		for _, p := range items(get(c, "ports")) {
 			n, err := strconv.Atoi(scalar(get(p, "containerPort")))
-			if err != nil || n < vendorPortLow || n > vendorPortHigh {
+			if err != nil || n < vendorPortLow || n > vendorPortHigh || strconv.Itoa(n) == consolePort {
 				continue
 			}
 			site := frontSite{name: name, port: strconv.Itoa(n)}

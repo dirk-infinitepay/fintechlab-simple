@@ -31,7 +31,7 @@ import (
 // last, so no service is reset while the day under it moves
 // (docs/lab-api/lab-api.md §4).
 var resetOrder = []string{
-	"worldline", "aci", "b4b", "banking-circle", "bank", "verify", "verification",
+	"worldline", "aci", "b4b", "banking-circle", "bank", "verify", "creditsafe", "kyc6", "lexisnexis", "iban-com",
 	"settlement", "receiver", "payment-api", "notifier", "clock",
 }
 

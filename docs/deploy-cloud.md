@@ -71,7 +71,7 @@ drives it with nothing but the AWS CLI (no CDK bootstrap, no state backend).
 | Resource | Why |
 | --- | --- |
 | VPC, one public subnet, internet gateway | the lab's own network: nothing in it depends on, peers with, or blocks deleting anyone else's |
-| Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8090), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist); optionally a fourth, 8080-8090 only, open to a second list, the console list. Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
+| Allowlist and security group | three rules — the vendors' own surfaces and the console (8080-8094), the lab API (8097), SFTP (2222) — open to the addresses on a managed prefix list, the [allowlist](#who-may-reach-it-the-allowlist); optionally a fourth, 8080-8094 only, open to a second list, the console list. Never `:8095` (Banking Circle's bridge, no auth), a control port (a vendor's port plus 1000) or the receiver stand-in's 8443: from outside, the lab API is the one way to steer the lab. An empty list opens nothing |
 | HTTPS console and vendor names (with `LAB_DOMAIN`) | a second security group: 443 for both lists, 80 for anyone, and a wildcard record for `*.<LAB_DOMAIN>`. The pod's front — Caddy, unchanged, its config in the rendered manifest — gets a Let's Encrypt certificate for the name over 80, renews it, redirects the rest of 80 to https and forwards 443 to the console. Its certificates live on the `fintechlab-front-data` volume, so a deploy does not ask for them again. See [The console on https](#the-console-on-https) |
 | EC2 host, Ubuntu 24.04, `t3.small` | SSM only: no key pair, no port 22. IMDSv2 with hop limit 1, so no container can act as the host's role, which can only be managed by SSM anyway |
 | Data volume (20 GiB) | podman's storage. A replaced host — a new image, a new type — keeps every key the platform holds |
@@ -219,7 +219,8 @@ renderer writes (`deploy/pod/render.go`). It
   caller's own token kept;
 - serves every vendor at a name of its own on the same 443:
   `https://b4b.<LAB_DOMAIN>`, `https://banking-circle.<LAB_DOMAIN>` and so
-  on — each container with a vendor port (8080–8089) by its name — and the
+  on — each container with a vendor port (8080–8094, the console's 8090
+  aside) by its name — and the
   lab API at `https://lab-api.<LAB_DOMAIN>` (Let's Encrypt refuses
   `api.` under a name this deep), which asks for its token as on
   `:8097`. The stack's wildcard record, `*.<LAB_DOMAIN>`, points them at the
@@ -391,5 +392,5 @@ pod with a lab API token (`/var/lib/fintechlab/lab-api-token`) and has it
 start on boot; `sudo sh lab/e2e.sh` runs the e2e suite inside it. A host
 whose podman cannot make a bridge plays with `POD_NETWORK=slirp4netns`
 ([deploy-pod.md](deploy-pod.md#the-podman-quirks)). Open the lab's ports —
-8080-8090, 8097, 2222 — to whoever needs them with that host's own
+8080-8094, 8097, 2222 — to whoever needs them with that host's own
 firewall, and never a control port.

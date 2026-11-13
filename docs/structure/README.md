@@ -10,10 +10,10 @@ organized on disk, and why it's split the way it is. Read this once; then
 
 `go.mod` declares a single module (`github.com/webduvet/fintechlab-simple`)
 for the whole repo — no per-service `go.mod`, no per-service dependency set.
-`go build ./cmd/<name>` produces one of fifteen independent binaries (`aci`,
-`b4b`, `bank`, `bankingcircle`, `clock`, `console`, `e2e`, `labapi`,
-`notifier`, `paymentapi`, `receiver`, `settlement`, `verification`,
-`verify`, `worldline`). `docker/Dockerfile.<name>` (named after the compose
+`go build ./cmd/<name>` produces one of eighteen independent binaries (`aci`,
+`b4b`, `bank`, `bankingcircle`, `clock`, `console`, `creditsafe`, `e2e`,
+`ibancom`, `kyc6`, `labapi`, `lexisnexis`, `notifier`, `paymentapi`,
+`receiver`, `settlement`, `verify`, `worldline`). `docker/Dockerfile.<name>` (named after the compose
 service, so `Dockerfile.lab-api` builds `cmd/labapi`) builds exactly one of
 them into its own minimal image; `compose.yml` runs each image as its own
 container, all but `e2e`, which `make e2e-docker` runs once against

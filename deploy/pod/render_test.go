@@ -330,7 +330,8 @@ func TestAnHTTPSHostPutsTheConsoleBehindAFront(t *testing.T) {
 			"lab.example.test {\n\treverse_proxy 127.0.0.1:8090\n}", "admin off", "disable_tlsalpn_challenge",
 			// every vendor port's container, by its own name, and the lab API by its
 			"b4b.lab.example.test {\n\treverse_proxy 127.0.0.1:8086\n}",
-			"verification.lab.example.test {\n\treverse_proxy 127.0.0.1:8089\n}",
+			"creditsafe.lab.example.test {\n\treverse_proxy 127.0.0.1:8091\n}",
+			"iban-com.lab.example.test {\n\treverse_proxy 127.0.0.1:8094\n}",
 			"lab-api.lab.example.test {\n\treverse_proxy 127.0.0.1:8097\n}",
 			// Banking Circle: the caller's client certificate checked at the edge,
 			// the lab's own presented to the sim, which speaks TLS
@@ -409,7 +410,7 @@ func TestTheFrontTellsTheLabAPIItsNamesAndFollowsBCMTLS(t *testing.T) {
 			told = c
 		}
 	}
-	if !strings.Contains(told, `"aci,b4b,bank,banking-circle,lab-api,notifier,payment-api,settlement,verification,verify,worldline"`) {
+	if !strings.Contains(told, `"aci,b4b,bank,banking-circle,creditsafe,iban-com,kyc6,lab-api,lexisnexis,notifier,payment-api,settlement,verify,worldline"`) {
 		t.Errorf("the lab API is told %q, want every name the front serves", told)
 	}
 

@@ -866,7 +866,7 @@ the moment it exists.
 curl -s -XPOST localhost:8097/v1/services/worldline/sim/settlement-cycle/run?slot=morning
 curl -s -XPOST localhost:8097/v1/services/banking-circle/sim/subscription/sub_1/pause
 curl -s -XPUT  localhost:8097/v1/services/b4b/sim/beneficiaries/ben_1/sanctions -d '{"status":"fail"}'
-curl -s -XPOST localhost:8097/v1/services/verification/sim/outcome -d '{…}'
+curl -s -XPOST localhost:8097/v1/services/kyc6/sim/outcome -d '{…}'
 ```
 
 **Path parameters** — `id`: a catalogue id (not a plugin's: a platform's

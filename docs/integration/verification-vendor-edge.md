@@ -6,29 +6,32 @@ exists — so four env vars point at one container.
 
 ```dotenv
 # Creditsafe — company data and UK bank verification
-CREDITSAFE_API_URL=http://localhost:8089/creditsafe
+CREDITSAFE_API_URL=http://localhost:8091/creditsafe
 CREDITSAFE_USERNAME=sim
 CREDITSAFE_PASSWORD=sim-verification-dev-only
 
 # iban.com — the base URL *is* the endpoint for this vendor
-IBAN_COM_BASE_URL=http://localhost:8089/iban/verify
+IBAN_COM_BASE_URL=http://localhost:8094/iban/verify
 IBAN_COM_API_KEY=sim-verification-dev-only
 
 # KYC6 — sanctions, PEP and adverse media
-KYC6_API_BASE_URL=http://localhost:8089/kyc6
-KYC6_MONITOR_API_BASE_URL=http://localhost:8089/kyc6
+KYC6_API_BASE_URL=http://localhost:8092/kyc6
+KYC6_MONITOR_API_BASE_URL=http://localhost:8092/kyc6
 KYC6_API_KEY=sim-verification-dev-only
 
 # LexisNexis — OAuth, then identity (IDU) and verification (IVI)
-LEXISNEXIS_AUTH_URL=http://localhost:8089/lexisnexis
-LEXISNEXIS_IDU_BASE_URL=http://localhost:8089/lexisnexis/idu
-LEXISNEXIS_IVI_BASE_URL=http://localhost:8089/lexisnexis/ivi
+LEXISNEXIS_AUTH_URL=http://localhost:8093/lexisnexis
+LEXISNEXIS_IDU_BASE_URL=http://localhost:8093/lexisnexis/idu
+LEXISNEXIS_IVI_BASE_URL=http://localhost:8093/lexisnexis/ivi
 LEXISNEXIS_CLIENT_ID=sim
 LEXISNEXIS_CLIENT_SECRET=sim-verification-dev-only
 LEXISNEXIS_IVI_API_KEY=sim-verification-dev-only
 ```
 
-Inside compose use `verification:8089` instead of `localhost:8089`.
+Each vendor is its own sim: Creditsafe on `:8091`, KYC6 on `:8092`,
+LexisNexis on `:8093` and iban.com on `:8094`. Inside compose use the
+service name instead of `localhost`: `creditsafe:8091`, `kyc6:8092`,
+`lexisnexis:8093`, `iban-com:8094`.
 
 ## What is faked and what is not
 
@@ -42,19 +45,23 @@ The judgement is stubbed. Every check passes.
 
 ## Making one fail
 
+Each sim has its own switches, on its own port, so a flip at one vendor
+never moves another's answers:
+
 ```bash
-curl -s localhost:8089/sim/outcome                       # what each answers now
-curl -s -XPOST localhost:8089/sim/outcome \
+curl -s localhost:8092/sim/outcome                       # what KYC6 answers now
+curl -s -XPOST localhost:8092/sim/outcome \
   -H 'content-type: application/json' \
   -d '{"check":"screening","outcome":"hit"}'
 ```
 
-| check | outcomes | moves |
-| --- | --- | --- |
-| `bank-account` | `pass` · `mismatch` · `invalid` | Creditsafe `supplierResponse.result` / `nameMatchResult`, iban.com `result.valid` / `name_match` |
-| `screening` | `clear` · `hit` | KYC6 `results.matchCount` and the matches array |
-| `identity` | `pass` · `refer` · `fail` | LexisNexis `assessment.result`, and IVI's review status |
-| `company` | `active` · `dissolved` | Creditsafe company status |
+| sim | check | outcomes | moves |
+| --- | --- | --- | --- |
+| creditsafe `:8091` | `bank-account` | `pass` · `mismatch` · `invalid` | `supplierResponse.result` / `nameMatchResult` / `accountTypeResult` |
+| creditsafe `:8091` | `company` | `active` · `dissolved` | the company report's status |
+| iban-com `:8094` | `bank-account` | `pass` · `mismatch` · `invalid` | `result.valid` / `name_match` |
+| kyc6 `:8092` | `screening` | `clear` · `hit` | `results.matchCount` and the matches array |
+| lexisnexis `:8093` | `identity` | `pass` · `refer` · `fail` | IDU `assessment.result`, and IVI's review status |
 
 An unknown check or outcome is a 400, not a silent no-op: a typo that
 changed nothing would leave you believing you had armed a failure that

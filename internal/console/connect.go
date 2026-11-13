@@ -104,7 +104,7 @@ func Kits(cat *Catalogue, host, keysDir string, named ...string) []Kit {
 		b.named[n] = true
 	}
 	var out []Kit
-	for _, k := range []Kit{b.worldline(), b.b4b(), b.bankingCircle(), b.aci(), b.verification(), b.verify()} {
+	for _, k := range []Kit{b.worldline(), b.b4b(), b.bankingCircle(), b.aci(), b.creditsafe(), b.kyc6(), b.lexisnexis(), b.ibanCom(), b.verify()} {
 		if _, ok := cat.Get(k.Service); ok {
 			out = append(out, k)
 		}
@@ -286,26 +286,59 @@ func (b kitBuilder) aci() Kit {
 	}
 }
 
-func (b kitBuilder) verification() Kit {
-	base := b.url("verification", "http", "")
+func (b kitBuilder) creditsafe() Kit {
+	base := b.url("creditsafe", "http", "")
 	return Kit{
-		Service: "verification", Title: "Verification vendors",
-		Note: "Four vendors behind one address, each under its own path. Credentials are required but not checked; tokens are.",
+		Service: "creditsafe", Title: "Creditsafe",
+		Note: "Credentials are required but not checked; tokens are.",
 		Vars: []KitVar{
 			{Key: "CREDITSAFE_API_URL", Value: base + "/creditsafe"},
 			{Key: "CREDITSAFE_USERNAME", Value: kitVerificationID},
 			{Key: "CREDITSAFE_PASSWORD", Value: kitVerificationSecret},
-			{Key: "IBAN_COM_BASE_URL", Value: base + "/iban/verify", Note: "For iban.com the base URL is the endpoint."},
-			{Key: "IBAN_COM_API_KEY", Value: kitVerificationSecret},
+		},
+		Files: []KitFile{},
+	}
+}
+
+func (b kitBuilder) kyc6() Kit {
+	base := b.url("kyc6", "http", "")
+	return Kit{
+		Service: "kyc6", Title: "KYC6",
+		Note: "Any key is accepted; a missing one is refused.",
+		Vars: []KitVar{
 			{Key: "KYC6_API_BASE_URL", Value: base + "/kyc6"},
 			{Key: "KYC6_MONITOR_API_BASE_URL", Value: base + "/kyc6"},
 			{Key: "KYC6_API_KEY", Value: kitVerificationSecret},
+		},
+		Files: []KitFile{},
+	}
+}
+
+func (b kitBuilder) lexisnexis() Kit {
+	base := b.url("lexisnexis", "http", "")
+	return Kit{
+		Service: "lexisnexis", Title: "LexisNexis",
+		Note: "Credentials are required but not checked; tokens are.",
+		Vars: []KitVar{
 			{Key: "LEXISNEXIS_AUTH_URL", Value: base + "/lexisnexis"},
 			{Key: "LEXISNEXIS_IDU_BASE_URL", Value: base + "/lexisnexis/idu"},
 			{Key: "LEXISNEXIS_IVI_BASE_URL", Value: base + "/lexisnexis/ivi"},
 			{Key: "LEXISNEXIS_CLIENT_ID", Value: kitVerificationID},
 			{Key: "LEXISNEXIS_CLIENT_SECRET", Value: kitVerificationSecret},
 			{Key: "LEXISNEXIS_IVI_API_KEY", Value: kitVerificationSecret},
+		},
+		Files: []KitFile{},
+	}
+}
+
+func (b kitBuilder) ibanCom() Kit {
+	base := b.url("iban-com", "http", "")
+	return Kit{
+		Service: "iban-com", Title: "iban.com",
+		Note: "Any key is accepted; a missing one is refused.",
+		Vars: []KitVar{
+			{Key: "IBAN_COM_BASE_URL", Value: base + "/iban/verify", Note: "For iban.com the base URL is the endpoint."},
+			{Key: "IBAN_COM_API_KEY", Value: kitVerificationSecret},
 		},
 		Files: []KitFile{},
 	}

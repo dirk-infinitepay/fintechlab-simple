@@ -79,7 +79,7 @@ Parameters:
     MinValue: 0
     Description: >-
       How many addresses the console list holds; 0 makes none. They reach the
-      vendors' surfaces and the console (8080-8090) only -- the lab API too,
+      vendors' surfaces and the console (8080-8094) only -- the lab API too,
       through the console's /v1, which adds the token -- and each costs one
       rule. With DomainName, both lists also reach the console on https.
 
@@ -227,9 +227,9 @@ Resources:
       GroupId: !Ref SecurityGroup
       IpProtocol: tcp
       FromPort: 8080
-      ToPort: 8090
+      ToPort: 8094
       SourcePrefixListId: !Ref AllowList
-      Description: the vendor surfaces and the console 8090
+      Description: the vendor surfaces 8080-8094 and the console 8090
 
   LabApiIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -260,9 +260,9 @@ Resources:
       GroupId: !Ref SecurityGroup
       IpProtocol: tcp
       FromPort: 8080
-      ToPort: 8090
+      ToPort: 8094
       SourcePrefixListId: !Ref ConsoleList
-      Description: the vendor surfaces and the console 8090, for the console list
+      Description: the vendor surfaces 8080-8094 and the console 8090, for the console list
 
   # The console on https, for a lab with a name: the pod's front (Caddy,
   # deploy/pod/render.go) on 443 for both lists, and on 80 for anyone --

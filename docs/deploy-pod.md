@@ -14,7 +14,7 @@ source — a colleague's laptop, or a server the platform points at.
   │ worldline  banking-circle  b4b  aci  verify  verification  │
   │ console                                                    │
   └────────────────────────────────────────────────────────────┘
-   published: 8080-8090, 8095, 8443, 2222 (the same as compose)
+   published: 8080-8094, 8095, 8443, 2222 (the same as compose)
    state: six named volumes (see "What persists")
 ```
 

@@ -48,7 +48,10 @@ spec:
         - b4b
         - aci
         - verify
-        - verification
+        - creditsafe
+        - kyc6
+        - lexisnexis
+        - iban-com
         - lab-api
         - console
   initContainers:
@@ -415,14 +418,38 @@ spec:
           value: "sim-verify-key-dev-only"
         - name: VERIFY_PROCESSING_DELAY
           value: "100ms"
-    - name: verification
-      image: localhost/fintechlab/verification:v1
+    - name: creditsafe
+      image: localhost/fintechlab/creditsafe:v1
       ports:
-        - containerPort: 8089
-          hostPort: 8089
+        - containerPort: 8091
+          hostPort: 8091
       env:
         - name: LISTEN
-          value: ":8089"
+          value: ":8091"
+    - name: kyc6
+      image: localhost/fintechlab/kyc6:v1
+      ports:
+        - containerPort: 8092
+          hostPort: 8092
+      env:
+        - name: LISTEN
+          value: ":8092"
+    - name: lexisnexis
+      image: localhost/fintechlab/lexisnexis:v1
+      ports:
+        - containerPort: 8093
+          hostPort: 8093
+      env:
+        - name: LISTEN
+          value: ":8093"
+    - name: iban-com
+      image: localhost/fintechlab/iban-com:v1
+      ports:
+        - containerPort: 8094
+          hostPort: 8094
+      env:
+        - name: LISTEN
+          value: ":8094"
     - name: lab-api
       image: localhost/fintechlab/lab-api:v1
       ports:
@@ -452,8 +479,14 @@ spec:
           value: "http://aci:8087"
         - name: CONSOLE_URL_VERIFY
           value: "http://verify:8088"
-        - name: CONSOLE_URL_VERIFICATION
-          value: "http://verification:8089"
+        - name: CONSOLE_URL_CREDITSAFE
+          value: "http://creditsafe:8091"
+        - name: CONSOLE_URL_KYC6
+          value: "http://kyc6:8092"
+        - name: CONSOLE_URL_LEXISNEXIS
+          value: "http://lexisnexis:8093"
+        - name: CONSOLE_URL_IBAN_COM
+          value: "http://iban-com:8094"
         - name: CONSOLE_URL_SETTLEMENT
           value: "http://settlement:8083"
         - name: CONSOLE_URL_RECEIVER

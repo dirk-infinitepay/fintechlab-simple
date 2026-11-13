@@ -571,7 +571,7 @@ func (a *app) sharedServices() []string {
 	a.envMu.Lock()
 	defer a.envMu.Unlock()
 	out := []string{}
-	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci", "verify", "verification", "bank"} {
+	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci", "verify", "creditsafe", "kyc6", "lexisnexis", "iban-com", "bank"} {
 		if _, ok := a.cat.Get(id); !ok {
 			continue
 		}

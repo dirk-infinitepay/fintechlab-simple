@@ -4,10 +4,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/verification ./cmd/verification
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/lexisnexis ./cmd/lexisnexis
 
 FROM docker.io/library/alpine:3.20
 RUN apk add --no-cache ca-certificates
-COPY --from=build /out/verification /usr/local/bin/verification
+COPY --from=build /out/lexisnexis /usr/local/bin/lexisnexis
 USER 65532:65532
-ENTRYPOINT ["/usr/local/bin/verification"]
+ENTRYPOINT ["/usr/local/bin/lexisnexis"]

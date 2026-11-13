@@ -381,7 +381,7 @@ cmd_allowed() {
     "nobody -- 'lab.sh allow' adds your address; 'lab.sh console' works without one"
   if [ -n "$(list_id ConsoleListId)" ]; then
     say ""
-    show_list ConsoleListId "the console (and on https) and the vendors' pages (8080-8090) only" \
+    show_list ConsoleListId "the console (and on https) and the vendors' pages (8080-8094) only" \
       "nobody -- 'lab.sh allow --console <ip> <note>' adds someone"
   fi
 }

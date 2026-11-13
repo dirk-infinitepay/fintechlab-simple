@@ -196,8 +196,8 @@ New in v1: `/v1/lab/reset`, `/v1/services/{id}/logs`,
 Two things today's runbook sends an agent around the console for, which
 `/v1` covers: Banking Circle's outcome queue (`curl :8095/internal/…`) is
 now `/v1/services/banking-circle/sim/payments/outcomes` or a trap; and
-verification's `/sim/outcome` (`:8089`) is
-`/v1/services/verification/sim/outcome`.
+each verification vendor's `/sim/outcome` (`:8091` to `:8094`) is
+`/v1/services/{creditsafe,kyc6,lexisnexis,iban-com}/sim/outcome`.
 
 ## 11. Agents
 

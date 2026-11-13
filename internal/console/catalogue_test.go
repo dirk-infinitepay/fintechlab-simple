@@ -9,7 +9,7 @@ func TestCatalogueCoversTheVendorsAndLabelsTheSides(t *testing.T) {
 	c := DefaultCatalogue()
 	// The vendor/scaffolding line is the one docs/catalogue.md draws, and
 	// the console is where most people will meet it.
-	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci", "bank", "verification"} {
+	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci", "bank", "creditsafe", "kyc6", "lexisnexis", "iban-com"} {
 		s, ok := c.Get(id)
 		if !ok {
 			t.Fatalf("%s missing from the catalogue", id)
@@ -111,14 +111,13 @@ func TestEveryServiceHasAViewToLiveIn(t *testing.T) {
 	}
 }
 
-// TestBothVerificationServicesAreListed: the four-vendor mock (Creditsafe,
-// iban.com, KYC6, LexisNexis) was running on 8089 and missing from the
-// catalogue entirely, so the console showed one verification card for two
-// services and nobody could tell. The vendors sit with the other vendors;
-// the AML decision stand-in keeps the Verification view.
-func TestBothVerificationServicesAreListed(t *testing.T) {
+// TestEveryVerificationServiceIsListed: the verification vendors were once
+// missing from the catalogue entirely, so the console showed one card for
+// services nobody could tell apart. Each vendor is its own card with the
+// other vendors; the AML decision stand-in keeps the Verification view.
+func TestEveryVerificationServiceIsListed(t *testing.T) {
 	cat := DefaultCatalogue()
-	for id, kind := range map[string]Kind{"verify": KindVerification, "verification": KindVendor} {
+	for id, kind := range map[string]Kind{"verify": KindVerification, "creditsafe": KindVendor, "kyc6": KindVendor, "lexisnexis": KindVendor, "iban-com": KindVendor} {
 		s, ok := cat.Get(id)
 		if !ok {
 			t.Fatalf("%s is not in the catalogue", id)

@@ -35,7 +35,7 @@ not a simulation of anything.
 | **receiver** | stand-in | pointing the vendors' webhook URLs at your own listener |
 | **bank** (*business bank*) | vendor (the far end) | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
 | **payment-api**, **notifier** | stand-in (demo) | — generic shapes, not vendor-specific; only `make demo-payment` and the e2e suite call them |
-| **verification** | vendor | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
+| **creditsafe**, **kyc6**, **lexisnexis**, **iban-com** | vendor | real KYC/AML vendors, one sim each (`internal/vendorsim` holds what they share) |
 | **verify** | stand-in | your own verification-service: pointing the platform's verification-service URL at it replaces that service |
 | **clock** | lab | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
 | *a registered platform* | platform (plugin) | nothing — it *is* the platform; it registers its own card ([plugins.md](plugins.md)) |

@@ -110,42 +110,60 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 		ctx := tenant.Bind(r.Context())
 		r = r.WithContext(ctx)
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
-		next(rec, r)
-
-		call := &Call{Request: r, ReqBody: reqBody, Status: rec.status, RespBody: rec.body.Bytes()}
-		summary, detail := "", map[string]string{}
-		if sum != nil {
-			summary, detail = sum(call)
-		}
-		if summary == "" {
-			summary = r.Method + " " + r.URL.Path
-		}
-		status := StatusFor(rec.status)
-		if call.Refused != "" && status == StatusOK {
-			status = StatusWarn
-			summary += " — " + call.Refused
-		}
-		if rec.status >= 400 {
-			// The vendor's own refusal, verbatim. Anything else here would
-			// be the lab paraphrasing an error the platform has to handle.
-			if msg := jsonString(call.RespBody, "error"); msg != "" {
-				summary += " — " + msg
+		defer func() {
+			if p := recover(); p != nil {
+				if p == http.ErrAbortHandler {
+					l.record(op, sum, r, reqBody, rec, true)
+				}
+				panic(p)
 			}
-		}
-		if detail == nil {
-			detail = map[string]string{}
-		}
-		detail["status"] = http.StatusText(rec.status)
-		env, _ := tenant.Named(ctx)
-		l.Record(Event{
-			Env:     env,
-			Op:      op,
-			Peer:    peerOf(r),
-			Summary: summary,
-			Status:  status,
-			Detail:  detail,
-		})
+		}()
+		next(rec, r)
+		l.record(op, sum, r, reqBody, rec, false)
 	}
+}
+
+// record files one call. A dropped call is one whose connection was closed
+// with no answer: the platform saw no status at all.
+func (l *Log) record(op string, sum Summarizer, r *http.Request, reqBody []byte, rec *recorder, dropped bool) {
+	call := &Call{Request: r, ReqBody: reqBody, Status: rec.status, RespBody: rec.body.Bytes()}
+	summary, detail := "", map[string]string{}
+	if sum != nil && !dropped {
+		summary, detail = sum(call)
+	}
+	if summary == "" {
+		summary = r.Method + " " + r.URL.Path
+	}
+	if detail == nil {
+		detail = map[string]string{}
+	}
+	env, _ := tenant.Named(r.Context())
+	if dropped {
+		detail["status"] = "no answer"
+		l.Record(Event{Env: env, Op: op, Peer: peerOf(r), Summary: summary + " — connection dropped", Status: StatusBad, Detail: detail})
+		return
+	}
+	status := StatusFor(rec.status)
+	if call.Refused != "" && status == StatusOK {
+		status = StatusWarn
+		summary += " — " + call.Refused
+	}
+	if rec.status >= 400 {
+		// The vendor's own refusal, verbatim. Anything else here would
+		// be the lab paraphrasing an error the platform has to handle.
+		if msg := jsonString(call.RespBody, "error"); msg != "" {
+			summary += " — " + msg
+		}
+	}
+	detail["status"] = http.StatusText(rec.status)
+	l.Record(Event{
+		Env:     env,
+		Op:      op,
+		Peer:    peerOf(r),
+		Summary: summary,
+		Status:  status,
+		Detail:  detail,
+	})
 }
 
 // peerOf names the caller. The forwarded headers are honoured because

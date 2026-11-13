@@ -19,10 +19,12 @@
                                   │  control listener, /sim/*
       ┌──────────────┬────────────┼─────────────┬──────────────┬───────────┐
       ▼              ▼            ▼             ▼              ▼           ▼
-  worldline    banking-circle    b4b           aci       verify/verif.   clock
-  ctl :9084    ctl :9085      ctl :9086     ctl :9087   ctl :9088/:9089   :8096
+  worldline    banking-circle    b4b           aci     verify, creditsafe,  clock
+                                                       kyc6, lexisnexis,
+                                                       iban-com
+  ctl :9084    ctl :9085      ctl :9086     ctl :9087   ctl :9088, :9091-4   :8096
   ─────────    ─────────      ─────────     ─────────   ─────────
-  :8084 :2222  :8085  :8095   :8086         :8087       :8088 :8089
+  :8084 :2222  :8085  :8095   :8086         :8087       :8088, :8091-4
       ▲              ▲            ▲             │
       └──────────────┴────────────┴─────────────┴── platform under test:
                                                     vendor-shaped traffic,
@@ -36,7 +38,10 @@
 | `b4b` | `:8086` Oversight API (RS512 JWT) | `:9086` | vendor |
 | `aci` | `:8087` (sends webhooks) | `:9087` | vendor |
 | `verify` | `:8088` | `:9088` | vendor |
-| `verification` | `:8089` | `:9089` | vendor |
+| `creditsafe` | `:8091` | `:9091` | vendor |
+| `kyc6` | `:8092` | `:9092` | vendor |
+| `lexisnexis` | `:8093` | `:9093` | vendor |
+| `iban-com` | `:8094` | `:9094` | vendor |
 | `clock` | `:8096` `/clock` | the same `:8096` | lab |
 | `bank`, `settlement`, `receiver`, `payment-api`, `notifier` | `:8081`, `:8083`, `:8443`, `:8080`, `:8082` | `:9081`, `:9083`, `:9443`, `:9080`, `:9082` | stand-in |
 | `lab-api` | — | `:8097` `/v1/*` | lab |
