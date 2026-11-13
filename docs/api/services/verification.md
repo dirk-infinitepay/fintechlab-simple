@@ -521,16 +521,32 @@ Disarms every trap. Answers `200` with `{"service": "verification",
 
 ### `GET /sim/activity`
 
-The traps log, newest first: every trap armed, every request one caught,
-what was done to it, and every disarm. Query: `limit` (positive integer,
-default 100); `env` (the default when left out, `*` for every
-environment's).
+Two logs, newest first: the request journal, every request the platform
+made to a vendor on `:8089` and the status it was answered with, a request
+a trap answered included; and the traps log, every trap armed, every
+request one caught, what was done to it, and every disarm. Query: `limit`
+(positive integer, default 100); `env` (the default when left out, `*` for
+every environment's); `404` for an environment this service was never
+given. A request is the environment its credentials name, a login
+included. A request refused for a missing or unknown token is the
+default's: no environment can be read from a token this service did not
+issue.
+
+Answers `200`:
 
 ```json
-{"logs": [{"name": "traps", "title": "Traps", "total": 2, "kept": 2,
-           "events": [{"seq": 2, "op": "trap.step", "summary": "trp_0001: POST /iban/verify — respond 503", "status": "ok"},
-                      {"seq": 1, "op": "trap.armed", "summary": "trp_0001 armed on http.request — …", "status": "ok"}]}]}
+{"logs": [{"name": "requests", "title": "Vendor requests",
+           "note": "Every request the platform made to Creditsafe, iban.com, KYC6 and LexisNexis, and the status it was answered with.",
+           "total": 1, "kept": 1,
+           "last": {"seq": 1, "at": "2026-11-12T09:40:00Z", "op": "iban.com", "peer": "10.89.0.7",
+                    "summary": "POST /iban/verify", "status": "ok", "detail": {"status": "OK"}},
+           "events": [{"seq": 1, "…": "as last"}]}]}
 ```
+
+`op` is the vendor: `creditsafe`, `iban.com`, `kyc6` or `lexisnexis`. A
+`4xx` answer is `warn` and carries the vendor's error in the summary, and
+so is iban.com's refusal, which it answers `200` with an `error` field. The
+journal keeps the first 64 KiB of a request body; the vendor reads it all.
 
 ### `GET /sim/info`
 
@@ -557,7 +573,7 @@ it.
 
 - **`flow` clears**: the outcomes, back to the defaults in the table under
   [Vendor surface](#vendor-surface), the registered Creditsafe
-  companies, and every trap.
+  companies, every trap and the request journal.
 - **`flow` keeps**: every bearer token issued, so a platform holding one
   is not refused mid-session; and the Creditsafe portfolio id counter.
 - **`all`** is first start: the outcomes, every token issued in the
@@ -565,13 +581,14 @@ it.
   client authenticates again), and its portfolio ids count from 1 again.
 
 `cleared` counts `outcomes` that were flipped, `companies` that were
-registered and the `traps` disarmed (with `trap_steps`, always 0 here), and
-with `all`, `tokens`
+registered, journal events it held (`activity`, at most 256 per
+environment) and the `traps` disarmed (with `trap_steps`, always 0 here),
+and with `all`, `tokens`
 and `portfolios` created. Another environment's outcomes and tokens are
 left alone.
 
 ```json
-{"service": "verification", "scope": "flow", "env": "default", "cleared": {"companies": 1, "outcomes": 2, "trap_steps": 0, "traps": 1},
+{"service": "verification", "scope": "flow", "env": "default", "cleared": {"activity": 5, "companies": 1, "outcomes": 2, "trap_steps": 0, "traps": 1},
  "kept": ["tokens", "portfolios"], "at": "2026-11-07T12:00:00Z"}
 ```
 
@@ -612,8 +629,9 @@ lower-case letters, digits and dashes, starting with a letter, at most
 
 ### `DELETE /sim/customers/{env}`
 
-Removes one customer and what it had here: its outcomes and every token
-issued to it. Its login is then a stranger's, the default's.
+Removes one customer and what it had here: its outcomes, every token
+issued to it and its journal. Its login is then a stranger's, the
+default's.
 
 Answers `200` `{"env": "sbx", "deleted": true}`; `404`
 `no environment sbx here`.

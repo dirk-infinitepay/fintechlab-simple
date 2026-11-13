@@ -29,6 +29,9 @@ type Call struct {
 	ReqBody  []byte
 	Status   int
 	RespBody []byte
+	// Refused is set by a summariser when the vendor refused the call in a
+	// 2xx answer of its own shape: the event is a warning and carries it.
+	Refused string
 }
 
 // JSONField reads a top-level string field out of the request body, or ""
@@ -94,11 +97,13 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 	return func(w http.ResponseWriter, r *http.Request) {
 		var reqBody []byte
 		if r.Body != nil {
-			reqBody, _ = io.ReadAll(io.LimitReader(r.Body, bodyLimit))
+			full, _ := io.ReadAll(r.Body)
 			_ = r.Body.Close()
-			// Hand the handler a body that still reads: it is the one doing
-			// the real work and must not be starved by the observer.
-			r.Body = io.NopCloser(bytes.NewReader(reqBody))
+			// Hand the handler the whole body: it is the one doing the real
+			// work and must not be starved by the observer. Only the
+			// journal's copy is capped.
+			r.Body = io.NopCloser(bytes.NewReader(full))
+			reqBody = full[:min(len(full), bodyLimit)]
 		}
 		// The environment is learnt inside: the vendor's auth sets it once
 		// it knows who called (internal/tenant), into a slot bound here.
@@ -114,6 +119,11 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 		}
 		if summary == "" {
 			summary = r.Method + " " + r.URL.Path
+		}
+		status := StatusFor(rec.status)
+		if call.Refused != "" && status == StatusOK {
+			status = StatusWarn
+			summary += " — " + call.Refused
 		}
 		if rec.status >= 400 {
 			// The vendor's own refusal, verbatim. Anything else here would
@@ -132,7 +142,7 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 			Op:      op,
 			Peer:    peerOf(r),
 			Summary: summary,
-			Status:  StatusFor(rec.status),
+			Status:  status,
 			Detail:  detail,
 		})
 	}

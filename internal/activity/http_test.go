@@ -97,6 +97,54 @@ func TestWatchRecordsAHandlerThatNeverSetsAStatus(t *testing.T) {
 // TestPeerPrefersTheForwardedAddress: these services are reached through a
 // container bridge as often as not, and one bridge address for every call
 // tells an operator nothing.
+// TestWatchHandsTheHandlerABodyOfAnySize: only the journal's copy is
+// capped; a handler that saw a cut-short body would answer for fields that
+// were never read.
+func TestWatchHandsTheHandlerABodyOfAnySize(t *testing.T) {
+	l := New("in", "In", "")
+	body := `{"name":"` + strings.Repeat("x", bodyLimit+1000) + `"}`
+	var seen int
+	var journalled int
+	h := l.Watch("op", func(c *Call) (string, map[string]string) {
+		journalled = len(c.ReqBody)
+		return "", nil
+	}, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seen = len(b)
+	})
+	h(httptest.NewRecorder(), httptest.NewRequest("POST", "/x", strings.NewReader(body)))
+	if seen != len(body) || journalled != bodyLimit {
+		t.Errorf("handler read %d bytes, journal kept %d; want %d and %d", seen, journalled, len(body), bodyLimit)
+	}
+}
+
+// TestASummariserCanMarkARefusalTheVendorAnsweredWithA200: some vendors
+// refuse in a 2xx of their own shape, and the journal must not call that ok.
+func TestASummariserCanMarkARefusalTheVendorAnsweredWithA200(t *testing.T) {
+	l := New("in", "In", "")
+	h := l.Watch("op", func(c *Call) (string, map[string]string) {
+		c.Refused = c.RespField("error")
+		return "", nil
+	}, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"error":"IBAN is required"}`))
+	})
+	h(httptest.NewRecorder(), httptest.NewRequest("POST", "/x", nil))
+	e := l.Recent(1)[0]
+	if e.Status != StatusWarn || !strings.Contains(e.Summary, "IBAN is required") {
+		t.Errorf("event = %+v, want a warning carrying the refusal", e)
+	}
+}
+
+func TestClearCountsTheEventsItHeld(t *testing.T) {
+	l := New("in", "In", "")
+	for i := 0; i < DefaultCapacity+44; i++ {
+		l.Record(Event{Op: "op"})
+	}
+	if n := l.Clear(); n != DefaultCapacity {
+		t.Errorf("Clear = %d, want the %d it held", n, DefaultCapacity)
+	}
+}
+
 func TestPeerPrefersTheForwardedAddress(t *testing.T) {
 	l := New("in", "Calls", "")
 	h := l.Watch("call", nil, func(w http.ResponseWriter, r *http.Request) {})

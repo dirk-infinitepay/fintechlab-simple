@@ -164,7 +164,7 @@ func (l *Log) ClearIn(scope string) int64 {
 	var cleared int64
 	for env, rg := range l.rings {
 		if tenant.InScope(scope, env) {
-			cleared += rg.total
+			cleared += int64(rg.n)
 			delete(l.rings, env)
 		}
 	}
