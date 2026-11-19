@@ -277,7 +277,7 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.payLog.Watch("payment.create", a.summarizeCreate, a.requireAuth(a.createPayment)))
+	mux.HandleFunc("POST /oversight/v1/payments", a.authenticated(a.payLog.Watch("payment.create", a.summarizeCreate, a.trapped(a.createPayment))))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
@@ -413,15 +413,18 @@ func (a *app) authenticated(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		a.customers.Seen(env)
-		tenant.Set(r.Context(), env)
 		next(w, r.WithContext(tenant.With(r.Context(), env)))
 	}
 }
 
 func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return a.authenticated(func(w http.ResponseWriter, r *http.Request) {
+	return a.authenticated(a.trapped(next))
+}
+
+func (a *app) trapped(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		a.traps.Serve(w, r, tenant.Of(r.Context()), next)
-	})
+	}
 }
 
 // writeStoreError maps a domain error to the status code the real API
