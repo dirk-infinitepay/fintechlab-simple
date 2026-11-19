@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -87,4 +88,43 @@ func TestAnHTTPRequestTrapNeverAnswersForABadToken(t *testing.T) {
 	if tr := lab.trap(t, id); len(tr.Caught) != 0 {
 		t.Errorf("the trap caught %d requests B4B refused itself", len(tr.Caught))
 	}
+}
+
+func TestACommitTrapCreatesTheCompanyThenFailsTheReply(t *testing.T) {
+	lab := newGatewayLab(t)
+	id := lab.armTrap(t, `{"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/companies"}, "times": 1,
+		"effect": {"commit": true, "respond": {"status": 502, "body": {"message": "Bad Gateway"}}}}`)
+
+	failed := lab.call(t, "POST", "/oversight/v1/companies", gatewayCreateCompany, 502)
+	if failed["message"] != "Bad Gateway" || failed["id"] != nil {
+		t.Errorf("the reply = %v, want the trap's 502 and no company", failed)
+	}
+	again := lab.call(t, "POST", "/oversight/v1/companies", gatewayCreateCompany, 422)
+	if msg, _ := again["error"].(string); !strings.Contains(msg, "IP000123") {
+		t.Errorf("creating it again = %v, want it refused as one that exists", again)
+	}
+
+	tr := lab.trap(t, id)
+	if len(tr.Caught) != 1 || len(tr.Caught[0].Applied) != 2 ||
+		tr.Caught[0].Applied[0].To != "handled 201" || tr.Caught[0].Applied[1].To != "respond 502" {
+		t.Errorf("trap = %+v", tr)
+	}
+}
+
+func TestACommitTrapCanDropTheConnectionOnceTheCompanyExists(t *testing.T) {
+	lab := newGatewayLab(t)
+	lab.armTrap(t, `{"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/companies"}, "times": 1,
+		"effect": {"commit": true, "close": true}}`)
+
+	req, err := http.NewRequest("POST", lab.l.vendor.URL+"/oversight/v1/companies", strings.NewReader(gatewayCreateCompany))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+lab.token)
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatalf("the create answered %d, want the connection dropped", resp.StatusCode)
+	}
+	lab.call(t, "POST", "/oversight/v1/companies", gatewayCreateCompany, 422)
 }

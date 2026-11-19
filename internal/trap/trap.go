@@ -105,23 +105,26 @@ func (s Step) Params() map[string]string {
 }
 
 // Effect is what happens to a caught event: a path, or for a respond hook
-// one of Respond, Delay or Close.
+// one of Respond, Delay or Close, with Commit when the request takes effect
+// before Respond or Close replaces its answer.
 type Effect struct {
 	Path    []Step    `json:"path"`
 	Respond *Response `json:"respond,omitempty"`
 	Delay   string    `json:"delay,omitempty"`
 	Close   bool      `json:"close,omitempty"`
+	Commit  bool      `json:"commit,omitempty"`
 }
 
 // MarshalJSON leaves the path out of a respond effect.
 func (e Effect) MarshalJSON() ([]byte, error) {
 	if e.Respond != nil || e.Delay != "" || e.Close {
 		type respond struct {
+			Commit  bool      `json:"commit,omitempty"`
 			Respond *Response `json:"respond,omitempty"`
 			Delay   string    `json:"delay,omitempty"`
 			Close   bool      `json:"close,omitempty"`
 		}
-		return json.Marshal(respond{Respond: e.Respond, Delay: e.Delay, Close: e.Close})
+		return json.Marshal(respond{Commit: e.Commit, Respond: e.Respond, Delay: e.Delay, Close: e.Close})
 	}
 	type path struct {
 		Path []Step `json:"path"`
@@ -146,6 +149,7 @@ type Spec struct {
 	Respond   *Response
 	Delay     string
 	Close     bool
+	Commit    bool
 }
 
 // In matches any of the values.
@@ -316,8 +320,8 @@ func (s *Store) arm(spec Spec, standing bool) (Trap, error) {
 		if err := validatePath(h, spec.Path); err != nil {
 			return Trap{}, err
 		}
-		if spec.Respond != nil || spec.Delay != "" || spec.Close {
-			return Trap{}, fmt.Errorf("%w: %s's effect is a path; respond, delay and close are for http.request", ErrInvalid, h.Name)
+		if spec.Respond != nil || spec.Delay != "" || spec.Close || spec.Commit {
+			return Trap{}, fmt.Errorf("%w: %s's effect is a path; respond, delay, close and commit are for http.request", ErrInvalid, h.Name)
 		}
 	}
 	if h.Effect == EffectRespond {
@@ -350,7 +354,7 @@ func (s *Store) armLocked(spec Spec, conds []cond, standing bool) Trap {
 		}
 		t.Times = &n
 	}
-	t.Effect = Effect{Respond: spec.Respond, Delay: spec.Delay, Close: spec.Close}
+	t.Effect = Effect{Respond: spec.Respond, Delay: spec.Delay, Close: spec.Close, Commit: spec.Commit}
 	if spec.Path != nil || s.hooks[spec.Hook].Effect == EffectPath {
 		t.Effect.Path = append([]Step{}, spec.Path...)
 	}

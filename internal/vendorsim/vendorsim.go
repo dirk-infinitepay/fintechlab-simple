@@ -454,10 +454,7 @@ func (s *Sim) faults(next http.Handler) http.Handler {
 		}
 		env := s.envOf(r)
 		tenant.Set(r.Context(), env)
-		if s.traps.Intercept(w, r, env) {
-			return
-		}
-		next.ServeHTTP(w, r)
+		s.traps.Serve(w, r, env, next)
 	})
 }
 
