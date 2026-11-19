@@ -24,7 +24,7 @@ banking relationship. Everything it is told is persisted to one state file.
 | Listens | `:8086`, plain HTTP (no TLS): the Oversight API. Compose service `b4b` (`http://b4b:8086` on the compose network); host `http://127.0.0.1:8086`.<br>`:9086`, plain HTTP: the **control port** (`SIM_CONTROL_LISTEN`), every `/sim/*` route below and its own `GET /health`. Not published by compose; the lab API reaches it at `http://b4b:9086` |
 | Auth | Every `/oversight/v1/*` route: `Authorization: Bearer <RS512 JWT>`, see [Authentication](#authentication-the-rs512-bearer-jwt); its `kid` says which environment the call is ([Environments](#environments)). `GET /health`: none. The control port has no vendor auth: it takes calls from anything that can reach it, or only from `SIM_CONTROL_ALLOW` (addresses or CIDRs) when that is set. The old `/sim/*` paths on `:8086` keep the JWT until phase 4, but for `GET /sim/activity` |
 | A platform points here with | `B4B_API_BASE_URL` (`http://127.0.0.1:8086`), `B4B_JWT_KEY_ID` (`b4b-mock-1`) and `B4B_JWT_PRIVATE_KEY` (the PEM), as handed out by the lab API at `GET :8097/v1/connect/env/b4b`. The settlement stand-in uses `B4B_URL`, `B4B_JWT_PRIVATE_KEY_PATH` and `B4B_JWT_KEY_ID`, and sends its own `B4B_CALLBACK_URL` as each payment's `callback_url`. Callbacks reach the platform at whatever b4b's own `B4B_CALLBACK_URL` names. A platform with an environment of its own gets its own `B4B_JWT_KEY_ID` and key in that environment's kit, and is called back where its customer says ([Environments](#environments)) |
-| Activity logs | `GET /sim/activity` keeps three in-memory rings of 256 events per environment. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. `traps` (*Traps*): every trap armed, every payout one caught, each hop it took and each one disarmed, ops `trap.armed`, `trap.caught`, `trap.step`, `trap.disarmed`. A payout a trap caught, and each callback for a transition the trap made, carries `detail.trap`. Boarding, beneficiary and other `/sim` calls are not logged |
+| Activity logs | `GET /sim/activity` keeps three in-memory rings of 256 events per environment. `payments` (*Payouts received*): every `POST /oversight/v1/payments` call, op `payment.create`, with what was answered, refusals included. `callbacks` (*Callbacks sent*): one event per callback, op `callback`: delivered, refused after the last attempt, or not sent because there was nowhere to send it. `traps` (*Traps*): every trap armed, every payout or request one caught, each hop or answer it took and each one disarmed, ops `trap.armed`, `trap.caught`, `trap.step`, `trap.disarmed`. A payout a trap caught, and each callback for a transition the trap made, carries `detail.trap`. Boarding, beneficiary and other `/sim` calls are not logged |
 | Configuration | `LISTEN` (`:8086`).<br>`SIM_CONTROL_LISTEN` (`LISTEN`'s port plus 1000, `:9086`) and `SIM_CONTROL_ALLOW` (empty: any caller): the control port.<br>`B4B_JWT_KEYS_DIR` (`/keys/b4b-keys`): where the keypair is loaded from, or generated into.<br>`B4B_JWT_PUBLIC_KEY_PATH` (empty): verify against this public key instead of the generated pair.<br>`B4B_JWT_KEY_ID` (`b4b-mock-1`): the `kid` the default environment's tokens carry.<br>`B4B_CALLBACK_URL` (empty): the default environment's client-account callback endpoint; must pass the allowlist or b4b exits at start.<br>`WEBHOOK_ALLOWLIST` (`settlement,settlement:8083,localhost,127.0.0.1`; compose adds `host.containers.internal`): hosts any environment's callback may go to; an environment adds its own `webhook_hosts`.<br>`RETRY_BACKOFF` (`1s,2s,4s`), `MAX_ATTEMPTS` (`4`): callback retries.<br>`B4B_PROCESSING_DELAY` (`300ms`): wait before each lifecycle hop, a trap's hops included.<br>`B4B_FORCE_FAILURE_BENEFICIARY_IDS` (empty): comma-separated `beneficiary_id` values, as sent on the payment, whose payments end `B4BFailed` instead of `B4BTMApproved`, in the default environment: each is a [standing trap](#standing-traps), armed at start.<br>`B4B_ENFORCE_BENEFICIARY_COMPANY` (`false`): refuse a payment whose `company_id` is not the beneficiary's.<br>`B4B_STATE_PATH` (`/b4b-data/state.json`, compose binds `./b4b-data`): the state file; empty keeps everything in memory.<br>`BANKING_CIRCLE_URL` (`http://banking-circle:8095`): the bridge target.<br>`LAB_CLOCK_URL` (compose: `http://clock:8096/clock`): every `created_at`, `updated_at` and `disabled_at` follows the [lab clock](../../plugins.md#the-clock) |
 | Design record | [ARCHITECTURE-b4b-oversight.md](../../ARCHITECTURE-b4b-oversight.md) (boarding), [ARCHITECTURE-vendor-corrections.md](../../ARCHITECTURE-vendor-corrections.md) §4 and Addendum §A/D/F (payout half), [ARCHITECTURE-phase3-corrections.md](../../ARCHITECTURE-phase3-corrections.md) §4 (wire-shape fixes), [structure/b4b.md](../../structure/b4b.md) (file by file) |
 
@@ -985,7 +985,7 @@ if either status changed. Persisted.
 
 ### Traps
 
-One hook, `payment.create`
+Two hooks, `payment.create` and [`http.request`](#httprequest)
 ([traps.md §9.2](../../lab-api/traps.md#92-b4b); matching, precedence,
 `times` and the lifecycle of a trap are the lab's, in
 [the API overview](../README.md#traps)). It is offered every payout
@@ -1057,6 +1057,29 @@ bridge. Sanctions on a beneficiary, company or person stay setters
 (`PUT /sim/…/sanctions` above): the gates then refuse the payment by their
 own rule, `422` at create.
 
+#### `http.request`
+
+The hook every sim offers ([traps.md §9.7](../../lab-api/traps.md#97-every-sim-httprequest)),
+on the Oversight API: it is offered every request whose bearer token b4b
+accepted, once the token has named the environment, so a trap takes only
+that environment's requests. A request b4b refuses for its token is never
+offered, and neither is the control port, `GET /health` or a
+`PUT /direct-uploads/{token}`. Match: `method`, and `path` without the
+query, `*` standing for one segment. Subject: `METHOD /path`.
+
+| Effect | |
+| --- | --- |
+| `{"respond": {"status": 401, "body": {…}, "headers": {…}}}` | answered with this instead; the request has no effect |
+| `{"delay": "8s"}` | handled normally, after the wait |
+| `{"close": true}` | the connection is dropped with no answer |
+
+Refuse a valid token once, on the next company create, then accept it again:
+
+```json
+{"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/companies"},
+ "times": 1, "effect": {"respond": {"status": 401, "body": {"message": "invalid bearer token"}}}}
+```
+
 #### Standing traps
 
 Each id in `B4B_FORCE_FAILURE_BENEFICIARY_IDS` is armed at start as a
@@ -1079,7 +1102,8 @@ other stays where it stopped, readable, for good. The log says which.
 ### `GET /sim/traps/hooks`
 
 The catalogue: the `payment.create` hook with its match fields, its graph
-and `first_step_default_after`, which is `B4B_PROCESSING_DELAY`.
+and `first_step_default_after`, which is `B4B_PROCESSING_DELAY`; then the
+`http.request` hook with `method` and `path`, effect `respond`.
 
 ```json
 {"service": "b4b",
@@ -1110,10 +1134,11 @@ Answers `200` with `{"service": "b4b", "traps": [<trap>, …]}`.
 
 ### `POST /sim/traps`
 
-Arms a trap. Body: `hook` (`payment.create`), `match` (`{}` takes every
-payout), `effect` (`{"path": […]}`), and optionally `label`, `times` (`1`
-when left out, `null` for every payout until disarmed) and `expires_at`. An
-unknown field is refused.
+Arms a trap. Body: `hook` (`payment.create` or `http.request`), `match`
+(`{}` takes every payout, or every request), `effect` (`{"path": […]}` for
+`payment.create`, one of `respond`, `delay` or `close` for `http.request`),
+and optionally `label`, `times` (`1` when left out, `null` for every event
+until disarmed) and `expires_at`. An unknown field is refused.
 
 Answers `201` with the trap:
 

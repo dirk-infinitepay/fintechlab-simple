@@ -11,9 +11,10 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
 
-// Traps on b4b (docs/lab-api/traps.md §9.2): one hook, payment.create, on
-// a payout the gates let through. A trap that catches one decides its walk
-// instead of the default: where it stops, whether it fails, and when.
+// Traps on b4b (docs/lab-api/traps.md §9.2): payment.create, on a payout
+// the gates let through. A trap that catches one decides its walk instead
+// of the default: where it stops, whether it fails, and when. And the
+// http.request hook every sim offers (§9.7), on the Oversight API.
 
 const hookPaymentCreate = "payment.create"
 
@@ -62,7 +63,7 @@ func paymentHook(delay time.Duration) trap.Hook {
 // walks to B4BTMPending and fails there, which is what the variable always
 // did. Standing, a reset arms them again.
 func newTraps(delay time.Duration, forceFail []string) (*trap.Store, error) {
-	s := trap.NewStore("b4b", paymentHook(delay))
+	s := trap.NewStore("b4b", paymentHook(delay), trap.HTTPRequestHook())
 	for _, id := range forceFail {
 		if _, err := s.ArmStanding(trap.Spec{
 			Label:   "B4B_FORCE_FAILURE_BENEFICIARY_IDS " + id,
