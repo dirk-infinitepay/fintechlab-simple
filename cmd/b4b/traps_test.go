@@ -164,7 +164,7 @@ func TestTheHookCatalogueListsPaymentCreate(t *testing.T) {
 			FirstAfter string `json:"first_step_default_after"`
 		}
 	}
-	if st != 200 || json.Unmarshal(b, &cat) != nil || cat.Service != "b4b" || len(cat.Hooks) != 1 {
+	if st != 200 || json.Unmarshal(b, &cat) != nil || cat.Service != "b4b" || len(cat.Hooks) != 2 {
 		t.Fatalf("GET /sim/traps/hooks = %d %s", st, b)
 	}
 	h := cat.Hooks[0]
@@ -189,7 +189,7 @@ func TestTheHookCatalogueListsPaymentCreate(t *testing.T) {
 	}
 
 	st, b = send(t, lab.l.control, "GET", "/sim/info", "", "")
-	if info := object(t, b); st != 200 || fmt.Sprint(info["hooks"]) != "[payment.create]" {
+	if info := object(t, b); st != 200 || fmt.Sprint(info["hooks"]) != "[payment.create http.request]" {
 		t.Errorf("GET /sim/info = %d %s", st, b)
 	}
 

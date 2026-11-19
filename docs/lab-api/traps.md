@@ -393,6 +393,10 @@ as it does today. So:
 - the default (no trap) is a walk to `B4BTMApproved`, then the bridge
   into Banking Circle, where a `payment.outgoing` trap can take it
 
+**`http.request`** (§9.7) on the Oversight API, offered once a request's
+token named the environment: a `401` it answers refuses a token b4b would
+take, which is how a test makes b4b reject the platform's token on demand.
+
 `B4B_FORCE_FAILURE_BENEFICIARY_IDS` stays. Each id becomes a standing trap
 at start-up: `{"match": {"beneficiary_id": "…"}, "times": null,
 "effect": {"path": [{"to": "B4BTMPending"}, {"to": "B4BFailed"}]}}`, which
@@ -465,7 +469,8 @@ when no trap matches.
 never on its control listener, so a trap cannot lock the lab out. Match:
 `method`, `path` (with `*` for one segment), and later `header.<name>`.
 Effect: `respond` (§4.3). One piece of shared middleware. *Built
-2026-11-12 on verification* with `method` and `path`; a `header.<name>`
+2026-11-12 on verification*, and on b4b's Oversight API, where it takes
+only requests whose token b4b accepted, with `method` and `path`; a `header.<name>`
 match is refused until a test needs one. A client that gives up during a
 `delay` does not stop it: the vendor still handles the request once the
 delay ends, and nothing records that the answer went unread.
