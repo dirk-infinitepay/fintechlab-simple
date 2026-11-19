@@ -1063,8 +1063,9 @@ The hook every sim offers ([traps.md §9.7](../../lab-api/traps.md#97-every-sim-
 on the Oversight API: it is offered every request whose bearer token b4b
 accepted, once the token has named the environment, so a trap takes only
 that environment's requests. A request b4b refuses for its token is never
-offered, and neither is the control port, `GET /health` or a
-`PUT /direct-uploads/{token}`. Match: `method`, and `path` without the
+offered, and neither is the control port, the old `/sim` paths on the
+vendor port, `GET /health` or a `PUT /direct-uploads/{token}`. The
+`payments` log records what the caller got, a trap's answer included. Match: `method`, and `path` without the
 query, `*` standing for one segment. Subject: `METHOD /path`.
 
 | Effect | |

@@ -277,7 +277,7 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", a.summarizeCreate, a.createPayment)))
+	mux.HandleFunc("POST /oversight/v1/payments", a.payLog.Watch("payment.create", a.summarizeCreate, a.requireAuth(a.createPayment)))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
@@ -388,7 +388,7 @@ func (a *app) later(env string, started uint64, deliver func(started uint64)) {
 	a.engine.GateFor(env).Go(started, deliver)
 }
 
-// requireAuth verifies the inbound Authorization: Bearer <RS512 JWT> header
+// authenticated verifies the inbound Authorization: Bearer <RS512 JWT> header
 // against the key its kid names before delegating to next: B4B_JWT_KEY_ID
 // is the default environment's, any other kid a customer's (envs.go), and
 // an unknown one is refused like a bad signature. The environment goes in
@@ -396,7 +396,7 @@ func (a *app) later(env string, started uint64, deliver func(started uint64)) {
 // to read (internal/tenant). Any parse/verify failure is rejected 401 with
 // a clear log message -- B4B is the server here, so it is the one doing the
 // verifying (docs/ARCHITECTURE-vendor-corrections.md section 4).
-func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+func (a *app) authenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
 		authz := r.Header.Get("Authorization")
@@ -413,9 +413,15 @@ func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		a.customers.Seen(env)
-		r = r.WithContext(tenant.With(r.Context(), env))
-		a.traps.Serve(w, r, env, next)
+		tenant.Set(r.Context(), env)
+		next(w, r.WithContext(tenant.With(r.Context(), env)))
 	}
+}
+
+func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return a.authenticated(func(w http.ResponseWriter, r *http.Request) {
+		a.traps.Serve(w, r, tenant.Of(r.Context()), next)
+	})
 }
 
 // writeStoreError maps a domain error to the status code the real API
