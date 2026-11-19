@@ -476,12 +476,12 @@ func TestTheGatewaysDocumentUploadIsASlotAndAPut(t *testing.T) {
 
 // A client that reaches b4b under a path prefix, through a proxy that
 // strips it and names it in X-Forwarded-Prefix, gets a slot URL under the
-// same prefix. Behind a chain of proxies each forwarded header is a list,
-// and the first entry is the one the client used.
+// same prefix. Behind a chain of proxies the host and proto take their first
+// entry, the one the client used, and the prefix joins every proxy's part.
 func TestAnUploadSlotURLKeepsTheCallersPathPrefix(t *testing.T) {
-	cases := map[string]struct{ host, proto, prefix string }{
-		"one proxy":   {host: "lab.example", proto: "https", prefix: "/b4b/"},
-		"two proxies": {host: "lab.example, b4b", proto: "https,http", prefix: "/b4b, /x"},
+	cases := map[string]struct{ host, proto, prefix, base string }{
+		"one proxy":   {host: "lab.example", proto: "https", prefix: "/b4b/", base: "https://lab.example/b4b"},
+		"two proxies": {host: "lab.example, b4b", proto: "https,http", prefix: "/lab, /b4b", base: "https://lab.example/lab/b4b"},
 	}
 	for name, forwarded := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -507,8 +507,8 @@ func TestAnUploadSlotURLKeepsTheCallersPathPrefix(t *testing.T) {
 				t.Fatalf("slot create = %d %s", resp.StatusCode, b)
 			}
 			url, _ := object(t, b)["url"].(string)
-			if !strings.HasPrefix(url, "https://lab.example/b4b"+uploadPath) {
-				t.Fatalf("slot url = %q, want it under https://lab.example/b4b", url)
+			if !strings.HasPrefix(url, forwarded.base+uploadPath) {
+				t.Fatalf("slot url = %q, want it under %s", url, forwarded.base)
 			}
 		})
 	}

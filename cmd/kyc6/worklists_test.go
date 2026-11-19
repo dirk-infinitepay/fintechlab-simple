@@ -564,7 +564,7 @@ func TestMonitoringTimestampsAreOnTheLabClock(t *testing.T) {
 	onLabClock("match lastReviewDateTimeISO", m["lastReviewDateTimeISO"])
 }
 
-func TestAQRCodeOrResourceIDAnotherMatchHasIsRefused(t *testing.T) {
+func TestAQRCodeAnotherMatchHasIsRefused(t *testing.T) {
 	svc, ctl := surfaces(t)
 	enrol(t, svc, defaultKey)
 	arm := func(path, body string, want int) {
@@ -577,7 +577,8 @@ func TestAQRCodeOrResourceIDAnotherMatchHasIsRefused(t *testing.T) {
 	arm(armCompany, `{"resourceId":"r-1","qrCode":"Q1"}`, 201)
 	arm(armCompany, `{"resourceId":"r-2","qrCode":"Q1"}`, 409)
 	arm(armOwner, `{"qrCode":"Q1"}`, 409)
-	arm(armOwner, `{"resourceId":"r-1"}`, 409)
+	// One profile can match two records, as at KYC6.
+	arm(armOwner, `{"resourceId":"r-1"}`, 201)
 	arm(armCompany, `{"resourceId":"r-1","qrCode":"Q1"}`, 200)
 
 	if got := matchesOf(t, svc, companyPath, defaultKey); len(got) != 1 {
@@ -586,6 +587,26 @@ func TestAQRCodeOrResourceIDAnotherMatchHasIsRefused(t *testing.T) {
 	vendorsimtest.Call(t, svc, "PUT", companyPath+"/matches/reviews", `{"reviews":[{"qrCode":"Q1","referenceId":"1","status":"false-positive"}]}`, defaultKey)
 	if _, open := records(t, svc, worklistPath+"/businesses?status=open", defaultKey); len(open) != 0 {
 		t.Errorf("reviewing Q1 closes the record: %v", open)
+	}
+}
+
+// One KYC6 profile can match two monitored businesses, as at the vendor, and
+// its lookup describes it from either match.
+func TestOneProfileCanMatchTwoRecords(t *testing.T) {
+	svc, ctl := surfaces(t)
+	enrol(t, svc, defaultKey)
+	vendorsimtest.Call(t, svc, "PUT", worklistPath+"/businesses/company-7", `{"name":"North Ltd"}`, defaultKey)
+	for path, qrCode := range map[string]string{
+		armCompany: "Q42",
+		"/sim/kyc6/worklists/wl-7/businesses/company-7/matches": "Q7",
+	} {
+		if code, out := vendorsimtest.Call(t, ctl, "POST", path, `{"resourceId":"r-1","qrCode":"`+qrCode+`"}`, nil); code != 201 {
+			t.Fatalf("arm r-1 on %s: %d %v, want 201", path, code, out)
+		}
+	}
+	code, profile := vendorsimtest.Call(t, svc, "GET", "/kyc6/businesses/r-1", "", defaultKey)
+	if code != 200 || (profile["qrCode"] != "Q42" && profile["qrCode"] != "Q7") {
+		t.Errorf("the profile both businesses match: %d %v, want one of their matches", code, profile)
 	}
 }
 

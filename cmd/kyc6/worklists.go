@@ -881,16 +881,15 @@ func (m *monitorEnv) arm(rec *record, body armBody, now time.Time) (*match, bool
 }
 
 // conflict is why body cannot arm found (nil for a new match), or "": a
-// resourceId or qrCode it gives that a different match in the environment
-// has. A review finds its match by qrCode and a profile by resourceId, so a
-// second match with either could never be reviewed or looked up.
+// qrCode it gives that a different match in the environment has. A review
+// finds its match by qrCode, so a second match with it could never be
+// reviewed. A resourceId names a KYC6 profile, which can match several
+// records at the real vendor; the profile lookup describes the same
+// profile whichever of them it finds.
 func (m *monitorEnv) conflict(found *match, body armBody) string {
 	for _, existing := range m.matches() {
 		if existing == found {
 			continue
-		}
-		if body.ResourceID != "" && existing.resourceID == body.ResourceID {
-			return "resourceId " + body.ResourceID + " is already a match on another record"
 		}
 		if body.QRCode != "" && existing.qrCode == body.QRCode {
 			return "qrCode " + body.QRCode + " is already match " + existing.resourceID + "'s"

@@ -561,7 +561,8 @@ listener as the caller reached it (`X-Forwarded-Proto`,
 `X-Forwarded-Host` and `X-Forwarded-Prefix` are honoured: a proxy serving
 b4b under `https://lab.example/b4b` that strips `/b4b` and sends it as
 `X-Forwarded-Prefix` gets `https://lab.example/b4b/direct-uploads/…`;
-behind a chain of proxies each header's first entry is used), so
+behind a chain of proxies the host and proto take their first entry, and
+the prefix joins every proxy's part, so `/lab, /b4b` is `/lab/b4b`), so
 it is reachable from wherever the create was. `400` for a missing or malformed field, `404` for an unknown
 company. Persisted, so a slot survives a restart.
 

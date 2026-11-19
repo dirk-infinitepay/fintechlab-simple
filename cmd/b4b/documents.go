@@ -179,7 +179,8 @@ func (a *app) receiveUpload(w http.ResponseWriter, r *http.Request) {
 // proxy that serves b4b under a path (https://lab.example/b4b) and strips
 // it on the way in names it in X-Forwarded-Prefix; without one there is no
 // prefix, since this listener's routes sit at the root. Behind a chain of
-// proxies each header is a list, and the first entry is the client's.
+// proxies the host and proto take their first entry, the client's, and the
+// prefix joins every proxy's part.
 func requestBase(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil || httputilx.Forwarded(r, "X-Forwarded-Proto") == "https" {
@@ -189,11 +190,7 @@ func requestBase(r *http.Request) string {
 	if host == "" {
 		host = r.Host
 	}
-	prefix := strings.Trim(httputilx.Forwarded(r, "X-Forwarded-Prefix"), "/")
-	if prefix != "" {
-		prefix = "/" + prefix
-	}
-	return scheme + "://" + host + prefix
+	return scheme + "://" + host + httputilx.ForwardedPrefix(r)
 }
 
 func (a *app) getDocument(w http.ResponseWriter, r *http.Request) {
