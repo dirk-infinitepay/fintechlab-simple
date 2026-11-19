@@ -1073,6 +1073,7 @@ query, `*` standing for one segment. Subject: `METHOD /path`.
 | `{"respond": {"status": 401, "body": {…}, "headers": {…}}}` | answered with this instead; the request has no effect |
 | `{"delay": "8s"}` | handled normally, after the wait |
 | `{"close": true}` | the connection is dropped with no answer |
+| `{"commit": true, "respond": {…}}` or `{"commit": true, "close": true}` | handled normally first, so the request takes effect, then its answer is replaced by `respond` or the connection is dropped: an ambiguous outcome the client has to read back |
 
 Refuse a valid token once, on the next company create, then accept it again:
 
@@ -1080,6 +1081,17 @@ Refuse a valid token once, on the next company create, then accept it again:
 {"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/companies"},
  "times": 1, "effect": {"respond": {"status": 401, "body": {"message": "invalid bearer token"}}}}
 ```
+
+Create the next company, then fail the reply, so the platform has to find
+out that it exists (creating it again answers `422`):
+
+```json
+{"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/companies"},
+ "times": 1, "effect": {"commit": true, "respond": {"status": 502, "body": {"message": "Bad Gateway"}}}}
+```
+
+`caught[].applied` lists `handled <status>`, the answer b4b would have
+sent, then `respond <status>` or `close`.
 
 #### Standing traps
 

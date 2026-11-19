@@ -208,6 +208,7 @@ is refused. The effect is one of:
 | `{"respond": {"status": 503, "body": …, "headers": {…}}}` | answered with this instead; the request has no effect. A string `body` is sent as it is (`text/plain` unless a header says otherwise), so a reply can be unreadable; anything else is sent as JSON |
 | `{"delay": "8s"}` | handled normally, after the wait: for client timeouts |
 | `{"close": true}` | the connection is dropped with no answer |
+| `{"commit": true, "respond": {…}}` or `{"commit": true, "close": true}` | handled normally first, so the request takes effect, then its answer is replaced by `respond` or the connection is dropped: an ambiguous outcome the client has to read back |
 
 The next LexisNexis identity report is an outage:
 

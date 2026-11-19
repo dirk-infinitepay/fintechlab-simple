@@ -168,9 +168,16 @@ For the `http.request` hook every sim has (§9.7).
 | `{"respond": {"status": 503, "body": {…}, "headers": {…}}}` | answered with this instead; the request has no effect |
 | `{"delay": "8s"}` | handled normally, after the delay: for client timeouts |
 | `{"close": true}` | the connection is dropped with no answer |
+| `{"commit": true, "respond": {…}}` or `{"commit": true, "close": true}` | handled normally first, so the request takes effect, then its answer is replaced by `respond` or the connection is dropped: an ambiguous outcome the client has to read back |
 
 The body is sent as given. The trap author writes the vendor's error shape
 if the test cares about it.
+
+`commit` (*built 2026-11-19*) goes with `respond` or `close`, never
+`delay`: the vendor handles the request in full, as it would with no trap,
+and only its answer is lost. It is for a create that takes effect while the
+reply fails, which the platform has to settle by reading back. `applied`
+records `handled <status>`, the vendor's own answer, before the trap's.
 
 ## 5. Time
 
@@ -468,7 +475,7 @@ when no trap matches.
 **`http.request`** (phase 3). Any request on the sim's **vendor** surface,
 never on its control listener, so a trap cannot lock the lab out. Match:
 `method`, `path` (with `*` for one segment), and later `header.<name>`.
-Effect: `respond` (§4.3). One piece of shared middleware. *Built
+Effect: `respond` (§4.3), with `commit` to let the request take effect first. One piece of shared middleware. *Built
 2026-11-12 on verification*, and on b4b's Oversight API, where it takes
 only requests whose token b4b accepted, with `method` and `path`; a `header.<name>`
 match is refused until a test needs one. A client that gives up during a

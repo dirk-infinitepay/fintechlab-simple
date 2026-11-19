@@ -13,7 +13,7 @@ import (
 
 // EffectRespond answers a vendor-shaped request instead of the sim
 // (traps.md §4.3): with a response of the trap's own, after a delay, or by
-// dropping the connection.
+// dropping the connection; with commit, after the sim has handled it.
 const EffectRespond = "respond"
 
 // HookHTTPRequest is the hook every sim's vendor surface can offer
@@ -39,7 +39,8 @@ func HTTPRequestHook() Hook {
 	return Hook{
 		Name: HookHTTPRequest,
 		About: "Any request on the vendor surface. respond answers with the trap's status, body and headers instead, " +
-			"and the request has no effect; delay handles it normally after the wait; close drops the connection with no answer.",
+			"and the request has no effect; delay handles it normally after the wait; close drops the connection with no answer. " +
+			"commit with respond or close lets the request take effect first, then replaces its answer.",
 		Subject: "request",
 		Match: []Field{
 			{Name: "method", Type: TypeString, About: "GET, POST, …"},
@@ -69,49 +70,89 @@ func validateRespond(h Hook, spec Spec) error {
 	if set != 1 || spec.Path != nil {
 		return fmt.Errorf("%w: %s's effect is one of {\"respond\": {\"status\": …, \"body\": …, \"headers\": {…}}}, {\"delay\": \"8s\"} or {\"close\": true}", ErrInvalid, h.Name)
 	}
+	if spec.Commit && spec.Delay != "" {
+		return fmt.Errorf("%w: commit goes with respond or close: the request takes effect, then its answer is replaced", ErrInvalid)
+	}
 	return nil
 }
 
-// Intercept offers r to the http.request traps armed in env. It reports
-// true when a trap answered, or dropped the connection, so the sim must not
-// handle the request; after a delay it reports false and the sim handles it
-// as usual.
-func (s *Store) Intercept(w http.ResponseWriter, r *http.Request, env string) bool {
+// Serve offers r to the http.request traps armed in env and serves it: a
+// trap answers it, drops the connection or holds it; with commit, next
+// handles it first and the trap replaces the answer. With no trap, next
+// handles it as usual.
+func (s *Store) Serve(w http.ResponseWriter, r *http.Request, env string, next http.Handler) {
 	c, ok := s.Offer(Event{Env: env, Hook: HookHTTPRequest, Subject: r.Method + " " + r.URL.Path,
 		Fields: map[string]string{"method": r.Method, "path": r.URL.Path}})
 	if !ok {
-		return false
+		next.ServeHTTP(w, r)
+		return
 	}
 	effect := c.t.Effect
+	if effect.Commit {
+		handled := &discarded{header: http.Header{}}
+		next.ServeHTTP(handled, r)
+		c.applied(fmt.Sprintf("handled %d", handled.status()))
+	}
 	switch {
 	case effect.Respond != nil:
 		c.applied(fmt.Sprintf("respond %d", effect.Respond.Status))
-		for k, v := range effect.Respond.Headers {
-			w.Header().Set(k, v)
-		}
-		if text, isText := effect.Respond.Body.(string); isText {
-			if w.Header().Get("Content-Type") == "" {
-				w.Header().Set("Content-Type", "text/plain")
-			}
-			w.WriteHeader(effect.Respond.Status)
-			_, _ = w.Write([]byte(text))
-			return true
-		}
-		if w.Header().Get("Content-Type") == "" {
-			w.Header().Set("Content-Type", "application/json")
-		}
-		w.WriteHeader(effect.Respond.Status)
-		if effect.Respond.Body != nil {
-			_ = json.NewEncoder(w).Encode(effect.Respond.Body)
-		}
-		return true
+		writeResponse(w, effect.Respond)
 	case effect.Close:
 		c.applied("close")
 		panic(http.ErrAbortHandler)
 	default:
 		c.delay(r, effect.Delay)
-		return false
+		next.ServeHTTP(w, r)
 	}
+}
+
+func writeResponse(w http.ResponseWriter, resp *Response) {
+	for k, v := range resp.Headers {
+		w.Header().Set(k, v)
+	}
+	if text, isText := resp.Body.(string); isText {
+		if w.Header().Get("Content-Type") == "" {
+			w.Header().Set("Content-Type", "text/plain")
+		}
+		w.WriteHeader(resp.Status)
+		_, _ = w.Write([]byte(text))
+		return
+	}
+	if w.Header().Get("Content-Type") == "" {
+		w.Header().Set("Content-Type", "application/json")
+	}
+	w.WriteHeader(resp.Status)
+	if resp.Body != nil {
+		_ = json.NewEncoder(w).Encode(resp.Body)
+	}
+}
+
+// discarded is the answer a commit trap lets the sim write and never sends.
+type discarded struct {
+	header http.Header
+	code   int
+}
+
+func (d *discarded) Header() http.Header { return d.header }
+
+func (d *discarded) Write(b []byte) (int, error) {
+	if d.code == 0 {
+		d.code = http.StatusOK
+	}
+	return len(b), nil
+}
+
+func (d *discarded) WriteHeader(code int) {
+	if d.code == 0 {
+		d.code = code
+	}
+}
+
+func (d *discarded) status() int {
+	if d.code == 0 {
+		return http.StatusOK
+	}
+	return d.code
 }
 
 // delay holds the request for d, as a pending step, so that disarming the

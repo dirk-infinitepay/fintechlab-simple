@@ -413,10 +413,8 @@ func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		a.customers.Seen(env)
-		if a.traps.Intercept(w, r, env) {
-			return
-		}
-		next(w, r.WithContext(tenant.With(r.Context(), env)))
+		r = r.WithContext(tenant.With(r.Context(), env))
+		a.traps.Serve(w, r, env, next)
 	}
 }
 
