@@ -2,6 +2,7 @@ package activity
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net"
@@ -31,7 +32,20 @@ type Call struct {
 	RespBody []byte
 	// Refused is set by a summariser when the vendor refused the call in a
 	// 2xx answer of its own shape: the event is a warning and carries it.
+	// A handler that knows it sets it with Refuse.
 	Refused string
+}
+
+type refusalKey struct{}
+
+// Refuse marks the call ctx is serving as refused in a 2xx of the vendor's
+// own shape, as a summariser's Refused does. It is for the handler that
+// knows, where a summariser would have to read the refusal back out of the
+// journal's capped copy of the answer. Outside Watch it does nothing.
+func Refuse(ctx context.Context, reason string) {
+	if refused, ok := ctx.Value(refusalKey{}).(*string); ok {
+		*refused = reason
+	}
 }
 
 // JSONField reads a top-level string field out of the request body, or ""
@@ -108,25 +122,27 @@ func (l *Log) Watch(op string, sum Summarizer, next http.HandlerFunc) http.Handl
 		// The environment is learnt inside: the vendor's auth sets it once
 		// it knows who called (internal/tenant), into a slot bound here.
 		ctx := tenant.Bind(r.Context())
+		refused := new(string)
+		ctx = context.WithValue(ctx, refusalKey{}, refused)
 		r = r.WithContext(ctx)
 		rec := &recorder{ResponseWriter: w, status: http.StatusOK}
 		defer func() {
 			if p := recover(); p != nil {
 				if p == http.ErrAbortHandler {
-					l.record(op, sum, r, reqBody, rec, true)
+					l.record(op, sum, r, reqBody, rec, "", true)
 				}
 				panic(p)
 			}
 		}()
 		next(rec, r)
-		l.record(op, sum, r, reqBody, rec, false)
+		l.record(op, sum, r, reqBody, rec, *refused, false)
 	}
 }
 
 // record files one call. A dropped call is one whose connection was closed
 // with no answer: the platform saw no status at all.
-func (l *Log) record(op string, sum Summarizer, r *http.Request, reqBody []byte, rec *recorder, dropped bool) {
-	call := &Call{Request: r, ReqBody: reqBody, Status: rec.status, RespBody: rec.body.Bytes()}
+func (l *Log) record(op string, sum Summarizer, r *http.Request, reqBody []byte, rec *recorder, refused string, dropped bool) {
+	call := &Call{Request: r, ReqBody: reqBody, Status: rec.status, RespBody: rec.body.Bytes(), Refused: refused}
 	summary, detail := "", map[string]string{}
 	if sum != nil && !dropped {
 		summary, detail = sum(call)

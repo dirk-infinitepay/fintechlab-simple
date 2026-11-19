@@ -491,6 +491,8 @@ services:
     ports:
       - "8092:8092"
     environment:
+      # The lab clock: monitoring timestamps follow it.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8092"
   lexisnexis:
     build:

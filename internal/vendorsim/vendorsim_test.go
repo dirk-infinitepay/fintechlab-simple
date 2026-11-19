@@ -363,3 +363,20 @@ func TestTheVendorPortStillAnswersTheSimPaths(t *testing.T) {
 		t.Errorf("GET /sim/info: %d %v", code, out)
 	}
 }
+
+func TestStrOrNumberKeepsEveryDigitAndStrTakesNoNumber(t *testing.T) {
+	decoder := json.NewDecoder(strings.NewReader(`{"referenceId":9007199254740993,"qrCode":"Q1","small":11,"key":12345}`))
+	decoder.UseNumber()
+	var body map[string]any
+	if err := decoder.Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string]string{"referenceId": "9007199254740993", "qrCode": "Q1", "small": "11", "missing": ""} {
+		if got := StrOrNumber(body[field]); got != want {
+			t.Errorf("StrOrNumber(%s) = %q, want %q", field, got, want)
+		}
+	}
+	if got := Str(body["key"]); got != "" {
+		t.Errorf("Str of a number = %q, want \"\": a number is not a credential", got)
+	}
+}

@@ -167,6 +167,7 @@ POST /sim/reset
 | `aci` | sent log, retries in flight, traps, activity | the connected switch | — |
 | `verify` | traps | — | — |
 | `verification` | traps; outcomes back to defaults | — | — |
+| `kyc6` | outcomes back to defaults; monitor records with their matches, reviews and held auto-reviews; traps, activity | worklists and their settings, emptied | worklists |
 | `clock` | holds (refused while held, without `force`), the change log; back to `CLOCK_START` | calendars | — |
 | `bank` | transfers, accounts opened by payouts, seeded balances back to their seed | the seeded accounts | — |
 | `settlement` | settlement state, archive, reports | its connected switch | — |

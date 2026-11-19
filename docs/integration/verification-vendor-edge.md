@@ -67,7 +67,7 @@ An unknown check or outcome is a 400, not a silent no-op: a typo that
 changed nothing would leave you believing you had armed a failure that
 never fires.
 
-## Two things worth knowing
+## Three things worth knowing
 
 **`mismatch` is not `invalid`.** A mismatch is a real account in the wrong
 name — `valid: true` with `name_match: no` — and a client that treats
@@ -77,3 +77,9 @@ in production.
 **Creditsafe's monitoring poll answers with nothing.** An event this lab
 invented would send the platform chasing a company that did not change.
 When monitoring needs exercising, that endpoint is where to add a seam.
+
+**KYC6's worklists hold what the platform enrols, and nothing matches on
+its own.** A test puts a match on a monitor record with `POST
+/sim/kyc6/worklists/{worklistId}/businesses|individuals/{recordId}/matches`
+and reads the reviews the platform sent back with the `GET` of the same
+record path ([services/kyc6.md](../api/services/kyc6.md#ongoing-monitoring)).

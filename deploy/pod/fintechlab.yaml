@@ -442,6 +442,8 @@ spec:
         - containerPort: 8092
           hostPort: 8092
       env:
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8092"
     - name: lexisnexis
