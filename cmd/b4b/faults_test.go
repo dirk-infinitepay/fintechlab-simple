@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/trap"
 )
@@ -127,4 +129,33 @@ func TestACommitTrapCanDropTheConnectionOnceTheCompanyExists(t *testing.T) {
 		t.Fatalf("the create answered %d, want the connection dropped", resp.StatusCode)
 	}
 	lab.call(t, "POST", "/oversight/v1/companies", gatewayCreateCompany, 422)
+}
+
+func TestAnHTTPRequestTrapLeavesTheOldSimPathsAlone(t *testing.T) {
+	lab := newGatewayLab(t)
+	id := lab.armTrap(t, `{"hook": "http.request", "match": {}, "times": null, "effect": {"respond": {"status": 503}}}`)
+
+	if st, b := send(t, lab.l.vendor, "GET", "/sim/info", "", lab.token); st != 200 {
+		t.Errorf("GET /sim/info on the vendor port with a wildcard trap = %d %s, want b4b's own answer", st, b)
+	}
+	if tr := lab.trap(t, id); len(tr.Caught) != 0 {
+		t.Errorf("the trap caught %d lab calls", len(tr.Caught))
+	}
+}
+
+func TestThePayoutsLogRecordsWhatATrapAnswered(t *testing.T) {
+	lab := newTrapLab(t, 10*time.Millisecond)
+	lab.arm(t, `{"hook": "http.request", "match": {"method": "POST", "path": "/oversight/v1/payments"}, "times": 1,
+		"effect": {"commit": true, "respond": {"status": 502, "body": {"message": "Bad Gateway"}}}}`)
+	body := fmt.Sprintf(`{"external_ref": "stl_MID001_trap", "beneficiary_id": "MID001", "amount": {"amount": 12.34, "currency": "EUR"},
+		"currencyOfTransfer": "EUR", "debtorViban": {"account": "GB00SIM0000000000001"},
+		"creditorAccount": {"account": %q, "financialInstitution": "SC112233"}, "chargeBearer": "SHA"}`, payees["MID001"])
+
+	if st, b := send(t, lab.l.vendor, "POST", "/oversight/v1/payments", body, lab.l.token); st != 502 {
+		t.Fatalf("POST /oversight/v1/payments with a commit trap = %d %s, want 502", st, b)
+	}
+	events := lab.a.payLog.Recent(0)
+	if len(events) != 1 || events[0].Status != "bad" || events[0].Detail["status"] != "Bad Gateway" {
+		t.Errorf("payouts log = %+v, want the one create with the 502 the caller got", events)
+	}
 }
