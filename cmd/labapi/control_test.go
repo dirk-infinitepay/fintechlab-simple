@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/console"
 	"github.com/webduvet/fintechlab-simple/internal/logring"
@@ -197,9 +198,13 @@ func (l labLogsAnswer) texts() string {
 func TestLogsAreMergedByTimeAndTheCursorMissesNothing(t *testing.T) {
 	a := testApp(t, nil)
 	f := newFakeSims(t, a, "worldline", "bank")
+	// Each line a tick later: macOS's clock moves in microseconds, so lines
+	// written back to back would share a time and merge by service name.
 	for i := 1; i <= 3; i++ {
 		fmt.Fprintf(f.rings["worldline"], "w%d\n", i)
+		time.Sleep(time.Millisecond)
 		fmt.Fprintf(f.rings["bank"], "b%d\n", i)
+		time.Sleep(time.Millisecond)
 	}
 
 	var newest labLogsAnswer
