@@ -1150,7 +1150,8 @@ Answers `200` with `{"service": "b4b", "traps": [<trap>, …]}`.
 
 Arms a trap. Body: `hook` (`payment.create` or `http.request`), `match`
 (`{}` takes every payout, or every request), `effect` (`{"path": […]}` for
-`payment.create`, one of `respond`, `delay` or `close` for `http.request`),
+`payment.create`, one of `respond`, `delay` or `close` for `http.request`,
+with `"commit": true` beside `respond` or `close`),
 and optionally `label`, `times` (`1` when left out, `null` for every event
 until disarmed) and `expires_at`. An unknown field is refused.
 

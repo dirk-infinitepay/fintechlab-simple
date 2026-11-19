@@ -160,8 +160,8 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Point B4B_URL at the real Oversight API.",
 			Docs:       "docs/ARCHITECTURE-b4b-oversight.md",
 			Endpoints: []Endpoint{
-				{"POST", "/sim/traps", "arm a trap on payment.create: hang or fail a future payment (control port)"},
-				{"GET", "/sim/traps/hooks", "what can be trapped: fields and the payment's lifecycle (control port)"},
+				{"POST", "/sim/traps", "arm a trap on payment.create to hang or fail a future payment, or on http.request to refuse a valid token or fail a create's reply after it took effect (control port)"},
+				{"GET", "/sim/traps/hooks", "what can be trapped: fields, the payment's lifecycle and the http.request effects (control port)"},
 				{"GET|POST", "/oversight/v1/companies", "list / board a company (422 on a repeated external_ref)"},
 				{"GET|PATCH", "/oversight/v1/companies/{id}", "by id or external_ref; PATCH changes the fields sent"},
 				{"GET|POST", "/oversight/v1/companies/{id}/addresses", ""},
