@@ -159,3 +159,13 @@ func TestThePayoutsLogRecordsWhatATrapAnswered(t *testing.T) {
 		t.Errorf("payouts log = %+v, want the one create with the 502 the caller got", events)
 	}
 }
+
+func TestAPayoutWithABadTokenIsRefusedBeforeItIsLogged(t *testing.T) {
+	lab := newTrapLab(t, 10*time.Millisecond)
+	if st, b := send(t, lab.l.vendor, "POST", "/oversight/v1/payments", `{}`, "not.a.jwt"); st != 401 {
+		t.Fatalf("POST /oversight/v1/payments with a bad token = %d %s, want 401", st, b)
+	}
+	if events := lab.a.payLog.Recent(0); len(events) != 0 {
+		t.Errorf("payouts log = %+v, want nothing for a caller b4b refused", events)
+	}
+}
