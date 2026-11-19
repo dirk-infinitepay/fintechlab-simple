@@ -237,7 +237,7 @@ func TestRegisteringOnTheControlPortIsTheOversightRegistration(t *testing.T) {
 		a.beneficiaries.OnChange = a.persist
 		if _, err := a.dir.CreateCompany(b4b.CompanyParams{
 			ExternalRef: "mer_0001", LegalName: "Southwind Coffee Ltd", CompanyType: "kyb",
-			Address: &b4b.Address{AddressLine1: "1 Simulation Way", City: "London", PostalCode: "EC1A 1AA", Country: "GB"},
+			Address: &b4b.AddressParams{Address: b4b.Address{Line1: "1 Simulation Way", City: "London", Postcode: "EC1A 1AA", Country: "GB"}},
 		}); err != nil {
 			t.Fatal(err)
 		}

@@ -33,9 +33,12 @@ type registerBeneficiaryReq struct {
 	AccountName          string `json:"account_name"`
 	AccountNumber        string `json:"account_number"`
 	FinancialInstitution string `json:"financial_institution"`
-	Country              string `json:"country"`
-	CallbackURL          string `json:"callback_url"`
-	SanctionsStatus      string `json:"sanctions_status"`
+	// BeneficiaryType is natural_person or legal_entity: the gateway sends
+	// it on every payee, from the account's personal/business flag.
+	BeneficiaryType string `json:"beneficiary_type"`
+	Country         string `json:"country"`
+	CallbackURL     string `json:"callback_url"`
+	SanctionsStatus string `json:"sanctions_status"`
 }
 
 func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +72,7 @@ func (a *app) registerBeneficiary(w http.ResponseWriter, r *http.Request) {
 			AccountName:          req.AccountName,
 			AccountNumber:        req.AccountNumber,
 			FinancialInstitution: req.FinancialInstitution,
+			BeneficiaryType:      req.BeneficiaryType,
 			Country:              req.Country,
 			CallbackURL:          req.CallbackURL,
 			SanctionsStatus:      req.SanctionsStatus,

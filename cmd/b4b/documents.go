@@ -1,8 +1,11 @@
 package main
 
 import (
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -100,6 +103,94 @@ func (a *app) uploadDocument(w http.ResponseWriter, r *http.Request) {
 	log.Printf("b4b: upload %s accepted type=%q file=%q bytes=%d (content discarded)",
 		doc.ID, doc.DocumentType, doc.FileName, doc.Size)
 	httputilx.WriteJSON(w, 201, doc)
+}
+
+// uploadPath is where an upload slot's presigned URL points: this
+// listener, outside /oversight/v1 and its bearer token.
+const uploadPath = "/direct-uploads/"
+
+// uploadSlot is the answer to POST /oversight/v1/companies/{id}/uploads,
+// as a client that uploads through a slot reads it: the id an extended
+// profile names as a document, and the URL and headers to PUT the bytes
+// with.
+type uploadSlot struct {
+	ID      string            `json:"id"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+}
+
+// createUploadSlot opens a slot for one of the company's documents. The
+// body is the file's metadata -- filename, byte_size, checksum (base64
+// MD5), content_type -- and nothing is uploaded until the PUT. The URL
+// names this listener as the caller reached it, path prefix included, so a
+// client behind any base URL gets one it can reach.
+func (a *app) createUploadSlot(w http.ResponseWriter, r *http.Request) {
+	var p b4b.UploadSlotParams
+	if _, err := httputilx.ReadJSONExtras(r, &p); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	doc, err := a.dir.In(envOf(r)).AddUploadSlot(r.PathValue("id"), p, b4b.RandomHex(16), maxUploadBytes)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	log.Printf("b4b: upload slot %s opened for company %s file=%q bytes=%d", doc.ID, doc.CompanyID, doc.FileName, doc.Size)
+	httputilx.WriteJSON(w, 201, uploadSlot{
+		ID:  doc.ID,
+		URL: requestBase(r) + uploadPath + doc.UploadToken,
+		Headers: map[string]string{
+			"Content-Type": doc.ContentType,
+			"Content-MD5":  doc.Checksum,
+		},
+	})
+}
+
+// receiveUpload is the presigned PUT. It answers 200 with an empty body,
+// which is the only answer a slot client may take as success; 403 for a URL no
+// slot has, as storage refuses a signature it cannot match; 400 when the bytes are not the size or MD5 the slot declared.
+// The bytes are measured and discarded, as on POST /uploads.
+func (a *app) receiveUpload(w http.ResponseWriter, r *http.Request) {
+	h := md5.New()
+	digest := sha256.New()
+	size, err := io.Copy(io.MultiWriter(h, digest), io.LimitReader(r.Body, maxUploadBytes+1))
+	if err != nil {
+		httputilx.Error(w, 400, "read upload: "+err.Error())
+		return
+	}
+	doc, err := a.dir.FillUpload(r.PathValue("token"), size,
+		base64.StdEncoding.EncodeToString(h.Sum(nil)), hex.EncodeToString(digest.Sum(nil)))
+	if err != nil {
+		status := 400
+		if errors.Is(err, b4b.ErrNotFound) {
+			// What storage answers a presigned URL it cannot honour, and
+			// what a slot client reads as a slot gone stale.
+			status = 403
+		}
+		httputilx.Error(w, status, err.Error())
+		return
+	}
+	log.Printf("b4b: upload %s received bytes=%d (content discarded)", doc.ID, doc.Size)
+	w.WriteHeader(http.StatusOK)
+}
+
+// requestBase is the base URL the caller reached this listener at:
+// scheme, host and path prefix, preferring what a proxy in front says. A
+// proxy that serves b4b under a path (https://lab.example/b4b) and strips
+// it on the way in names it in X-Forwarded-Prefix; without one there is no
+// prefix, since this listener's routes sit at the root. Behind a chain of
+// proxies the host and proto take their first entry, the client's, and the
+// prefix joins every proxy's part.
+func requestBase(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || httputilx.Forwarded(r, "X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := httputilx.Forwarded(r, "X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	return scheme + "://" + host + httputilx.ForwardedPrefix(r)
 }
 
 func (a *app) getDocument(w http.ResponseWriter, r *http.Request) {

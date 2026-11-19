@@ -1,5 +1,5 @@
-// Package b4b models the B4B Payments mock: the payout rail Infinite pays
-// merchants through (buddy's real accounts-settlement -> B4B -> Banking
+// Package b4b models the B4B Payments mock: the payout rail a platform pays
+// merchants through (its accounts-settlement -> B4B -> Banking
 // Circle chain), corrected per docs/ARCHITECTURE-vendor-corrections.md
 // section 4 and its Addendum sections A/D/F, and extended with the
 // company-boarding half of the Oversight API per

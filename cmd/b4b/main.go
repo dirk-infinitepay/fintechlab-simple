@@ -1,5 +1,5 @@
-// B4B Payments is the mock for the vendor Infinite pays merchants through:
-// buddy's real accounts-settlement -> B4B -> Banking Circle chain, per
+// B4B Payments is the mock for the vendor a platform pays merchants
+// through: its accounts-settlement -> B4B -> Banking Circle chain, per
 // docs/ARCHITECTURE-vendor-corrections.md section 4 and its Addendum
 // sections A/D/F, plus the company-boarding half of the Oversight API per
 // docs/ARCHITECTURE-b4b-oversight.md.
@@ -28,7 +28,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -139,7 +138,7 @@ func main() {
 	}
 
 	a := &app{
-		beneficiaries:  b4b.NewBeneficiaryStore(func() string { return "ben_" + shortID() }),
+		beneficiaries:  b4b.NewBeneficiaryStore(func() string { return "ben_" + b4b.RandomHex(6) }),
 		dir:            b4b.NewDirectory(nil),
 		pubKey:         pub,
 		kid:            kid,
@@ -251,6 +250,7 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	mux.HandleFunc("POST /oversight/v1/companies", a.requireAuth(a.createCompany))
 	mux.HandleFunc("GET /oversight/v1/companies", a.requireAuth(a.listCompanies))
 	mux.HandleFunc("GET /oversight/v1/companies/{id}", a.requireAuth(a.getCompany))
+	mux.HandleFunc("PATCH /oversight/v1/companies/{id}", a.requireAuth(a.updateCompany))
 	mux.HandleFunc("POST /oversight/v1/companies/{id}/addresses", a.requireAuth(a.createAddress))
 	mux.HandleFunc("GET /oversight/v1/companies/{id}/addresses", a.requireAuth(a.listAddresses))
 	mux.HandleFunc("POST /oversight/v1/companies/{id}/people", a.requireAuth(a.createPerson))
@@ -267,11 +267,17 @@ func (a *app) routes(ctl http.Handler) *http.ServeMux {
 	mux.HandleFunc("GET /oversight/v1/companies/{id}/vibans", a.requireAuth(a.listVibans))
 	mux.HandleFunc("POST /oversight/v1/uploads", a.requireAuth(a.uploadDocument))
 	mux.HandleFunc("GET /oversight/v1/uploads/{id}", a.requireAuth(a.getDocument))
+	// The gateway's two-step upload: a slot for one company, then the bytes
+	// PUT to the slot's presigned URL. The PUT carries no bearer token --
+	// the secret in its path is the credential, as a presigned URL's
+	// signature is.
+	mux.HandleFunc("POST /oversight/v1/companies/{id}/uploads", a.requireAuth(a.createUploadSlot))
+	mux.HandleFunc("PUT /direct-uploads/{token}", a.receiveUpload) // uploadPath
 
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", a.summarizeCreate, a.createPayment)))
+	mux.HandleFunc("POST /oversight/v1/payments", a.authenticated(a.payLog.Watch("payment.create", a.summarizeCreate, a.trapped(a.createPayment))))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
@@ -382,7 +388,7 @@ func (a *app) later(env string, started uint64, deliver func(started uint64)) {
 	a.engine.GateFor(env).Go(started, deliver)
 }
 
-// requireAuth verifies the inbound Authorization: Bearer <RS512 JWT> header
+// authenticated verifies the inbound Authorization: Bearer <RS512 JWT> header
 // against the key its kid names before delegating to next: B4B_JWT_KEY_ID
 // is the default environment's, any other kid a customer's (envs.go), and
 // an unknown one is refused like a bad signature. The environment goes in
@@ -390,7 +396,7 @@ func (a *app) later(env string, started uint64, deliver func(started uint64)) {
 // to read (internal/tenant). Any parse/verify failure is rejected 401 with
 // a clear log message -- B4B is the server here, so it is the one doing the
 // verifying (docs/ARCHITECTURE-vendor-corrections.md section 4).
-func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+func (a *app) authenticated(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		const prefix = "Bearer "
 		authz := r.Header.Get("Authorization")
@@ -408,6 +414,16 @@ func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		a.customers.Seen(env)
 		next(w, r.WithContext(tenant.With(r.Context(), env)))
+	}
+}
+
+func (a *app) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return a.authenticated(a.trapped(next))
+}
+
+func (a *app) trapped(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a.traps.Serve(w, r, tenant.Of(r.Context()), next)
 	}
 }
 
@@ -571,12 +587,6 @@ func statePathLabel(p string) string {
 		return "(disabled, in-memory only)"
 	}
 	return p
-}
-
-func shortID() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
 
 // paymentID is a UUIDv4, because that is what a client validates it as: the

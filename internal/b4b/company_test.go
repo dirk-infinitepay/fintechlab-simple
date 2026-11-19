@@ -15,12 +15,12 @@ func gbCompany() CompanyParams {
 		LegalName:   "Harness Merchant Ltd",
 		TradingName: "Harness",
 		CompanyType: "kyb",
-		Address: &Address{
-			AddressLine1: "1 Simulation Way",
-			City:         "London",
-			PostalCode:   "EC1A 1AA",
-			Country:      "GB",
-		},
+		Address: &AddressParams{Address: Address{
+			Line1:    "1 Simulation Way",
+			City:     "London",
+			Postcode: "EC1A 1AA",
+			Country:  "GB",
+		}},
 	}
 }
 
@@ -29,12 +29,12 @@ func TestCreateCompanyRequiresLegalNameAndAddress(t *testing.T) {
 	cases := map[string]CompanyParams{
 		"no legal name": {Address: gbCompany().Address},
 		"no address":    {LegalName: "Acme Ltd"},
-		"address with no country": {LegalName: "Acme Ltd", Address: &Address{
-			AddressLine1: "1 Simulation Way", City: "London", PostalCode: "EC1A 1AA",
-		}},
-		"three-letter country": {LegalName: "Acme Ltd", Address: &Address{
-			AddressLine1: "1 Simulation Way", City: "London", PostalCode: "EC1A 1AA", Country: "GBR",
-		}},
+		"address with no country": {LegalName: "Acme Ltd", Address: &AddressParams{Address: Address{
+			Line1: "1 Simulation Way", City: "London", Postcode: "EC1A 1AA",
+		}}},
+		"three-letter country": {LegalName: "Acme Ltd", Address: &AddressParams{Address: Address{
+			Line1: "1 Simulation Way", City: "London", Postcode: "EC1A 1AA", Country: "GBR",
+		}}},
 		"five-digit mcc": func() CompanyParams {
 			p := gbCompany()
 			p.MerchantCategoryCode = "59999"
@@ -82,8 +82,11 @@ func TestCreateCompanyMaterializesRegisteredOffice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("addresses: %v", err)
 	}
-	if len(addrs) != 1 || addrs[0].Type != "registered" || addrs[0].City != "London" {
+	if len(addrs) != 1 || addrs[0].Type != defaultInlineAddressType || addrs[0].City != "London" {
 		t.Fatalf("addresses = %+v, want one registered London address", addrs)
+	}
+	if c.Address == nil || c.Address.ID != addrs[0].ID {
+		t.Fatalf("the company's address %+v should carry the stored address's id %s", c.Address, addrs[0].ID)
 	}
 }
 
@@ -226,20 +229,18 @@ func TestExtendedProfileDocumentRules(t *testing.T) {
 	if _, err := d.CreateExtended(c.ID, ExtendedParams{RegisteredCompanyNo: "12345678"}); !errors.Is(err, ErrRequirementUnmet) {
 		t.Fatalf("unwaived profile with no documents: err = %v, want ErrRequirementUnmet", err)
 	}
-	if _, err := d.CreateExtended(c.ID, ExtendedParams{Documents: []string{"doc_x"}}); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("profile with no registered_company_no: err = %v, want ErrInvalid", err)
-	}
 	// A document id nobody uploaded is a caller error, not a silent
 	// dangling reference: the two-step upload flow only means anything if
 	// the second step checks the first happened.
-	_, err := d.CreateExtended(c.ID, ExtendedParams{RegisteredCompanyNo: "12345678", Documents: []string{"doc_never"}})
+	_, err := d.CreateExtended(c.ID, ExtendedParams{RegisteredCompanyNo: "12345678", Documents: []ExtendedDocument{{Document: "doc_never"}}})
 	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "doc_never") {
 		t.Fatalf("unknown document id: err = %v, want ErrInvalid naming doc_never", err)
 	}
 
 	doc := d.AddDocument(DocumentParams{DocumentType: "business_registry_extract", FileName: "extract.pdf", Size: 12})
-	if _, err := d.CreateExtended(c.ID, ExtendedParams{RegisteredCompanyNo: "12345678", Documents: []string{doc.ID}}); err != nil {
-		t.Fatalf("profile with an uploaded document: %v", err)
+	// registered_company_no is optional, as the gateway's client has it.
+	if _, err := d.CreateExtended(c.ID, ExtendedParams{Documents: []ExtendedDocument{{Document: doc.ID}}}); err != nil {
+		t.Fatalf("profile with an uploaded document and no registered_company_no: %v", err)
 	}
 }
 
@@ -285,7 +286,7 @@ func TestDirectoryOnChangeFiresForEveryMutation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := d.AddAddress(c.ID, AddressParams{Type: "trading", Address: *gbCompany().Address}); err != nil {
+	if _, err := d.AddAddress(c.ID, AddressParams{Type: "trading", Address: gbCompany().Address.Address}); err != nil {
 		t.Fatalf("add address: %v", err)
 	}
 	d.AddDocument(DocumentParams{FileName: "x.pdf"})
@@ -308,7 +309,7 @@ func TestDirectoryOnChangeFiresForEveryMutation(t *testing.T) {
 
 func TestUnknownCompanyIsNotFoundEverywhere(t *testing.T) {
 	d := NewDirectory(nil)
-	if _, err := d.AddAddress("cmp_nope", AddressParams{Type: "trading", Address: *gbCompany().Address}); !errors.Is(err, ErrNotFound) {
+	if _, err := d.AddAddress("cmp_nope", AddressParams{Type: "trading", Address: gbCompany().Address.Address}); !errors.Is(err, ErrNotFound) {
 		t.Errorf("AddAddress err = %v, want ErrNotFound", err)
 	}
 	if _, err := d.AddPerson("cmp_nope", PersonParams{FirstName: "A", LastName: "B", DateOfBirth: "2000-01-01"}); !errors.Is(err, ErrNotFound) {
@@ -339,5 +340,206 @@ func TestRecordsAreStampedOnTheRunnersClock(t *testing.T) {
 	}
 	if got, want := c.CreatedAt[:10], labclock.Now().Format("2006-01-02"); got != want {
 		t.Errorf("createdAt %s, want the runner's day %s", c.CreatedAt, want)
+	}
+}
+
+// The lab's first address spellings still board a company, and the answer
+// carries both spellings: a client written against either keeps working.
+func TestAddressTakesTheEarlierSpellingsAndAnswersTheGateways(t *testing.T) {
+	d := NewDirectory(nil)
+	p := gbCompany()
+	p.Address = &AddressParams{Address: Address{AddressLine1: "1 Old Way", AddressLine2: "Unit 2", PostalCode: "EC1A 1AA", City: "London", Country: "GB"}}
+	c, err := d.CreateCompany(p)
+	if err != nil {
+		t.Fatalf("create with address_line_1/postal_code: %v", err)
+	}
+	got := c.Address.Address
+	if got.Line1 != "1 Old Way" || got.Line2 != "Unit 2" || got.Postcode != "EC1A 1AA" {
+		t.Fatalf("address = %+v, want the earlier spellings folded into line_1, line_2, postcode", got)
+	}
+	if got.AddressLine1 != "1 Old Way" || got.AddressLine2 != "Unit 2" || got.PostalCode != "EC1A 1AA" {
+		t.Fatalf("address = %+v, want the earlier spellings answered too", got)
+	}
+	both := Address{Line1: "gateway", AddressLine1: "lab", City: "London", Country: "GB"}.normalized()
+	if both.Line1 != "gateway" {
+		t.Fatalf("with both spellings sent, line_1 = %q, want the gateway's", both.Line1)
+	}
+}
+
+// A boarding chain re-run after an address was edited sends the new data
+// under the address's id: that updates the address, and the registered
+// office's mirror on the company with it. The same body again answers the
+// stored address.
+func TestAnAddressCreateUnderAKnownIDUpdatesIt(t *testing.T) {
+	d := NewDirectory(nil)
+	p := gbCompany()
+	p.Address.ID = "office-1"
+	c, err := d.CreateCompany(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	business := AddressParams{ID: "biz-1", Type: "business", Address: Address{Line1: "2 High Street", City: "Leeds", Country: "GB"}}
+	first, err := d.AddAddress(c.ID, business)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := d.AddAddress(c.ID, business); err != nil || again.Line1 != "2 High Street" {
+		t.Fatalf("identical retry = %+v, %v; want the stored address", again, err)
+	}
+
+	business.Line1 = "4 High Street"
+	updated, err := d.AddAddress(c.ID, business)
+	if err != nil {
+		t.Fatalf("a changed body under a known id: %v", err)
+	}
+	if updated.ID != "biz-1" || updated.Line1 != "4 High Street" || updated.CreatedAt != first.CreatedAt {
+		t.Fatalf("updated = %+v, want biz-1 at 4 High Street, created when first posted", updated)
+	}
+
+	office := AddressParams{ID: "office-1", Type: defaultInlineAddressType, Address: Address{Line1: "9 New Way", City: "London", Country: "GB"}}
+	if _, err := d.AddAddress(c.ID, office); err != nil {
+		t.Fatalf("a changed registered office under its id: %v", err)
+	}
+	stored, _ := d.Addresses(c.ID)
+	lines := map[string]string{}
+	for _, a := range stored {
+		lines[a.ID] = a.Line1
+	}
+	if len(stored) != 2 || lines["biz-1"] != "4 High Street" || lines["office-1"] != "9 New Way" {
+		t.Fatalf("addresses = %v, want both updated in place", lines)
+	}
+	read, _ := d.Company(c.ID)
+	if read.Address.ID != "office-1" || read.Address.Line1 != "9 New Way" {
+		t.Fatalf("company address = %+v, want the updated registered office", read.Address)
+	}
+}
+
+// A PATCH tells a field sent as "" (cleared) from one not sent (kept).
+func TestAPatchedAddressClearsAFieldSentEmpty(t *testing.T) {
+	d := NewDirectory(nil)
+	p := gbCompany()
+	p.Address.Line2 = "Unit 2"
+	p.Address.Region = "Greater London"
+	c, err := d.CreateCompany(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	got, err := d.UpdateCompany(c.ID, CompanyPatch{Address: &AddressPatch{Line2: &empty}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Address.Line2 != "" || got.Address.AddressLine2 != "" {
+		t.Fatalf("address = %+v, want line_2 cleared in both spellings", got.Address.Address)
+	}
+	if got.Address.Region != "Greater London" || got.Address.Line1 != "1 Simulation Way" {
+		t.Fatalf("address = %+v, want the fields not sent kept", got.Address.Address)
+	}
+	list, _ := d.Addresses(c.ID)
+	if len(list) != 1 || list[0].Line2 != "" {
+		t.Fatalf("addresses = %+v, want the registered office's record cleared too", list)
+	}
+}
+
+// An upload slot is opened for one company; another company's profile
+// cannot name it.
+func TestExtendedProfileRefusesAnotherCompanysUploadSlot(t *testing.T) {
+	d := NewDirectory(nil)
+	mine, _ := d.CreateCompany(gbCompany())
+	other := gbCompany()
+	other.ExternalRef = "mer_0002"
+	theirs, _ := d.CreateCompany(other)
+
+	slot, err := d.AddUploadSlot(theirs.ID, UploadSlotParams{Filename: "x.pdf", ByteSize: 3, Checksum: "rL0Y20zC+Fzt72VPzMSk2A==", ContentType: "application/pdf"}, "tok-1", 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.FillUpload("tok-1", 3, "rL0Y20zC+Fzt72VPzMSk2A==", "x"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.CreateExtended(mine.ID, ExtendedParams{Documents: []ExtendedDocument{{Document: slot.ID}}})
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "another company") {
+		t.Fatalf("err = %v, want ErrInvalid naming another company's upload", err)
+	}
+	if _, err := d.CreateExtended(theirs.ID, ExtendedParams{Documents: []ExtendedDocument{{Document: slot.ID}}}); err != nil {
+		t.Fatalf("the slot's own company: %v", err)
+	}
+}
+
+// The registered office's id cannot be reposted as another type: the
+// company's inline address would stop being its registered office.
+func TestTheRegisteredOfficeKeepsItsTypeOnARepost(t *testing.T) {
+	d := NewDirectory(nil)
+	p := gbCompany()
+	p.Address.ID = "office-1"
+	c, err := d.CreateCompany(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trading := AddressParams{ID: "office-1", Type: "trading", Address: Address{Line1: "9 New Way", City: "London", Country: "GB"}}
+	if _, err := d.AddAddress(c.ID, trading); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("err = %v, want ErrDuplicate for the registered office reposted as trading", err)
+	}
+	read, _ := d.Company(c.ID)
+	if read.Address.Type != defaultInlineAddressType || read.Address.Line1 != "1 Simulation Way" {
+		t.Fatalf("company address = %+v, want the registered office unchanged", read.Address)
+	}
+	list, _ := d.Addresses(c.ID)
+	if len(list) != 1 || list[0].Type != defaultInlineAddressType {
+		t.Fatalf("addresses = %+v, want the one registered office", list)
+	}
+}
+
+// A repost that changes only extra updates the address's extra.
+func TestAnAddressRepostChangingOnlyExtraUpdatesIt(t *testing.T) {
+	d := NewDirectory(nil)
+	c, _ := d.CreateCompany(gbCompany())
+	business := AddressParams{ID: "biz-1", Type: "business", Address: Address{Line1: "2 High Street", City: "Leeds", Country: "GB"},
+		Extra: map[string]any{"label": "front"}}
+	if _, err := d.AddAddress(c.ID, business); err != nil {
+		t.Fatal(err)
+	}
+	business.Extra = map[string]any{"label": "back"}
+	got, err := d.AddAddress(c.ID, business)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Extra["label"] != "back" {
+		t.Fatalf("answer extra = %v, want the new label", got.Extra)
+	}
+	list, _ := d.Addresses(c.ID)
+	for _, a := range list {
+		if a.ID == "biz-1" && a.Extra["label"] != "back" {
+			t.Fatalf("stored extra = %v, want the new label", a.Extra)
+		}
+	}
+}
+
+// The gateway's name is a legal entity's name. A natural person is named by
+// first_name and last_name, so a name sent with one is not a legal_name.
+func TestPersonNameIsALegalNameOnlyForALegalEntity(t *testing.T) {
+	d := NewDirectory(nil)
+	params := gbCompany()
+	params.PersonDocumentsWaived = true
+	c, err := d.CreateCompany(params)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	natural, err := d.AddPerson(c.ID, PersonParams{
+		Type: EntityNaturalPerson, Name: "Jane Doe",
+		FirstName: "Jane", LastName: "Doe", DateOfBirth: "1990-01-01",
+	})
+	if err != nil {
+		t.Fatalf("natural person: %v", err)
+	}
+	if natural.LegalName != "" {
+		t.Errorf("a natural person got legal_name %q", natural.LegalName)
+	}
+	entity, err := d.AddPerson(c.ID, PersonParams{Type: EntityLegalEntity, Name: "Holdco Ltd"})
+	if err != nil {
+		t.Fatalf("legal entity: %v", err)
+	}
+	if entity.LegalName != "Holdco Ltd" {
+		t.Errorf("a legal entity's legal_name = %q, want Holdco Ltd", entity.LegalName)
 	}
 }

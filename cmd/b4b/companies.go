@@ -52,6 +52,26 @@ func (a *app) getCompany(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, c)
 }
 
+// updateCompany is PATCH /oversight/v1/companies/{id}: the fields sent
+// replace the company's. The gateway sends it on a re-run of its boarding
+// chain for a company it already boarded, to bring the KYB fields up to
+// date instead of creating the company again.
+func (a *app) updateCompany(w http.ResponseWriter, r *http.Request) {
+	var p b4b.CompanyPatch
+	extra, err := httputilx.ReadJSONExtras(r, &p)
+	if err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	p.Extra = extra
+	c, err := a.dir.In(envOf(r)).UpdateCompany(r.PathValue("id"), p)
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	httputilx.WriteJSON(w, 200, c)
+}
+
 func (a *app) createAddress(w http.ResponseWriter, r *http.Request) {
 	var p b4b.AddressParams
 	extra, err := httputilx.ReadJSONExtras(r, &p)

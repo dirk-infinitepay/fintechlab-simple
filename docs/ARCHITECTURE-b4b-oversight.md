@@ -4,8 +4,8 @@
 
 `docs/ARCHITECTURE-vendor-corrections.md` §4 built the payout half of the
 B4B mock: beneficiaries, the payment lifecycle, the callbacks, the Banking
-Circle bridge. It deliberately left boarding out — "buddy's real
-registration flow is out of scope" (Addendum §F).
+Circle bridge. It deliberately left boarding out — the platform's
+registration flow was out of scope (Addendum §F).
 
 That gap turned out to be where the integration actually breaks. A client
 could reach `POST /payments` here without ever proving it could board a
@@ -52,15 +52,15 @@ handler.
 
 ```mermaid
 graph TD
-    A["POST /companies\n422 on a repeated external_ref"] --> B["POST /companies/{id}/addresses"]
-    A --> U["POST /uploads\nbytes measured, digested, discarded"]
+    A["POST /companies\n422 on a repeated external_ref\n(PATCH /companies/{id} if already boarded)"] --> B["POST /companies/{id}/addresses\nthe client's id kept"]
+    A --> U["POST /companies/{id}/uploads + PUT the slot url\n(or POST /uploads)\nbytes measured, digested, discarded"]
     B --> C["POST /companies/{id}/people\n422 without an identity document,\nunless person_documents_waived"]
     U --> D
     C --> D["POST /companies/{id}/extended\n422 without a document, unless waived\n422 on the second call, ever"]
     D --> E["POST /companies/{id}/vibans"]
     D --> F["POST /beneficiaries\ncompany_id checked against the directory"]
     F --> G["POST /payments\nsanctions + disabled + creditor + company gates"]
-    C -.->|"async, retried"| PC["person callback\n{id, sanctions_status, pep_sanctions_status}"]
+    C -.->|"async, retried, to its callback_url"| PC["person callback\n{id, sanctions_status, pep_sanctions_status}"]
     F -.->|"async, retried"| BC["beneficiary callback\n{id, external_ref, sanctions_status, status, disabled_at}"]
     G -.->|"one per transition"| MC["payment callback\n{id, status, payload, banking_circle_api_response}"]
 ```
@@ -143,16 +143,66 @@ Payments persist too, and a payment caught mid-lifecycle by a restart
 was already told about. Left alone it would look to a client exactly like a
 webhook that never arrived, and it would wait for one forever.
 
+### The platform gateway's client is the reference for boarding
+
+The boarding half was first derived from readings of the vendor's docs
+(below) and never run against a real client. A platform gateway's B4B
+client, driven by its boarding chain, is one run against the real vendor,
+with comments saying its field names and required markers were checked
+against the vendor's spec. Where
+the two disagreed on a boarding route, this lab changed to the gateway's
+shape; none of the lab's readings cited vendor evidence that contradicts
+it. The lab's earlier names stay accepted on input, so this lab's own e2e
+suite, older bodies and older state files keep working, and address
+answers carry both spellings. `cmd/b4b/gateway_test.go` holds the lab to the
+gateway's exact bodies.
+
+What changed, route by route:
+
+| Route | The lab had | The gateway sends / reads | Now |
+| --- | --- | --- | --- |
+| `POST /companies` | `address.address_line_1`, `postal_code`; inline address typed `registered` | `address.{line_1, city, region, postcode, country, type: registered_office}`; reads `id` | both spellings in and out; type kept (default `registered`, as before) |
+| `GET /companies/{id}` | `address` without an id | reads `address.id` as `registered_office_address_id` | `address` is the stored registered office, with its id |
+| `PATCH /companies/{id}` | not served | KYB fields on a re-run for an existing company; reads `id` | served |
+| `POST /companies/{id}/addresses` | `address_line_1`, `postal_code`; `id` echoed under `extra` | `{id, type, line_1, city, country, line_2?, region?, postcode?}`; reads `id` | both spellings; the client's `id` kept as the address id (the same body again answers the stored address; a changed one under the id updates it) |
+| `POST /companies/{id}/people` | `entity_type`, `legal_name`, `roles`, `phone`, `nationality`, inline `address`; callback to the environment only | `type`, `name`, `role`, `telephone_number`, `positions_within_business`, `countries_of_citizenship`, `address_id`, `callback_url`; reads `id`, `external_ref`, inline `sanctions_status` | both in; `address_id` must be the company's; callback to `callback_url` when given |
+| `POST /companies/{id}/extended` | `documents: ["doc_…"]`; `registered_company_no` required | `documents: [{type, document}]`, `company_type`, `registered_office_address_id`, `business_address_id`, `tax_numbers`, `vat_number`, `company_website`, `business_activities`, `compliance`, `ownership_structure`; `registered_company_no` optional | both document forms; ids checked against the company; `registered_company_no` optional |
+| `POST /companies/{id}/uploads` + PUT | not served (only `POST /uploads`) | `{filename, byte_size, checksum, content_type}` → reads `{id, url, headers}`, PUTs bytes, wants `200` + empty body | served; size and MD5 enforced; a profile naming a slot with no bytes is refused |
+| `POST /beneficiaries` | no `beneficiary_type` (dropped) | `beneficiary_type`; reads `id`, `external_ref` | kept and validated |
+
+The callbacks needed no change of shape. The gateway's callback schema is
+`{id, sanctions_status: pass|fail|review, external_ref?}`, and it strips
+undeclared keys rather than refusing them, so the
+person callback's `pep_sanctions_status` and the beneficiary callback's
+`status` and `disabled_at` arrive and are ignored. That is a finding about
+the gateway, not something this lab should hide: a PEP hit with a clean
+sanctions status, or a payee disabled while screening clean, does not move
+the merchant there.
+
+Still open, and not decided here: the gateway calls `company_type` on the
+extended profile required, and this lab does not refuse its absence; the
+gateway reads B4B's 400/422 bodies as Rails-style
+`{"errors": {"<field>": ["can't be blank"]}}` (its duplicate-`external_ref`
+and missing-owner-document handling key on it), while this lab answers
+`{"error", "status"}`, so those failure paths are not exercised against
+the lab; and whether the vendor keeps a client-supplied address id or
+mints its own is unconfirmed (the gateway stores whichever is answered).
+
 ### Callbacks go to a client-account endpoint
 
 `B4B_CALLBACK_URL` is where a callback goes when the record it is about
-carries no `callback_url` of its own. The real API has exactly this — one
-endpoint agreed per client — and no per-record field. Without it, boarding
+carries no `callback_url` of its own. The lab's reading of the vendor docs
+has exactly this — one endpoint agreed per client — and no per-record
+field; the platform gateway nonetheless sends a `callback_url` on every
+person and beneficiary, so the two disagree, and this lab serves both:
+the record's own wins, the endpoint is the fallback. Without it, boarding
 callbacks had nowhere to go: they were computed and dropped, and a client
 waited forever for a screening result it was never going to be sent.
 
-The per-record `callback_url` stays as a lab affordance (it is how
-`settlement` and the harness work today), and it wins where present. Every
+The per-record `callback_url` wins where present: on payments and
+beneficiaries (how `settlement` and the harness work), and on people,
+because the platform gateway sends one on every person and beneficiary it
+creates. Every
 callback now goes through one retrying path — the real vendor retries these
 for about a day, and a subscriber that answers 500 once should not lose a
 screening result permanently.
@@ -187,7 +237,8 @@ place a green run here does not mean a green run there.
 | --- | --- | --- |
 | `POST` | `/oversight/v1/companies` | 422 on a repeated `external_ref`; registered office inline |
 | `GET` | `/oversight/v1/companies` | lab convenience |
-| `GET` | `/oversight/v1/companies/{id}` | resolves by id *or* `external_ref` |
+| `GET` | `/oversight/v1/companies/{id}` | resolves by id *or* `external_ref`; carries the registered office's `address.id` |
+| `PATCH` | `/oversight/v1/companies/{id}` | the fields sent change, the rest stay |
 | `POST` `GET` | `/oversight/v1/companies/{id}/addresses` | |
 | `POST` `GET` | `/oversight/v1/companies/{id}/people` | natural persons and legal entities |
 | `GET` | `/oversight/v1/companies/{id}/people/{personID}` | |
@@ -196,6 +247,8 @@ place a green run here does not mean a green run there.
 | `POST` `GET` | `/oversight/v1/companies/{id}/vibans` | stable per currency |
 | `POST` | `/oversight/v1/uploads` | multipart, raw body, or JSON metadata |
 | `GET` | `/oversight/v1/uploads/{id}` | the receipt; there is no file |
+| `POST` | `/oversight/v1/companies/{id}/uploads` | a slot: `{id, url, headers}` |
+| `PUT` | `/direct-uploads/{token}` | the slot's presigned URL; no JWT; `200` and an empty body |
 | `POST` `GET` | `/oversight/v1/beneficiaries[/{id}]` | now takes `company_id` |
 | `POST` `GET` | `/oversight/v1/payments[/{id}]` | |
 | `PUT` | `/sim/companies/{id}/sanctions` | lab-only |
@@ -227,7 +280,10 @@ the superset and says so, rather than picking one silently:
 - **`nace_codes`.** The guide calls it required; the schema does not mark it
   so. Not enforced here, and logged when absent.
 - **`registered_company_no` vs `company_number`.** Both names appear in the
-  vendor's own material. This mock uses `registered_company_no`.
+  vendor's own material. This mock uses `registered_company_no`, as the
+  platform gateway does.
+- **Boarding field names.** Settled by the platform gateway's client; see
+  "The platform gateway's client is the reference for boarding" above.
 - **Same-company beneficiary ownership.** See
   `B4B_ENFORCE_BENEFICIARY_COMPANY` above.
 - **Whether the real API refuses unknown fields.** Assumed not; see

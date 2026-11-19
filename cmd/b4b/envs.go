@@ -201,7 +201,7 @@ func (a *app) simScoped(next http.HandlerFunc) http.HandlerFunc {
 // vendor login names only its own; another environment's JWT is refused
 // here, and a call naming anything but the default is held to it.
 func (a *app) legacySim(ctl http.Handler) http.HandlerFunc {
-	return a.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+	return a.authenticated(func(w http.ResponseWriter, r *http.Request) {
 		if env := envOf(r); env != tenant.Default {
 			httputilx.Error(w, 403, "the old /sim paths on b4b's vendor port are the default environment's; environment "+env+"'s are on the control port")
 			return

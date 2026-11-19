@@ -194,7 +194,7 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 		ChargeBearer:           req.ChargeBearer,
 		RequestedExecutionDate: req.RequestedExecutionDate,
 		RemittanceInformation:  remittance,
-		DebtorReference:        "B4BREF" + shortID(),
+		DebtorReference:        "B4BREF" + b4b.RandomHex(6),
 	}
 	if req.DebtorAccount != nil {
 		ref := b4b.AccountRef(*req.DebtorAccount)
@@ -244,7 +244,7 @@ func (a *app) onTransition(p *b4b.Payment, started uint64) {
 // reset the payment no longer exists, and neither the call nor the
 // callback after it is made.
 func (a *app) approveAndBridge(p *b4b.Payment, started uint64) {
-	bcPaymentID := "bcp_" + shortID()
+	bcPaymentID := "bcp_" + b4b.RandomHex(6)
 	bcResp := map[string]any{"paymentId": bcPaymentID}
 	if !a.engine.GateFor(p.Env).Do(started, func() { a.bridge(p, bcPaymentID, bcResp) }) {
 		log.Printf("b4b: banking circle bridge call for payment %s dropped: b4b was reset", p.ID)

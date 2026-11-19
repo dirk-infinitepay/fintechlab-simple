@@ -34,7 +34,9 @@ type Beneficiary struct {
 	AccountName          string `json:"account_name"`
 	AccountNumber        string `json:"account_number"`
 	FinancialInstitution string `json:"financial_institution"`
-	Country              string `json:"country,omitempty"`
+	// BeneficiaryType is natural_person or legal_entity, as registered.
+	BeneficiaryType string `json:"beneficiary_type,omitempty"`
+	Country         string `json:"country,omitempty"`
 	// Status is active or disabled. A disabled beneficiary still reads
 	// back fine and still screens clean -- it just cannot be paid, which
 	// is exactly why a client that only ever looks at sanctions_status
@@ -47,10 +49,10 @@ type Beneficiary struct {
 	// "fail". The previous model here returned "CLEAR", which is not one
 	// of the three values a client switches on.
 	SanctionsStatus string `json:"sanctions_status"`
-	// CallbackURL is notified when the consolidated status changes. It is
-	// a lab affordance, not a real wire field: the real API posts to one
-	// endpoint configured for the client account, which is what
-	// B4B_CALLBACK_URL is. Setting it here overrides that for one payee.
+	// CallbackURL is notified when the consolidated status changes,
+	// instead of the client-account endpoint (B4B_CALLBACK_URL). The lab
+	// first read it as a lab affordance; the platform gateway sends it on
+	// every payee (docs/ARCHITECTURE-b4b-oversight.md).
 	CallbackURL string `json:"callback_url,omitempty"`
 }
 
@@ -142,6 +144,7 @@ type RegisterParams struct {
 	AccountName          string
 	AccountNumber        string
 	FinancialInstitution string
+	BeneficiaryType      string
 	Country              string
 	CallbackURL          string
 	// SanctionsStatus lets a caller register a beneficiary that is already
@@ -164,6 +167,11 @@ func (p RegisterParams) Validate() error {
 	case "", SanctionsPass, SanctionsReview, SanctionsFail:
 	default:
 		return fmt.Errorf("sanctions_status must be one of %q, %q, %q", SanctionsPass, SanctionsReview, SanctionsFail)
+	}
+	switch p.BeneficiaryType {
+	case "", EntityNaturalPerson, EntityLegalEntity:
+	default:
+		return fmt.Errorf("beneficiary_type must be %q or %q, got %q", EntityNaturalPerson, EntityLegalEntity, p.BeneficiaryType)
 	}
 	return nil
 }
@@ -270,6 +278,7 @@ func (s *BeneficiaryStore) Register(p RegisterParams) (*Beneficiary, error) {
 		AccountName:          p.AccountName,
 		AccountNumber:        p.AccountNumber,
 		FinancialInstitution: p.FinancialInstitution,
+		BeneficiaryType:      p.BeneficiaryType,
 		Country:              p.Country,
 		SanctionsStatus:      status,
 		CallbackURL:          p.CallbackURL,

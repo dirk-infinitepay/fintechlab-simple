@@ -442,10 +442,11 @@ or `env=*`; `404` for an environment this service was never given, or a
 worklist or record that environment does not have. `409`, changing
 nothing, for a `qrCode` another match in the environment has (codes are
 unique across the environment; on one record, a review finds its match by
-`qrCode`, so a second match with the same code could never be reviewed),
-or a `resourceId` a match on another record has (a profile is looked up
-by it): `{"error": "qrCode Q1 is already match r-1's in environment default", "status": 409}`.
-A re-arm of a match with its own `qrCode` is not a conflict.
+`qrCode`, so a second match with the same code could never be reviewed):
+`{"error": "qrCode Q1 is already match r-1's in environment default", "status": 409}`.
+A re-arm of a match with its own `qrCode` is not a conflict, and one
+`resourceId` may be matched on several records, as one KYC6 profile can
+match two monitored businesses or people.
 
 ### `POST /sim/kyc6/worklists/{worklistId}/individuals/{recordId}/matches`
 
@@ -533,6 +534,7 @@ is refused. The effect is one of:
 | `{"respond": {"status": 503, "body": …, "headers": {…}}}` | answered with this instead; the request has no effect. A string `body` is sent as it is (`text/plain` unless a header says otherwise), so a reply can be unreadable; anything else is sent as JSON |
 | `{"delay": "8s"}` | handled normally, after the wait: for client timeouts |
 | `{"close": true}` | the connection is dropped with no answer |
+| `{"commit": true, "respond": {…}}` or `{"commit": true, "close": true}` | handled normally first, so the request takes effect, then its answer is replaced by `respond` or the connection is dropped: an ambiguous outcome the client has to read back |
 
 The next KYC6 business screen is an outage:
 

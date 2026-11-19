@@ -40,8 +40,8 @@ func kitHost(r *http.Request) (string, error) {
 	if h := strings.TrimSpace(os.Getenv("CONSOLE_CONNECT_HOST")); h != "" && hostPattern.MatchString(h) {
 		return h, nil
 	}
-	if fwd, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Host"), ","); strings.TrimSpace(fwd) != "" {
-		if h := hostOnly(strings.TrimSpace(fwd)); h != "" && hostPattern.MatchString(h) {
+	if fwd := httputilx.Forwarded(r, "X-Forwarded-Host"); fwd != "" {
+		if h := hostOnly(fwd); h != "" && hostPattern.MatchString(h) {
 			return h, nil
 		}
 	}

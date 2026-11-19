@@ -94,6 +94,7 @@ func (d *Directory) ClearIn(scope string) map[string]int {
 		if tenant.InScope(scope, doc.Env) {
 			cleared["documents"]++
 			delete(d.documents, id)
+			delete(d.uploadsByToken, doc.UploadToken)
 		}
 	}
 	for id := range d.companies {

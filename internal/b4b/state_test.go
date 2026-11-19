@@ -1,8 +1,10 @@
 package b4b
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -188,5 +190,148 @@ func TestEngineHoldsTrappedPaymentsAfterRestart(t *testing.T) {
 	}
 	if p, _ := engine.Get("b4bp_trapped_done"); p.FailureReason != "sanctions hit" {
 		t.Errorf("failure reason after restore = %q", p.FailureReason)
+	}
+}
+
+// A state file written before the inline address carried an id: the
+// company's address is linked to the registered record its create stored,
+// so a PATCH of it reaches GET .../addresses too.
+func TestRestoreLinksALegacyRegisteredOffice(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{
+  "companies": [
+    {"id": "cmp_old", "legal_name": "Old Ltd", "status": "active", "sanctions_status": "pass",
+     "address": {"address_line_1": "1 Old Way", "city": "London", "postal_code": "EC1A 1AA", "country": "GB"},
+     "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"},
+    {"id": "cmp_bare", "legal_name": "Bare Ltd", "status": "active", "sanctions_status": "pass",
+     "address": {"address_line_1": "5 Bare Way", "city": "Leeds", "country": "GB"},
+     "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+  ],
+  "addresses": [
+    {"id": "adr_old", "company_id": "cmp_old", "type": "registered",
+     "address_line_1": "1 Old Way", "city": "London", "postal_code": "EC1A 1AA", "country": "GB",
+     "created_at": "2026-01-01T00:00:00Z"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDirectory(nil)
+	d.Restore(loaded)
+
+	c, _ := d.Company("cmp_old")
+	if c.Address.ID != "adr_old" || c.Address.Type != "registered" {
+		t.Fatalf("restored address = %+v, want it linked to adr_old", c.Address)
+	}
+	moved := "2 New Way"
+	if _, err := d.UpdateCompany("cmp_old", CompanyPatch{Address: &AddressPatch{Line1: &moved}}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := d.Addresses("cmp_old")
+	if len(list) != 1 || list[0].Line1 != moved {
+		t.Fatalf("addresses after PATCH = %+v, want the one registered office moved", list)
+	}
+
+	bare, _ := d.Company("cmp_bare")
+	bareList, _ := d.Addresses("cmp_bare")
+	if bare.Address.ID == "" || len(bareList) != 1 || bareList[0].ID != bare.Address.ID || bareList[0].Line1 != "5 Bare Way" {
+		t.Fatalf("company with no registered record: address %+v, addresses %+v; want one created and linked", bare.Address, bareList)
+	}
+}
+
+// An upload slot's token is found after a restart and forgotten after a
+// clear: every path that adds or drops a slot keeps the token index.
+func TestUploadSlotTokensSurviveRestoreAndGoWithAClear(t *testing.T) {
+	d := NewDirectory(nil)
+	c, _ := d.CreateCompany(gbCompany())
+	slot := UploadSlotParams{Filename: "x.pdf", ByteSize: 3, Checksum: "rL0Y20zC+Fzt72VPzMSk2A==", ContentType: "application/pdf"}
+	if _, err := d.AddUploadSlot(c.ID, slot, "tok-1", 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	var s State
+	d.Snapshot(&s)
+
+	restored := NewDirectory(nil)
+	restored.Restore(s)
+	if _, err := restored.FillUpload("tok-1", 3, slot.Checksum, "x"); err != nil {
+		t.Fatalf("PUT to a restored slot: %v", err)
+	}
+	restored.Clear()
+	if _, err := restored.FillUpload("tok-1", 3, slot.Checksum, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PUT after a clear: %v, want ErrNotFound", err)
+	}
+	if n := len(restored.uploadsByToken); n != 0 {
+		t.Fatalf("%d token(s) left in the index after a clear", n)
+	}
+	if _, err := restored.FillUpload("", 3, slot.Checksum, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("PUT with no token: %v, want ErrNotFound", err)
+	}
+}
+
+// A legacy file whose inline address was PATCHed while its registered
+// record stayed stale: the restore keeps the edit, in both views, under
+// the record's id and created_at.
+func TestRestoreKeepsALegacyInlineEditOverAStaleRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{
+  "companies": [
+    {"id": "cmp_old", "legal_name": "Old Ltd", "status": "active", "sanctions_status": "pass",
+     "address": {"address_line_1": "2 Edited Way", "city": "London", "postal_code": "EC1A 2BB", "country": "GB"},
+     "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-02-01T00:00:00Z"}
+  ],
+  "addresses": [
+    {"id": "adr_old", "company_id": "cmp_old", "type": "registered",
+     "address_line_1": "1 Old Way", "city": "London", "postal_code": "EC1A 1AA", "country": "GB",
+     "created_at": "2026-01-01T00:00:01Z"}
+  ]
+}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := NewDirectory(nil)
+	d.Restore(loaded)
+
+	c, _ := d.Company("cmp_old")
+	if c.Address.ID != "adr_old" || c.Address.Line1 != "2 Edited Way" || c.Address.Postcode != "EC1A 2BB" {
+		t.Fatalf("company address = %+v, want the edit under adr_old", c.Address)
+	}
+	list, _ := d.Addresses("cmp_old")
+	if len(list) != 1 || list[0].ID != "adr_old" || list[0].Line1 != "2 Edited Way" || list[0].CreatedAt != "2026-01-01T00:00:01Z" {
+		t.Fatalf("addresses = %+v, want adr_old carrying the edit and its own created_at", list)
+	}
+}
+
+// The registered record made for a legacy company that had none gets the
+// same id on every restore, so a restart before the next write does not
+// strand a caller holding the first.
+func TestRestoreMakesAMissingRegisteredRecordUnderAStableID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{"companies": [{"id": "cmp_bare", "legal_name": "Bare Ltd", "status": "active", "sanctions_status": "pass",
+  "address": {"address_line_1": "5 Bare Way", "city": "Leeds", "country": "GB"},
+  "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restoredID := func() string {
+		loaded, err := LoadState(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		d := NewDirectory(nil)
+		d.Restore(loaded)
+		c, _ := d.Company("cmp_bare")
+		return c.Address.ID
+	}
+	first, second := restoredID(), restoredID()
+	if first == "" || first != second || !strings.HasPrefix(first, "adr_") {
+		t.Fatalf("ids across restarts = %q, %q; want one stable adr_ id", first, second)
 	}
 }

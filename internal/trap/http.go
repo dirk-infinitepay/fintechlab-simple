@@ -97,6 +97,7 @@ type armBody struct {
 		Respond *Response `json:"respond"`
 		Delay   string    `json:"delay"`
 		Close   bool      `json:"close"`
+		Commit  bool      `json:"commit"`
 	} `json:"effect"`
 }
 
@@ -157,7 +158,7 @@ func ParseSpec(raw []byte) (Spec, error) {
 		return Spec{}, fmt.Errorf("%w: effect is required", ErrInvalid)
 	}
 	spec.Path = b.Effect.Path
-	spec.Respond, spec.Delay, spec.Close = b.Effect.Respond, b.Effect.Delay, b.Effect.Close
+	spec.Respond, spec.Delay, spec.Close, spec.Commit = b.Effect.Respond, b.Effect.Delay, b.Effect.Close, b.Effect.Commit
 	return spec, nil
 }
 

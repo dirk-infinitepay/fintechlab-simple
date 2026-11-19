@@ -20,6 +20,12 @@ func (a *app) createPerson(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Extra = extra
 	env := envOf(r)
+	if p.CallbackURL != "" {
+		if err := a.allowed(env, p.CallbackURL); err != nil {
+			httputilx.Error(w, 400, "callback_url rejected: "+err.Error())
+			return
+		}
+	}
 	var person *b4b.Person
 	started := a.engine.GateFor(env).Begin(func() { person, err = a.dir.In(env).AddPerson(r.PathValue("id"), p) })
 	if err != nil {
@@ -87,7 +93,10 @@ func (a *app) setPersonSanctions(w http.ResponseWriter, r *http.Request) {
 }
 
 // personCallback is the documented person callback body: the id B4B minted
-// and the two screening statuses. Nothing else.
+// and the two screening statuses. Nothing else. A client whose callback
+// schema reads {id, sanctions_status, external_ref?} and strips a key it
+// does not declare, rather than refusing it, takes this body:
+// pep_sanctions_status reaches it and is ignored.
 //
 // No external_ref, and no entity type -- deliberately, because the real one
 // has neither. A client that attached its own reference to a person, or
@@ -101,11 +110,11 @@ type personCallback struct {
 	PepSanctionsStatus string `json:"pep_sanctions_status"`
 }
 
-// deliverPersonCallback calls env back about one of its people: always at
-// the environment's client-account endpoint, since a person has no
-// callback_url of its own.
+// deliverPersonCallback calls env back about one of its people: at the
+// person's own callback_url when the create carried one (the gateway sends
+// one on every person), else at the environment's client-account endpoint.
 func (a *app) deliverPersonCallback(env string, started uint64, p *b4b.Person) {
-	a.deliverCallback(env, started, "person "+p.ID, a.callbackTarget(env, ""), personCallback{
+	a.deliverCallback(env, started, "person "+p.ID, a.callbackTarget(env, p.CallbackURL), personCallback{
 		ID:                 p.ID,
 		SanctionsStatus:    p.SanctionsStatus,
 		PepSanctionsStatus: p.PepSanctionsStatus,
